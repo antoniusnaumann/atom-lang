@@ -17,13 +17,14 @@ An example atom project would look like this:
  ├─ 📄 integration.test.atom
 📂 deps
  ├─ 📂 matrix
- │   ├─ 📄 types.atom
- │   └─ 📄 operations.atom
+ │   └─ 📂 src
+ │       ├─ 📄 types.atom
+ │       ├─ 📄 operations.atom
+ │       └─ 📄 simulation.test.atom
  └─ 📂 accelerate
      ├─ ⚙️ lib.dylib
      ├─ ⚙️ lib.so
      └─ ⚙️ lib.dll
-    
 ```
 
 By default, functions and types are internal to the package, i.e., visible to all other files in `src/` if not marked with the `private` keyword.
@@ -53,18 +54,18 @@ Structs can derive fields from other structs
 
 ```atom
 Vec2 {
-  x: Float
-  y: Float
+  x Float
+  y Float
 }
 
 Vec3 {
   ..Vec2
-  z: Float
+  z Float
 }
 
 Vec2D {
   ..Vec2
-  x: Float // error: Redeclaration of struct field
+  x Float // error: Redeclaration of struct field
 }
 ```
 
@@ -72,8 +73,8 @@ Vec2D {
 Constructors use the type name and field names
 ```atom
 Pair {
-  first: Int
-  second: Int
+  first Int
+  second Int
 }
 
 main() {
@@ -95,19 +96,53 @@ main() {
 }
 ```
 
+As "arrays", Atom supports variadic tuples and structs:
+
+```atom
+Values {
+  title String
+  values Int*
+}
+
+main {
+  a: Values = ("Prices", 14, 10, 5)
+}
+```
+
+Tuples (without named fields) can be accessed by index (using function call syntax):
+
+```atom
+main() {
+  a: (Int*) = (5, 1, 17, 3)
+  b: (Int, Float) = (5, 27.0) 
+
+  assert(a(2) == 17)
+  assert(a(2) == 27.0)
+}
+```
+For now, to allow typechecking, the index on heterogenous tuples must be comptime known.
+
+Variadics can be specified with `+` instead of `*` to be non-empty:
+```atom
+main() {
+  a: (Int+) = (1, 2, 3)
+  b: (Int+) = () // error: Non-empty variadic cannot be initialized from empty tuple
+}
+```
+
 Structs can be converted into each other using the following rules:
 
 a) Struct *A* -> Struct *B* **if** all fields of *B* are present in *A* (and types are convertible)
 ```atom
 Vec2 {
-  x: Float
-  y: Float
+  x Float
+  y Float
 }
 
 Vec3 {
-  x: Float
-  y: Float
-  z: Float
+  x Float
+  y Float
+  z Float
 }
 
 main() {
@@ -119,7 +154,7 @@ main() {
 b) Tuple *A* -> Tuple *B* **if** all fields of *B* are listed as the first fields of *A*
 ```atom
 main() {
-  a: Tuple(Int, Float) = (5, 7.0, 3)
+  a: (Int, Float) = (5, 7.0, 3)
 }
 ```
 
@@ -134,24 +169,35 @@ main() {
 c) Struct *A* -> Tuple *B* **if** all fields of *B* are listed as the first fields of *A*
 ```atom
 main() {
-  a: Tuple(Float, Float) = Vec2(5.0, 7.0)
-  b: Tuple(Float, Float) = (x: 5.0, y: 7.0)
+  a: (Float, Float) = Vec2(5.0, 7.0)
+  b: (Float, Float) = (x: 5.0, y: 7.0)
+}
+```
+
+d) Fields can be converted to a variadic field of the same type -- but not vice versa
+```atom
+main() {
+  a: (String, Int, Int) = ("Hello", 1, 2)
+  b: (String, Int*) = a
+
+  a = b // error: Cannot safely convert variadic fields to concrete number of fields
 }
 ```
 
 Nominal types can be emulated by adding a void field
 ```atom
 Cat {
-  name: String
-  age: Int
+  name String
+  age Int
 
-  cat: Void
+  cat Void
 }
 
 main() {
   meow: Cat = (name: "Meow", age: 3) // error: Cannot convert (name: String, age: Int) to (name: String, age: Int, **cat: Void**)   
 }
 ```
+
 
 ### Enums
 Enums are declared by listing all cases and their associated values if they have some:
@@ -176,7 +222,7 @@ main() {
 ```
 
 `loop` can either loop forever without argument or take a boolean expression as condition
-```
+```atom
 main() {
   a := 3
   loop(a > 0) {
@@ -189,6 +235,21 @@ main() {
     print("...and ever...")
   }
 }  
+```
+
+Additionally, loop can iterate over tuples, providing the current element as `$0`
+
+```atom
+main() {
+  values := (1, 2, 4, 13)
+  sum := 0
+
+  loop(values) {
+    sum += $0
+  }
+
+  assert(sum == 20)
+}
 ```
 
 ### Operators
@@ -226,6 +287,31 @@ Visibility modifiers are added in front like for types:
 ```atom
 export len(of String) Int {
   // ...
+}
+```
+
+Functions support overloading:
+```atom
+dup(a Int) Int {
+  10 * a + a
+}
+
+dup(a String) String {
+  "\(a)\(a)"
+}
+```
+
+Functions allow for variadic arguments:
+```atom
+sum(values Int*) Int {
+  res := 0
+  #loop(values) {
+    res += $0
+  }
+}
+
+main() {
+  assert(sum(1, 2, 3) == 6)
 }
 ```
 
