@@ -1,0 +1,309 @@
+# Atom
+Atom is a small language with value semantics, providing modern features with a focus on orthogonality, i.e., many small features that generalize and compose well.
+
+## Structure
+An example atom project would look like this:
+
+```
+📂 src
+ ├─ 📄 main.atom
+ ├─ 📂 physics
+ │   ├─ 📄 simulation.atom
+ │   └─ 📄 simulation.test.atom
+ ├─ 📂 graphics
+ │   ├─ 📄 sprites.atom
+ │   └─ 📄 animations.atom
+📂 test
+ ├─ 📄 integration.test.atom
+📂 deps
+ ├─ 📂 matrix
+ │   ├─ 📄 types.atom
+ │   └─ 📄 operations.atom
+ └─ 📂 accelerate
+     ├─ ⚙️ lib.dylib
+     ├─ ⚙️ lib.so
+     └─ ⚙️ lib.dll
+    
+```
+
+By default, functions and types are internal to the package, i.e., visible to all other files in `src/` if not marked with the `private` keyword.
+Libraries are placed in `deps/`. In order for other packages to be visible, functions and types have to be marked with the `export` keyword. Libraries written in Atom are compiled together with the source code, while libraries provided as dynamic libraries are linked during compilation.
+
+## Basics
+
+### Structs
+Structs are declared by listing all its fields. Struct fields always match the visibility of the struct itself:
+
+```atom
+InternalFields {
+  field Int
+}
+
+export PublicFields {
+  field Int
+}
+
+private FileVisibleFields {
+  field Int
+}
+```
+`export` and `private` are contextual keywords, meaning they can still be used as variable and function names.
+
+Structs can derive fields from other structs
+
+```atom
+Vec2 {
+  x: Float
+  y: Float
+}
+
+Vec3 {
+  ..Vec2
+  z: Float
+}
+
+Vec2D {
+  ..Vec2
+  x: Float // error: Redeclaration of struct field
+}
+```
+
+### Constructors
+Constructors use the type name and field names
+```atom
+Pair {
+  first: Int
+  second: Int
+}
+
+main() {
+  a := Pair(first: 5, second: 7)
+}
+```
+
+Since typing in Atom is structural, you can omit the type name
+```atom
+main() {
+  a := (first: 5, second: 7) // The compiler will infer Pair as the type
+}
+```
+
+alternatively field names can be ommitted and instead use positionals
+```atom
+main() {
+  a := Pair(5, 7)
+}
+```
+
+Structs can be converted into each other using the following rules:
+
+a) Struct *A* -> Struct *B* **if** all fields of *B* are present in *A* (and types are convertible)
+```atom
+Vec2 {
+  x: Float
+  y: Float
+}
+
+Vec3 {
+  x: Float
+  y: Float
+  z: Float
+}
+
+main() {
+  a: Vec2 = Vec3(1.0, 2.0) 
+  b: Vec3 = Vec2(1.0, 2.0) // error: cannot convert (x: Float, y: Float) to (x: Float, y: Float, **z: Float**)
+}
+```
+
+b) Tuple *A* -> Tuple *B* **if** all fields of *B* are listed as the first fields of *A*
+```atom
+main() {
+  a: Tuple(Int, Float) = (5, 7.0, 3)
+}
+```
+
+c) Tuple *A* -> Struct *B* **if** all fields of *B* are listed as the first fields of *A*
+```atom
+main() {
+  a: Vec2 = (5.0, 7.0)
+  b: Vec2 = (3.3, 7.7, "Additional Info")
+}
+```
+
+c) Struct *A* -> Tuple *B* **if** all fields of *B* are listed as the first fields of *A*
+```atom
+main() {
+  a: Tuple(Float, Float) = Vec2(5.0, 7.0)
+  b: Tuple(Float, Float) = (x: 5.0, y: 7.0)
+}
+```
+
+Nominal types can be emulated by adding a void field
+```atom
+Cat {
+  name: String
+  age: Int
+
+  cat: Void
+}
+
+main() {
+  meow: Cat = (name: "Meow", age: 3) // error: Cannot convert (name: String, age: Int) to (name: String, age: Int, **cat: Void**)   
+}
+```
+
+### Enums
+Enums are declared by listing all cases and their associated values if they have some:
+
+```atom
+MaybeInt {
+  Some(Int)
+  None
+}
+```
+
+### Control Flow
+By default, there are only two built-in control flow constructs: `match` and `loop`.
+
+```atom
+main() {
+  match(1 == 1) {
+    True -> print("This is correct!")
+    False -> error("This should have been true...")
+  }
+}
+```
+
+`loop` can either loop forever without argument or take a boolean expression as condition
+```
+main() {
+  a := 3
+  loop(a > 0) {
+    print("\(a) iterations remaining")
+    a -= 1
+  }
+
+  print("This will run forever...")
+  loop {
+    print("...and ever...")
+  }
+}  
+```
+
+### Operators
+There are the following operators:
+- Arithmetic: `+`, `-`, `*`, `/`, `%` along with the corresponding assignment operators
+- Logical: `<`, `>`, `<=`, `>=`, `==`
+
+### Canonical Operator Implementation
+While Atom has no operator overloading, operators are still automatically supported on structs if all fields individually support the operator. If so, the operator is implemented by applying it field-wise.
+
+```
+main() {
+  v := Pair(2, 3) + Pair(4, 5)
+  assert(v.x == 6)
+  assert(v.y == 8)
+}  
+```
+
+### Functions
+Functions are declared using a name, a parameter list and the return type (if it has some).
+Their last expression is the return value:
+
+```atom
+double(a Int) Int {
+  a * 2
+}
+
+print2(msg String) {
+  print(msg)
+  print(msg)
+}
+```
+
+Visibility modifiers are added in front like for types:
+```atom
+export len(of String) Int {
+  // ...
+}
+```
+
+### String Interpolation
+Atom support string interpolation with `\()`
+
+```
+main() {
+  a := 5
+  print("I think \(a * 2 + 1) is an odd number")
+}
+```
+
+### Testing
+As shown [earlier](#structure), atom locates tests in `.test.atom` files.
+Test files allow for two additional syntactic constructs: top-level code and named blocks.
+
+```atom
+foo := 5
+
+assert(foo + 2 == 7)
+```
+
+### Comptime Evaluation
+Prefixing any call with `#` evaluates it at compile-time. This does not cause closures to evaluate, so that for `match` and `loop` this means unfolding the match arm / unrolling the loop but not evaluating the body.
+
+```atom
+add(a Int, b Int) {
+  a + b
+}
+
+main() {
+  number := #add(3, 5)
+  other := random()
+
+  #loop(number) {
+    print(other)
+  }
+
+  #loop(number) {
+    #print("This will be printed during compilation 8 times!")
+  }
+
+  #match(number) {
+    8 -> add(8, other)
+    _ -> #error("The number should have been 8 at compile time")
+  }
+}
+```
+
+
+### Const Parameters
+Types and functions allow for const parameters.
+Const parameters are specified in a function or constructor after the non-const arguments.
+```atom
+Container(t Type) {
+  item t 
+}
+
+get(t Type; c Container(t)) t {
+  c.item
+}
+
+"Init container" {
+  c := Container(Int; 5)
+  print("\(c.get()) is five")
+}
+```
+
+By convention, lower case letters in type position are implicitly declared as constants. If possible, constants (like type parameters) are inferred by the compiler.
+```atom
+Container {
+  item t
+}
+
+"Init container" {
+  c := Container()  
+}
+```
+
+

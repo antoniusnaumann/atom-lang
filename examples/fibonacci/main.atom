@@ -1,0 +1,16 @@
+main(n: Int) {
+  fib(n).print()
+}
+
+
+fib(nth: Int) Int {
+  match nth {
+    0 -> 1
+    1 -> 1
+    _ -> fib(nth - 1) + fib(nth - 2)
+  }
+}
+
+
+
+
