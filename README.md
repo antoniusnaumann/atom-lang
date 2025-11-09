@@ -118,7 +118,7 @@ main() {
   b: (Int, Float) = (5, 27.0) 
 
   assert(a(2) == 17)
-  assert(a(2) == 27.0)
+  assert(b(2) == 27.0)
 }
 ```
 For now, to allow typechecking, the index on heterogenous tuples must be comptime known.
@@ -201,7 +201,7 @@ Vec3 {
 }
 
 main() {
-  a: Vec2 = Vec3(1.0, 2.0) 
+  a: Vec2 = Vec3(1.0, 2.0, 3.0) 
   b: Vec3 = Vec2(1.0, 2.0) // error: cannot convert (x: Float, y: Float) to (x: Float, y: Float, **z: Float**)
 }
 ```
