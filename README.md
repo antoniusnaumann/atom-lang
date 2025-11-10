@@ -1,5 +1,5 @@
 # Atom
-Atom is a small language with value semantics, providing modern features with a focus on orthogonality, i.e., many small features that generalize and compose well.
+Atom is a small language with value semantics, providing modern features with a focus on orthogonality, i.e., many small features that generalize and compose well. A key aspect of Atom's syntax is that it has no keywords.
 
 ## Structure
 An example atom project would look like this:
@@ -27,28 +27,28 @@ An example atom project would look like this:
      └─ ⚙️ lib.dll
 ```
 
-By default, functions and types are internal to the package, i.e., visible to all other files in `src/` if not marked with the `private` keyword.
-Libraries are placed in `deps/`. In order for other packages to be visible, functions and types have to be marked with the `export` keyword. Libraries written in Atom are compiled together with the source code, while libraries provided as dynamic libraries are linked during compilation.
+By default, functions and types are internal to the package, i.e., visible to all other files in `src/` if not marked with the `-` prefix.
+Libraries (= other packages) are placed in `deps/`. In order for other packages to be visible, functions and types have to be marked with the `+` prefix. Libraries written in Atom are compiled together with the source code, while libraries provided as dynamic libraries are linked during compilation.
 
 ## Basics
 
 ### Structs & Tuples
-Structs are declared by listing all its fields. Struct fields always match the visibility of the struct itself:
+Structs are declared by listing all its fields. Visibility for types (and functions) is done by prefixing the name with `+` for types exported from the package and `-` for types private to the file where they are declared in, following UML notation. The default visibility is internal, so that declared types are visible to all other files in the same package. 
 
 ```atom
-InternalFields {
+InternalStruct {
   field Int
 }
 
-export PublicFields {
++ExportedStruct {
   field Int
 }
 
-private FileVisibleFields {
+-FileVisibleStruct {
   field Int
 }
 ```
-`export` and `private` are contextual keywords, meaning they can still be used as variable and function names.
+Struct fields always match the visibility of the struct itself, i.e., the struct fields are always accessible, there is no hidden state. 
 
 Structs can derive fields from other structs
 
@@ -82,6 +82,8 @@ main() {
 }
 ```
 
+```
+
 Since typing in Atom is structural, you can omit the type name
 ```atom
 main() {
@@ -95,6 +97,8 @@ main() {
   a := Pair(5, 7)
 }
 ```
+
+Named fields are accessed using dot notation `a.my_field` while tuple elements are accessed using index-notation `a(2)`.
 
 #### Variadic Tuples
 As "arrays", Atom supports variadic tuples and structs:
@@ -118,7 +122,7 @@ main() {
   b: (Int, Float) = (5, 27.0) 
 
   assert(a(2) == 17)
-  assert(b(2) == 27.0)
+  assert(b(1) == 27.0)
 }
 ```
 For now, to allow typechecking, the index on heterogenous tuples must be comptime known.
@@ -221,7 +225,7 @@ main() {
 }
 ```
 
-c) Struct *A* -> Tuple *B* **if** all fields of *B* are listed as the first fields of *A*
+d) Struct *A* -> Tuple *B* **if** all fields of *B* are listed as the first fields of *A*
 ```atom
 main() {
   a: (Float, Float) = Vec2(5.0, 7.0)
@@ -229,7 +233,7 @@ main() {
 }
 ```
 
-d) Fields can be converted to a variadic field of the same type -- but not vice versa
+e) Fields can be converted to a variadic field of the same type -- but not vice versa
 ```atom
 main() {
   a: (String, Int, Int) = ("Hello", 1, 2)
@@ -266,6 +270,10 @@ MaybeInt {
 
 Atom is rather strict with casing: Enum cases and type names always start with an upper case letter, variables and functions always start with a lower case letter.
 
+### Variables
+Variables can either be declared with inferred type `a := 5` or with explicit type annotation `a: Int = 5`.
+When no type is given, variables are automatically initialized with their zero values, like in *Go*: `a: MyStruct`. For enums, this is the first listed case with all associated values being set to their zero value, for structs this is the struct with all fields set to their zero value. For strings and variadic tuples, this is an empty string/empty tuple respectively. Unlike in Go, constructors cannot implicitly leave out fields that have not explicit default value.
+
 ### Control Flow
 By default, there are only two built-in control flow constructs: `match` and `loop`.
 
@@ -285,9 +293,21 @@ retry_until_success() -> Payload {
   response = send_request()
   match(response) {
     Success(Some(payload)) -> payload
-    Success(None) -> error("Expected payload on succesful response")
+    Success(None) -> error("Expected payload on successful response")
     Loading -> retry_until_success()
     Error(err) -> error("Request failed: \(err)")
+  }
+}
+```
+
+The discard `_` operator can be used as a wildcard:
+
+```atom
+is_success() -> Bool {
+  response = send_request()
+  match(response) {
+    Success(_) -> True
+    _ -> False
   }
 }
 ```
@@ -318,7 +338,7 @@ main() {
 }
 ```
 
-Additionally, loop can iterate over tuples, providing the current element as `$0`
+Additionally, loop can iterate over tuples, providing the current element as `$0`:
 
 ```atom
 main() {
@@ -340,16 +360,23 @@ There are the following operators:
 - Logical: `||`, `&&`, `!`
 - Collection: `++` concatenates tuples (and strings), e.g., `"Hello " ++ "World!"` or `(1, 2, 3) ++ (4, 5) == (1, 2, 3, 4, 5)`, variadic tuples and strings also support extending via `++=`
 
+TODO: Provide operator precedence table and associativity rules
+
 ### Builtin Types
 #### Primitives
-`Int`, `UInt` `Float`, `Rune`, `String`
+`Int`, `UInt` `Float`, `Rune`, `String`, `Type`
 
-`Int`, `UInt` and `Float` take a size in bits as optional [const parameter](#const-parameters), i.e., an `UInt(8)` would be a byte-long integer from 0..255. By default, all number types are 64 bits large. 
+`Int`, `UInt` and `Float` take a size in bits as optional [const parameter](#const-parameters), i.e., an `UInt(8)` would be a byte-long integer from 0..255. By default, all number types are 64 bits large.
+
+`Rune` represents a single Unicode codepoint, `String` is a UTF8 encoded string. 
+
+`Type` is a special meta-type constructed during compilation as an enum of all types present in the program. It can be accessed via the type function: `my_var.type()` or `type(my_var)`.
 
 #### Standard Library Types
 `Bool` (implemented as an enum, but builtin support in that it is returned by the comparison operators and supports logical operators),
 `Result`, `Option`
-`Void`
+`Void`,
+
 
 `Void` is simply an empty type that supports all operators with the following results:
 - `<arithmetic operator>`: `Void`
@@ -374,7 +401,7 @@ main() {
 
 ### Functions
 Functions are declared using a name, a parameter list and the return type (if it has some).
-Their last expression is the return value:
+Their last expression implicitly is the return value:
 
 ```atom
 double(a Int) Int {
@@ -409,7 +436,7 @@ Functions allow for variadic arguments:
 ```atom
 sum(values Int*) Int {
   res := 0
-  #loop(values) {
+  loop(values) {
     res += $0
   }
 }
@@ -436,7 +463,7 @@ floatify(items Int*, func (Int) {Float}) Float* {
 ### Uniform Calling syntax
 Methods can use the dot-notation on their first argument, this even works for `loop` and `match`:
 
-```main
+```atom
 loop(items) {
   // ...
 }
@@ -503,9 +530,6 @@ assert(foo + 2 == 7)
      └─ ✔️ "Basic math"   
 ```
 
-### Zero values
-Variables are automatically initialized with their zero values, like in *Go*. Unlike in Go, however, constructors cannot implicitly leave out fields that have not explicit default value.
-
 ### Comptime Evaluation
 Prefixing any call with `#` evaluates it at compile-time. This does not cause closures to evaluate, so that for `match` and `loop` this means unfolding the match arm / unrolling the loop but not evaluating the body.
 
@@ -561,5 +585,28 @@ Container {
 "Init container" {
   c := Container()  
 }
+```
+
+Const arguments do not have to be type parameters but can have a runtime type too:
+
+```atom
+Matrix(shape (Int, Int)) {
+  fields (Int*(shape(0) * shape(1)))    
+}
+```
+
+### Namespaces and Imports
+Functions and types from other packages (in the deps folder) are available using the namespace operator: `my_matrix := matrix::Matrix(2, 3; (1, 2, 3), (4, 5, 6))`, `my_matrix.matrix::transpose()`, `matrix::transpose(my_matrix)`
+
+alternatively, a namespace can be imported by listing it in the relevant scope:
+
+```atom
+// all items from the package available in the whole file
+matrix::*
+
+run_physics() {
+  // specific items from the package available inside the function
+  physics::(force, kinematics)
+}  
 ```
 
