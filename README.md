@@ -558,7 +558,7 @@ assert(foo + 2 == 7)
  └─ 📄 filename.test.atom
      ├─ ✔️ *toplevel*
      ├─ ✔️ *anonymous*
-     ├─ ❌ "Weird test" -- Assertion failed: "Welp..." (expected: `False`, got: `True`)
+     ├─ ❌ "Weird test" -- Assertion failed: "Welp..."
      └─ ✔️ "Basic math"   
 ```
 
