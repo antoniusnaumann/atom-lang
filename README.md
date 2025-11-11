@@ -358,6 +358,7 @@ There are the following operators:
 - Arithmetic: `+`, `-`, `*`, `/`, `%` along with the corresponding assignment operators
 - Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - Logical: `||`, `&&`, `!`
+- Bitwise: `<<`, `>>`, `|`, `&` 
 - Collection: `++` concatenates tuples (and strings), e.g., `"Hello " ++ "World!"` or `(1, 2, 3) ++ (4, 5) == (1, 2, 3, 4, 5)`, variadic tuples and strings also support extending via `++=`
 
 TODO: Provide operator precedence table and associativity rules
@@ -382,8 +383,8 @@ TODO: Provide operator precedence table and associativity rules
 - `<arithmetic operator>`: `Void`
 - `==`, `<=`, `>=`: `True`
 - `!=`, `<`, `>`: `False`
-- `||`: `False` (while admittedly a bit awkward at first glance, this is so that [derived operators on structs](#canonical-operator-implementation) works as expected when void fields are present)
-- `&&`: `True`
+- `|`: `Void` (while admittedly a bit awkward at first glance, this is so that [derived operators on structs](#canonical-operator-implementation) still works when void fields are present)
+- `&`: `Void`
 - `!`: `Void`
 - `++`: `Void`
 
@@ -398,6 +399,8 @@ main() {
   assert(v.y == 8)
 }  
 ```
+
+An exception to this are the short-circuiting logic operators (`&&` and `||`) which only work on booleans. Note that the bitwise operators `|` and `&` also work on booleans as non-shortcircuiting logic operators.
 
 ### Functions
 Functions are declared using a name, a parameter list and the return type (if it has some).
