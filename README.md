@@ -365,6 +365,21 @@ main() {
 }
 ```
 
+Match and loop are expressions: While `match` evaluates to the expression in the matching arm, `loop` collects the iteration results:
+
+```
+main() {
+  values := (1, 2, 4, 13)
+
+  doubled := loop(values) {
+    print("Looping...")
+    $0 * 2
+  }
+
+  assert(doubled, (2, 4, 8, 26))
+}  
+```
+
 ### Operators
 There are the following operators:
 - Arithmetic: `+`, `-`, `*`, `/`, `%` along with the corresponding assignment operators
@@ -400,7 +415,7 @@ TODO: Provide operator precedence table and associativity rules
 - `!`: `Void`
 - `++`: `Void`
 
-The following types are all the same type as `Void` per structural typing `Empty {}`, `SomeOtherName {}`,  `()` 
+The following types are all the same type as `Void` per structural typing `Empty()`, `SomeOtherName()`,  `()` 
 ### Canonical Operator Implementation
 While Atom has no operator overloading, operators are still automatically supported on structs if all fields individually support the operator. If so, the operator is implemented by applying it field-wise.
 
@@ -454,6 +469,8 @@ sum(values Int*) Int {
   loop(values) {
     res += $0
   }
+
+  res
 }
 
 main() {
@@ -518,18 +535,18 @@ Test files allow for two additional syntactic constructs: top-level code and nam
 foo := 5
 assert(foo + 2 == 7)
 
-// This is a named test
-"Basic math" {
-  assert(2 + 3 == 5)
+// This is an anonymous test
+{
+  assert("Hello " ++ "World!" == "Hello World!")
 }
 
+// This is a named test
 "Weird test" {
   assert(1 == 0, "Welp...")
 }
 
-// This is an anonymous test
-{
-  assert("Hello " ++ "World!" == "Hello World!")
+"Basic math" {
+  assert(2 + 3 == 5)
 }
 ```
 
@@ -549,7 +566,7 @@ assert(foo + 2 == 7)
 Prefixing any call with `#` evaluates it at compile-time. This does not cause closures to evaluate, so that for `match` and `loop` this means unfolding the match arm / unrolling the loop but not evaluating the body.
 
 ```atom
-add(a Int, b Int) {
+add(a Int, b Int) Int {
   a + b
 }
 

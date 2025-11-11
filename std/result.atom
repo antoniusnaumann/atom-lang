@@ -29,7 +29,7 @@
     }
 }
 
-+or(op Option(t), other Option(t)) t {
++or(op Option(t), other Option(t)) Option(t) {
     match(op) {
         Some(_) -> op
         None -> other 
