@@ -30,6 +30,8 @@ An example atom project would look like this:
 By default, functions and types are internal to the package, i.e., visible to all other files in `src/` if not marked with the `-` prefix.
 Libraries (= other packages) are placed in `deps/`. In order for other packages to be visible, functions and types have to be marked with the `+` prefix. Libraries written in Atom are compiled together with the source code, while libraries provided as dynamic libraries are linked during compilation.
 
+Additionally, single file Atom programs without dependencies can be run with `atom <FILE>`.
+
 ## Basics
 
 ### Structs & Tuples
