@@ -5,9 +5,9 @@ main(n Int) {
 /// Calculates the nth fibonacci number
 fib(nth Int) Int {
     match(nth) {
-        0 -> 0
-        1 -> 1
-        _ -> fib(nth - 1) + fib(nth - 2)
+        0 { 0 }
+        1 { 1 }
+        _ { fib(nth - 1) + fib(nth - 2) }
     }
 }
 

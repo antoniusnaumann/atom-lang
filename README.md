@@ -292,8 +292,8 @@ By default, there are only two built-in control flow constructs: `match` and `lo
 ```atom
 main() {
   match(1 == 1) {
-    True -> print("This is correct!")
-    False -> error("This should have been true...")
+    True { print("This is correct!") }
+    False { error("This should have been true...") }
   }
 }
 ```
@@ -301,13 +301,13 @@ main() {
 Match allows nested patterns as well:
 
 ```atom
-retry_until_success() -> Payload {
+retry_until_success() Payload {
   response = send_request()
   match(response) {
-    Success(Some(payload)) -> payload
-    Success(None) -> error("Expected payload on successful response")
-    Loading -> retry_until_success()
-    Error(err) -> error("Request failed: \(err)")
+    Success(Some(payload)) { payload }
+    Success(None) { error("Expected payload on successful response") }
+    Loading { retry_until_success() }
+    Error(err) { error("Request failed: \(err)") }
   }
 }
 ```
@@ -315,11 +315,11 @@ retry_until_success() -> Payload {
 The discard `_` operator can be used as a wildcard:
 
 ```atom
-is_success() -> Bool {
+is_success() Bool {
   response = send_request()
   match(response) {
-    Success(_) -> True
-    _ -> False
+    Success(_) { True }
+    _ { False }
   }
 }
 ```
@@ -505,8 +505,8 @@ items.loop() {
 }
 
 match(maybe) {
-  Some(_) -> //...
-  None -> // ...
+  Some(_) { }
+  None { }
 }
 // can be written as:
 maybe.match() {
@@ -583,8 +583,8 @@ main() {
   }
 
   #match(number) {
-    8 -> add(8, other)
-    _ -> #error("The number should have been 8 at compile time")
+    8 { add(8, other) }
+    _ { #error("The number should have been 8 at compile time") }
   }
 }
 ```

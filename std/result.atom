@@ -10,36 +10,36 @@
 
 +unwrap(op Option(t), msg String = "Unwrapped an empty optional value") t {
     match(op) {
-        Some(inner) -> inner
-        None -> error(msg)
+        Some(inner) { inner }
+        None { error(msg) }
     }
 }
 
 +unwrap(res Result(t, e), msg String = "Unwrapped an erroneous result value") t {
     match(res) {
-        Ok(inner) -> inner
-        Err(_) -> error(msg)
+        Ok(inner) { inner }
+        Err(_) { error(msg) }
     }
 }
 
 +or(op Option(t), default t) t {
     match(op) {
-        Some(inner) -> inner
-        None -> default
+        Some(inner) { inner }
+        None { default }
     }
 }
 
 +or(op Option(t), other Option(t)) Option(t) {
     match(op) {
-        Some(_) -> op
-        None -> other 
+        Some(_) { op }
+        None { other }
     }
 }
 
 +as_option(res Result(t, e)) Option(t) {
     match(res) {
-        Ok(inner) -> Some(inner)
-        Err(_) -> None
+        Ok(inner) { Some(inner) }
+        Err(_) { None }
     }
 }
 

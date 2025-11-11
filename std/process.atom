@@ -1,0 +1,21 @@
++exit(status Int) {
+    cstdlib::exit(status)
+}
+
++assert(condition Bool) {
+    match(condition) {
+        True { }
+        False {
+            exit(1)
+        }
+    }
+}
+
++assert(condition Bool, msg String) {
+    match(condition) {
+        True { }
+        False {
+            exit(1)
+        }
+    }   
+}
