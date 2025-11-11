@@ -38,46 +38,56 @@ Additionally, single file Atom programs without dependencies can be run with `at
 Structs are declared by listing all its fields. Visibility for types (and functions) is done by prefixing the name with `+` for types exported from the package and `-` for types private to the file where they are declared in, following UML notation. The default visibility is internal, so that declared types are visible to all other files in the same package. 
 
 ```atom
-InternalStruct {
+InternalStruct (
   field Int
-}
+)
 
-+ExportedStruct {
++ExportedStruct (
   field Int
-}
+)
 
--FileVisibleStruct {
+-FileVisibleStruct (
   field Int
-}
+)
 ```
 Struct fields always match the visibility of the struct itself, i.e., the struct fields are always accessible, there is no hidden state. 
 
 Structs can derive fields from other structs
 
 ```atom
-Vec2 {
+Vec2 (
   x Float
   y Float
-}
+)
 
-Vec3 {
+Vec3 (
   ..Vec2
   z Float
-}
+)
 
-Vec2D {
+Vec2D (
   ..Vec2
   x Float // error: Redeclaration of struct field
-}
+)
+```
+
+In declaration lists, line breaks and commas are interchangeable:
+
+`Vec2(x Float, y Float)` is the same as
+```
+Vec2 (
+  x Float
+  y Float
+)
 ```
 
 #### Constructors
 Constructors use the type name and field names
 ```atom
-Pair {
+Pair (
   first Int
   second Int
-}
+)
 
 main() {
   a := Pair(first: 5, second: 7)
@@ -106,10 +116,10 @@ Named fields are accessed using dot notation `a.my_field` while tuple elements a
 As "arrays", Atom supports variadic tuples and structs:
 
 ```atom
-Values {
+Values (
   title String
   values Int*
-}
+)
 
 main {
   a: Values = ("Prices", 14, 10, 5)
@@ -144,15 +154,15 @@ Where unambigous, the parenthesese on tuples can be left out, both for the type 
 
 ```
 // TYPE DECLARATION
-Inventory {
+Inventory (
   player Player
   items (Item*)
-}
+)
 // can be written as:
-Inventory {
+Inventory (
   player Player
   items Item*
-}
+)
 
 // CONSTRUCTORS
 inv := Inventory(p1, (sword, helmet, potato))
@@ -195,16 +205,16 @@ Structs can be converted into each other using the following rules:
 
 a) Struct *A* -> Struct *B* **if** all fields of *B* are present in *A* (and types are convertible)
 ```atom
-Vec2 {
+Vec2 (
   x Float
   y Float
-}
+)
 
-Vec3 {
+Vec3 (
   x Float
   y Float
   z Float
-}
+)
 
 main() {
   a: Vec2 = Vec3(1.0, 2.0, 3.0) 
@@ -247,12 +257,12 @@ main() {
 
 Nominal types can be emulated by adding a void field
 ```atom
-Cat {
+Cat (
   name String
   age Int
 
   cat Void
-}
+)
 
 main() {
   meow: Cat = (name: "Meow", age: 3) // error: Cannot convert (name: String, age: Int) to (name: String, age: Int, **cat: Void**)   
@@ -264,10 +274,10 @@ main() {
 Enums are declared by listing all cases and their associated values if they have some:
 
 ```atom
-MaybeInt {
+MaybeInt (
   Some(Int)
   None
-}
+)
 ```
 
 Atom is rather strict with casing: Enum cases and type names always start with an upper case letter, variables and functions always start with a lower case letter.
@@ -421,7 +431,7 @@ print2(msg String) {
 
 Visibility modifiers are added in front like for types:
 ```atom
-export len(of String) Int {
++len(of String) Int {
   // ...
 }
 ```
@@ -565,11 +575,9 @@ main() {
 
 ### Const Parameters
 Types and functions allow for const parameters.
-Const parameters are specified in a function or constructor after the non-const arguments.
+Const parameters are specified in a function or constructor before the non-const arguments, separated by semicolon.
 ```atom
-Container(t Type) {
-  item t 
-}
+Container(t Type; item t) // by default, Type is assumed for const parameters
 
 get(t Type; c Container(t)) t {
   c.item
@@ -583,21 +591,31 @@ get(t Type; c Container(t)) t {
 
 By convention, lower case letters in type position are implicitly declared as constants. If possible, constants (like type parameters) are inferred by the compiler.
 ```atom
-Container {
+Container (
   item t
-}
+)
 
 "Init container" {
   c := Container()  
 }
 ```
 
-Const arguments do not have to be type parameters but can have a runtime type too:
+Const parameters do not have to be type parameters but can have a runtime type too:
 
 ```atom
-Matrix(shape (Int, Int)) {
+Matrix(
+  shape (Int, Int);
   fields (Int*(shape(0) * shape(1)))    
-}
+)
+```
+
+Const parameters can have a default value. The standard library makes use of this by specifying String as the default error type:
+
+```atom
++Result(t, e = String;
+    Ok(t)
+    Err(e)
+)
 ```
 
 ### Namespaces and Imports
@@ -615,3 +633,17 @@ run_physics() {
 }  
 ```
 
+The standard library is always imported and in-scope. In case of a naming conflict, the local module gets precedence:
+
+```atom
+// This shadows the Result type that is imported by default from std
+Result (
+  Ok(t)
+  Err(MyErrorType)
+)
+
+// This function circumvents the shadowing by mentioning the std namespace directly
+foo(res std::Result) {}
+```
+
+Additionally to the Atom standard library, libc can be called from their respective C++ namespaces, e.g., `cstdio::printf()`, `cmath::abs()`.

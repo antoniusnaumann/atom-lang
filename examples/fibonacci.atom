@@ -1,16 +1,22 @@
 main(n Int) {
-  fib(n).print()
+    fib(n).print()
 }
 
-
+/// Calculates the nth fibonacci number
 fib(nth Int) Int {
-  match(nth) {
-    0 -> 1
-    1 -> 1
-    _ -> fib(nth - 1) + fib(nth - 2)
-  }
+    match(nth) {
+        0 -> 1
+        1 -> 1
+        _ -> fib(nth - 1) + fib(nth - 2)
+    }
 }
 
-
-
-
+"First five fibonacci numbers match" {
+    assert(fib(0) == 1)
+    assert(fib(1) == 1)
+    assert(fib(2) == 2)
+    assert(fib(3) == 3)
+    assert(fib(4) == 5)
+    assert(fib(5) == 8)
+    assert(fib(6) == 13)
+}
