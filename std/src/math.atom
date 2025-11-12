@@ -1,0 +1,8 @@
++cos(x Float) Float {
+    // Note that Atom's Float is equivalent to C's double, so we can just pass this directly
+    x.cmath::cos()
+}
+
++cos(x Float(32)) Float(32) {
+    x.cmath::cosf()
+}
