@@ -1,0 +1,3 @@
+[submodule "treesitter-atom"]
+	path = treesitter-atom
+	url = ./treesitter-atom
