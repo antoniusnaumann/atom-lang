@@ -21,32 +21,6 @@
     }   
 }
 
-+Level (
-    Trace
-    Debug
-    Info
-    Warn
-    Error
-    Fatal
-)
-
-// TODO: Get the default for this from the debug build, debug builds should specify Debug, production builds Info
-// TODO: Explain config consts in README.md
-LOG_LEVEL = Info
-
-/// Prints to stdout, except for levels above error which print to stderr
-/// Messages below the specified LOG_LEVEL are not printed
-+print(
-    msg String
-    level Level = Info
-    delimiter Rune = '\n'
-) {
-    match(level >= LOG_LEVEL) {
-        True { cstdlib::printf(as_cstring(msg ++ delimiter) }
-        False {}
-    }
-}
-
 /// Prints the error message and quits
 +error(msg String) {
     print(msg, Fatal)

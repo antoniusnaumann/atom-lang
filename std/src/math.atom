@@ -1,8 +1,374 @@
+// Trigonometric functions
+
 +cos(x Float) Float {
-    // Note that Atom's Float is equivalent to C's double, so we can just pass this directly
     x.cmath::cos()
 }
 
 +cos(x Float(32)) Float(32) {
     x.cmath::cosf()
+}
+
++sin(x Float) Float {
+    x.cmath::sin()
+}
+
++sin(x Float(32)) Float(32) {
+    x.cmath::sinf()
+}
+
++tan(x Float) Float {
+    x.cmath::tan()
+}
+
++tan(x Float(32)) Float(32) {
+    x.cmath::tanf()
+}
+
++acos(x Float) Float {
+    x.cmath::acos()
+}
+
++acos(x Float(32)) Float(32) {
+    x.cmath::acosf()
+}
+
++asin(x Float) Float {
+    x.cmath::asin()
+}
+
++asin(x Float(32)) Float(32) {
+    x.cmath::asinf()
+}
+
++atan(x Float) Float {
+    x.cmath::atan()
+}
+
++atan(x Float(32)) Float(32) {
+    x.cmath::atanf()
+}
+
++atan2(y Float, x Float) Float {
+    cmath::atan2(y, x)
+}
+
++atan2(y Float(32), x Float(32)) Float(32) {
+    cmath::atan2f(y, x)
+}
+
+// Hyperbolic functions
+
++cosh(x Float) Float {
+    x.cmath::cosh()
+}
+
++cosh(x Float(32)) Float(32) {
+    x.cmath::coshf()
+}
+
++sinh(x Float) Float {
+    x.cmath::sinh()
+}
+
++sinh(x Float(32)) Float(32) {
+    x.cmath::sinhf()
+}
+
++tanh(x Float) Float {
+    x.cmath::tanh()
+}
+
++tanh(x Float(32)) Float(32) {
+    x.cmath::tanhf()
+}
+
++acosh(x Float) Float {
+    x.cmath::acosh()
+}
+
++acosh(x Float(32)) Float(32) {
+    x.cmath::acoshf()
+}
+
++asinh(x Float) Float {
+    x.cmath::asinh()
+}
+
++asinh(x Float(32)) Float(32) {
+    x.cmath::asinhf()
+}
+
++atanh(x Float) Float {
+    x.cmath::atanh()
+}
+
++atanh(x Float(32)) Float(32) {
+    x.cmath::atanhf()
+}
+
+// Exponential and logarithmic functions
+
++exp(x Float) Float {
+    x.cmath::exp()
+}
+
++exp(x Float(32)) Float(32) {
+    x.cmath::expf()
+}
+
++exp2(x Float) Float {
+    x.cmath::exp2()
+}
+
++exp2(x Float(32)) Float(32) {
+    x.cmath::exp2f()
+}
+
++expm1(x Float) Float {
+    x.cmath::expm1()
+}
+
++expm1(x Float(32)) Float(32) {
+    x.cmath::expm1f()
+}
+
++ln(x Float) Float {
+    x.cmath::log()
+}
+
++ln(x Float(32)) Float(32) {
+    x.cmath::logf()
+}
+
++lg(x Float) Float {
+    x.cmath::log10()
+}
+
++lg(x Float(32)) Float(32) {
+    x.cmath::log10f()
+}
+
++lb(x Float) Float {
+    x.cmath::log2()
+}
+
++lb(x Float(32)) Float(32) {
+    x.cmath::log2f()
+}
+
+// Power functions
+
++pow(base Float, exponent Float) Float {
+    cmath::pow(base, exponent)
+}
+
++pow(base Float(32), exponent Float(32)) Float(32) {
+    cmath::powf(base, exponent)
+}
+
++sqrt(x Float) Float {
+    x.cmath::sqrt()
+}
+
++sqrt(x Float(32)) Float(32) {
+    x.cmath::sqrtf()
+}
+
++cbrt(x Float) Float {
+    x.cmath::cbrt()
+}
+
++cbrt(x Float(32)) Float(32) {
+    x.cmath::cbrtf()
+}
+
++hypot(x Float, y Float) Float {
+    cmath::hypot(x, y)
+}
+
++hypot(x Float(32), y Float(32)) Float(32) {
+    cmath::hypotf(x, y)
+}
+
+// Rounding and remainder functions
+
++ceil(x Float) Float {
+    x.cmath::ceil()
+}
+
++ceil(x Float(32)) Float(32) {
+    x.cmath::ceilf()
+}
+
++floor(x Float) Float {
+    x.cmath::floor()
+}
+
++floor(x Float(32)) Float(32) {
+    x.cmath::floorf()
+}
+
++trunc(x Float) Float {
+    x.cmath::trunc()
+}
+
++trunc(x Float(32)) Float(32) {
+    x.cmath::truncf()
+}
+
++round(x Float) Float {
+    x.cmath::round()
+}
+
++round(x Float(32)) Float(32) {
+    x.cmath::roundf()
+}
+
++fmod(x Float, y Float) Float {
+    cmath::fmod(x, y)
+}
+
++fmod(x Float(32), y Float(32)) Float(32) {
+    cmath::fmodf(x, y)
+}
+
++remainder(x Float, y Float) Float {
+    cmath::remainder(x, y)
+}
+
++remainder(x Float(32), y Float(32)) Float(32) {
+    cmath::remainderf(x, y)
+}
+
+// Absolute value and sign functions
+
++abs(x Float) Float {
+    x.cmath::fabs()
+}
+
++abs(x Float(32)) Float(32) {
+    x.cmath::fabsf()
+}
+
+// TODO: this should return a UInt of half the size
++abs(x Int) Int {
+    x.cstdlib::abs()
+}
+
++copysign(x Float, y Float) Float {
+    cmath::copysign(x, y)
+}
+
++copysign(x Float(32), y Float(32)) Float(32) {
+    cmath::copysignf(x, y)
+}
+
+// Min/max functions
+
++min(x Float, y Float) Float {
+    cmath::fmin(x, y)
+}
+
++min(x Float(32), y Float(32)) Float(32) {
+    cmath::fminf(x, y)
+}
+
++max(x Float, y Float) Float {
+    cmath::fmax(x, y)
+}
+
++max(x Float(32), y Float(32)) Float(32) {
+    cmath::fmaxf(x, y)
+}
+
+// Classification functions
+
++isnan(x Float) Bool {
+    cmath::isnan(x).match() {
+        0 { False }
+        _ { True }
+    }
+}
+
++isnan(x Float(32)) Bool {
+    cmath::isnan(x).match() {
+        0 { False }
+        _ { True }
+    }
+}
+
++isinf(x Float) Bool {
+    cmath::isinf(x).match() {
+        0 { False }
+        _ { True }
+    }
+}
+
++isinf(x Float(32)) Bool {
+    cmath::isinf(x).match() {
+        0 { False }
+        _ { True }
+    }
+}
+
++isfinite(x Float) Bool {
+    cmath::isfinite(x).match() {
+        0 { False }
+        _ { True }
+    }
+}
+
++isfinite(x Float(32)) Bool {
+    cmath::isfinite(x).match() {
+        0 { False }
+        _ { True }
+    }
+}
+
+// Error and gamma functions
+
++erf(x Float) Float {
+    x.cmath::erf()
+}
+
++erf(x Float(32)) Float(32) {
+    x.cmath::erff()
+}
+
++erfc(x Float) Float {
+    x.cmath::erfc()
+}
+
++erfc(x Float(32)) Float(32) {
+    x.cmath::erfcf()
+}
+
++tgamma(x Float) Float {
+    x.cmath::tgamma()
+}
+
++tgamma(x Float(32)) Float(32) {
+    x.cmath::tgammaf()
+}
+
++lgamma(x Float) Float {
+    x.cmath::lgamma()
+}
+
++lgamma(x Float(32)) Float(32) {
+    x.cmath::lgammaf()
+}
+
+// Constants (using comptime evaluation)
+
++pi() Float {
+    #(4.0 * atan(1.0))
+}
+
++e() Float {
+    #exp(1.0)
+}
+
++tau() Float {
+    #(2.0 * pi())
 }

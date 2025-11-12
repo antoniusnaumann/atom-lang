@@ -1,0 +1,27 @@
++LogLevel (
+    Trace
+    Debug
+    Info
+    Warn
+    Error
+    Fatal
+)
+
+// TODO: Get the default for this from the debug build, debug builds should specify Debug, production builds Info
+// TODO: Explain overridable const values in README.md
+LOG_LEVEL = Info
+
+/// Prints to stdout, except for levels above error which print to stderr
+/// Messages below the specified LOG_LEVEL are not printed
++print(
+    msg String
+    level LogLevel = Info
+    delimiter Rune = '\n'
+) {
+    // TODO: Explain enum comparison in README
+    match(level >= LOG_LEVEL) {
+        True { cstdlib::printf(as_cstring(msg ++ delimiter) }
+        False {}
+    }
+}
+
