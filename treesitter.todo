@@ -1,0 +1,61 @@
+# Tree-sitter Grammar Implementation Status for Atom Language
+
+## Completed Features ✅
+
+### Core Language Constructs
+- [x] Basic tokens (identifiers, numbers, strings, operators, punctuation)
+- [x] Type declarations (structs, enums, tuples) with visibility modifiers
+- [x] Function declarations with parameters, return types, and visibility
+- [x] Expressions (literals, operators, function calls, struct access)
+- [x] Control flow (match expressions, loop expressions)
+- [x] Variable declarations and assignments
+- [x] String interpolation and comments
+
+### Advanced Features
+- [x] Const parameters for functions and generic types
+- [x] Namespaces and import statements (:: operator)
+- [x] Comptime evaluation (# prefix)
+- [x] Generic types and type parameters
+- [x] Variadic types (* and +)
+- [x] Sized types (Int(64), Float(32))
+- [x] Struct inheritance (..OtherStruct)
+- [x] Pattern matching with wildcards
+- [x] Test blocks and named tests
+- [x] Assignment operators (+=, -=, etc.)
+- [x] Binary and unary operators
+- [x] Closures and lambda expressions
+
+### Tree-sitter Integration
+- [x] Comprehensive test suite with corpus tests
+- [x] Parser generation and compilation
+- [x] Helix editor highlight rules
+- [x] Proper precedence handling and conflict resolution
+
+## Known Limitations ⚠️
+
+### Grammar Ambiguities
+- Struct/enum constructors vs function calls: `Type(args)` can be ambiguous without semantic analysis
+- Complex nested expressions may have multiple valid parses
+- Some edge cases in operator precedence
+
+### Missing Features
+- Full comptime evaluation semantics (currently just syntax)
+- Runtime library calls (cstdio, cmath namespaces)
+- Advanced pattern matching features
+- Error handling and recovery
+
+## Test Coverage
+- Basic function definitions and calls
+- Struct and enum declarations
+- Variable declarations and assignments
+- Control flow constructs
+- Expression parsing
+- Import statements
+- Generic types
+- Pattern matching
+
+## Future Improvements
+- Add more comprehensive test cases
+- Optimize grammar for better performance
+- Add support for additional editor integrations
+- Implement incremental parsing optimizations
