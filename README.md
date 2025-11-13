@@ -383,17 +383,35 @@ There are the following operators:
 - Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - Logical: `||`, `&&`, `!`
 - Bitwise: `<<`, `>>`, `|`, `&` 
-- Collection: `++` concatenates tuples (and strings), e.g., `"Hello " ++ "World!"` or `(1, 2, 3) ++ (4, 5) == (1, 2, 3, 4, 5)`, variadic tuples and strings also support extending via `++=`
+- Collection: `++` concatenates tuples (and strings), e.g., `"Hello " ++ "World!"` or `(1, 2, 3) ++ (4, 5) == (1, 2, 3, 4, 5)`, variadic tuples and strings also support extending via `++=`. The `++` operator can also concatenate a collection and a matching element such as `"Hello World" ++ '+'` or `(1, 2, 3) ++ 4`
 
-TODO: Provide operator precedence table and associativity rules
+#### Operator Precedence and Associativity
+
+All binary operators are left-associative. Operators are listed from lowest to highest precedence:
+
+| Precedence | Operators | Description |
+|------------|-----------|-------------|
+| 1 | `++` | Concatenation |
+| 2 | `\|\|` | Logical OR |
+| 3 | `&&` | Logical AND |
+| 4 | `==`, `!=` | Equality |
+| 5 | `<`, `>`, `<=`, `>=` | Comparison |
+| 6 | `\|` | Bitwise OR |
+| 7 | `&` | Bitwise AND |
+| 8 | `<<`, `>>` | Bitwise shift |
+| 9 | `+`, `-` | Addition, Subtraction |
+| 10 | `*`, `/`, `%` | Multiplication, Division, Modulo |
+| 11 | `-`, `!`, `~` | Unary minus, logical NOT, bitwise NOT |
+
+Higher precedence means the operator binds more tightly. For example, `a + b * c` is parsed as `a + (b * c)` because `*` (precedence 10) binds tighter than `+` (precedence 9).
 
 ### Builtin Types
 #### Primitives
-`Int`, `UInt` `Float`, `Rune`, `String`, `Type`
+`Int`, `UInt` `Float`, `Rune`, `Type`
 
 `Int`, `UInt` and `Float` take a size in bits as optional [const parameter](#const-parameters), i.e., an `UInt(8)` would be a byte-long integer from 0..255. By default, all number types are 64 bits large.
 
-`Rune` represents a single Unicode codepoint, `String` is a UTF8 encoded string. 
+`Rune` represents a single Unicode codepoint 
 
 `Type` is a special meta-type constructed during compilation as an enum of all types present in the program. It can be accessed via the type function: `my_var.type()` or `type(my_var)`.
 
@@ -401,8 +419,8 @@ TODO: Provide operator precedence table and associativity rules
 `Bool` (implemented as an enum, but builtin support in that it is returned by the comparison operators and supports logical operators),
 `Result`, `Option`
 `Void`,
-
-
+`String` (implemented as a variadic tuple of bytes, but builtin support for creating it via string literals, that are saved as UTF8 encoded)
+ 
 `Void` is simply an empty type that supports all operators with the following results:
 - `<arithmetic operator>`: `Void`
 - `==`, `<=`, `>=`: `True`
