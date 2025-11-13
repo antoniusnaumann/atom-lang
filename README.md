@@ -664,3 +664,8 @@ foo(res std::Result) {}
 ```
 
 Additionally to the Atom standard library, libc can be called from their respective C++ namespaces, e.g., `cstdio::printf()`, `cmath::abs()`.
+
+### Casing
+The following casing rules are expected (and enforced) by the compiler:
+- Uppercase first letter: Type identifiers (structs and enums), enum variants
+- Lowercase first letter: function names, module names, parameters, variables, const parameters (such as generic type parameters), struct fields

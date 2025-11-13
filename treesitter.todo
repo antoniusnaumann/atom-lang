@@ -30,13 +30,24 @@
 - [x] Parser generation and compilation
 - [x] Helix editor highlight rules
 - [x] Proper precedence handling and conflict resolution
+- [x] Casing-aware identifiers (type_identifier vs value_identifier)
 
 ## Known Limitations ⚠️
 
+### Casing Enforcement
+The grammar enforces Atom's strict casing rules through separate identifier tokens:
+- **Uppercase first letter** (`type_identifier`): Type names (structs, enums), enum variants
+- **Lowercase first letter** (`value_identifier`): Function names, module names, parameters, variables, const parameters, struct fields
+- **Type parameters** (`type_parameter_ref`): Lowercase identifiers in type position
+
+This eliminates the following ambiguities that would exist in case-insensitive languages:
+- ✅ Type constructors vs function calls: `Type(args)` vs `function(args)` is unambiguous
+- ✅ Enum variants vs variables in patterns: `Some(x)` vs `variable` is unambiguous  
+- ✅ Type parameters vs type names: `t` (lowercase type param) vs `Type` (uppercase type name) is unambiguous
+
 ### Grammar Ambiguities
-- Struct/enum constructors vs function calls: `Type(args)` can be ambiguous without semantic analysis
-- Complex nested expressions may have multiple valid parses
-- Some edge cases in operator precedence
+- Complex nested expressions may have multiple valid parses in edge cases
+- Some edge cases in operator precedence may require additional precedence rules
 
 ### Missing Features
 - Full comptime evaluation semantics (currently just syntax)
