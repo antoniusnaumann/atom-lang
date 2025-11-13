@@ -1,0 +1,104 @@
+// Array/Collection utilities for variadic types
+
+/// Get the length of an array
++len(arr t*) Int {
+    count := 0
+    loop(arr) {
+        count += 1
+    }
+    count
+}
+
+/// Check if array is empty
++is_empty(arr t*) Bool {
+    len(arr) == 0
+}
+
+/// Get the first element of an array
++first(arr t*) Option(t) {
+    match(is_empty(arr)) {
+        True { None }
+        False { Some(arr(0)) }
+    }
+}
+
+/// Get the last element of an array
++last(arr t*) Option(t) {
+    match(is_empty(arr)) {
+        True { None }
+        False { Some(arr(len(arr) - 1)) }
+    }
+}
+
+/// Check if array contains an item
++contains(arr t*, item t) Bool {
+    found := False
+    loop(arr) {
+        match($0 == item) {
+            True { found = True }
+            False { }
+        }
+    }
+    found
+}
+
+/// Reverse an array
++reverse(arr t*) t* {
+    result: t*
+    i := len(arr) - 1
+    loop(i >= 0) {
+        result ++= arr(i)
+        i -= 1
+    }
+    result
+}
+
+/// Get element at index, returning None if out of bounds
++get(arr t*, index Int) Option(t) {
+    match(index >= 0 && index < len(arr)) {
+        True { Some(arr(index)) }
+        False { None }
+    }
+}
+
+/// Take the first n elements
++take(arr t*, n Int) t* {
+    result: t*
+    count := 0
+    loop(arr) {
+        match(count < n) {
+            True {
+                result ++= $0
+                count += 1
+            }
+            False { }
+        }
+    }
+    result
+}
+
+/// Skip the first n elements
++skip(arr t*, n Int) t* {
+    result: t*
+    count := 0
+    loop(arr) {
+        match(count >= n) {
+            True { result ++= $0 }
+            False { }
+        }
+        count += 1
+    }
+    result
+}
+
+/// Flatten an array of arrays
++flatten(arr t**) t* {
+    result: t*
+    loop(arr) {
+        inner := $0
+        loop(inner) {
+            result ++= $0
+        }
+    }
+    result
+}

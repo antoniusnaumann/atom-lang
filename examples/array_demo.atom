@@ -1,0 +1,35 @@
+// Example demonstrating array utilities
+
+main() {
+    // Test basic array operations
+    numbers := (1, 2, 3, 4, 5)
+    
+    // Length
+    numbers.len().print()  // Should print 5
+    
+    // First and last
+    numbers.first().unwrap().print()  // Should print 1
+    numbers.last().unwrap().print()   // Should print 5
+    
+    // Contains
+    numbers.contains(3).print()     // Should print True
+    numbers.contains(10).print()    // Should print False
+    
+    // Reverse
+    reversed := numbers.reverse()
+    loop(reversed) {
+        $0.print()  // Should print 5, 4, 3, 2, 1
+    }
+    
+    // Concat
+    more := (6, 7, 8)
+    combined := numbers ++ more
+    len(combined).print()  // Should print 8
+    
+    // Take and skip
+    first_three := numbers.take(3)
+    len(first_three).print()  // Should print 3
+    
+    last_two := numbers.skip(3)
+    len(last_two).print()  // Should print 2
+}

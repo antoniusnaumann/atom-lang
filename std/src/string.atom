@@ -6,6 +6,57 @@
     s.cstring::strlen()
 }
 
++split(s String, delim Rune) String* {
+    result: String*
+    current: String
+    
+    loop(s.runes()) {
+        match($0 == delim) {
+            True {
+                result ++= current
+                current = ""
+            }
+            False {
+                current ++= $0
+            }
+        }
+    }
+    
+    // Add the last part
+    result ++= current
+    result
+}
+
++split(s String, delims Rune*) String* {
+    result: String*
+    current: String
+    
+    loop(s.runes()) {
+        rune := $0
+        is_delim := False
+        loop(delims) {
+            match(rune == $0) {
+                True { is_delim = True }
+                False { }
+            }
+        }
+        
+        match(is_delim) {
+            True {
+                result ++= current
+                current = ""
+            }
+            False {
+                current ++= rune
+            }
+        }
+    }
+    
+    // Add the last part
+    result ++= current
+    result
+}
+
 // Determine UTF-8 sequence length from first byte
 // Returns: 1 for ASCII, 2-4 for multibyte, 0 for invalid
 -utf8_len(b UInt(8)) Int {
