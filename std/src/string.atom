@@ -20,7 +20,7 @@
 
 // Decode a single UTF-8 sequence starting at index i
 // Returns: (decoded_rune, bytes_consumed)
--decode_utf8_at(s String, i Int, seq_len Int) (Rune, Int) {
+-decode_utf8_at(s String, i Int, seq_len Int) Rune, Int {
     byte_len := s.bytes.len()
     
     // Check if we have enough bytes for the sequence
@@ -62,7 +62,7 @@
     loop(i < byte_len) {
         b := s.bytes(i)
         seq_len := utf8_len(b)
-        (rune, consumed) := decode_utf8_at(s, i, seq_len)
+        rune, consumed := decode_utf8_at(s, i, seq_len)
         
         result ++= rune
         i += consumed
