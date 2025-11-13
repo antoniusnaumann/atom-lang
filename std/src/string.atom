@@ -9,24 +9,12 @@
 // Determine UTF-8 sequence length from first byte
 // Returns: 1 for ASCII, 2-4 for multibyte, 0 for invalid
 -utf8_len(b UInt(8)) Int {
-    match(((b & 0b10000000) == 0)) {
-        True { 1 }
-        False {
-            match(((b & 0b11100000) == 0b11000000)) {
-                True { 2 }
-                False {
-                    match(((b & 0b11110000) == 0b11100000)) {
-                        True { 3 }
-                        False {
-                            match(((b & 0b11111000) == 0b11110000)) {
-                                True { 4 }
-                                False { 0 }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    match(True) {
+        ((b & 0b10000000) == 0) { 1 }
+        ((b & 0b11100000) == 0b11000000) { 2 }
+        ((b & 0b11110000) == 0b11100000) { 3 }
+        ((b & 0b11111000) == 0b11110000) { 4 }
+        _ { 0 }
     }
 }
 
