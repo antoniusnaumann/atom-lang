@@ -74,7 +74,7 @@ Vec2D (
 In declaration lists, line breaks and commas are interchangeable:
 
 `Vec2(x Float, y Float)` is the same as
-```
+```atom
 Vec2 (
   x Float
   y Float
@@ -93,9 +93,6 @@ main() {
   a := Pair(first: 5, second: 7)
 }
 ```
-
-```
-
 Since typing in Atom is structural, you can omit the type name
 ```atom
 main() {
@@ -152,7 +149,7 @@ For tuples with known size, there is a shorthand to specify repetition: `(Int, I
 #### Relaxed Tuple Notation
 Where unambigous, the parenthesese on tuples can be left out, both for the type notation and the actual values. The following code snippets are equivalent:
 
-```
+```atom
 // TYPE DECLARATION
 Inventory (
   player Player
@@ -171,21 +168,21 @@ inv := Inventory(p1, sword, helmet, potato)
 
 // FUNCTION RETURN VALUES
 drop2() (Item, Item) {
-  sword := // ...
-  helmet := // ...
+  sword := _
+  helmet := _
 
   (sword, helmet)
 }
 // can be written as:
 drop2() Item, Item {
-  sword := // ...
-  helmet := // ...
+  sword := _
+  helmet := _
 
   sword, helmet
 }
 // or with repetition syntax:
 drop2() Item*2 {
-  // ...
+  _
 }
 
 // TYPE ANNOTATIONS
@@ -367,7 +364,7 @@ main() {
 
 Match and loop are expressions: While `match` evaluates to the expression in the matching arm, `loop` collects the iteration results:
 
-```
+```atom
 main() {
   values := (1, 2, 4, 13)
 
@@ -419,7 +416,7 @@ The following types are all the same type as `Void` per structural typing `Empty
 ### Canonical Operator Implementation
 While Atom has no operator overloading, operators are still automatically supported on structs if all fields individually support the operator. If so, the operator is implemented by applying it field-wise.
 
-```
+```atom
 main() {
   v := Pair(2, 3) + Pair(4, 5)
   assert(v.x == 6)
@@ -517,7 +514,7 @@ maybe.match() {
 ### String Interpolation
 Atom support string interpolation with `\()`
 
-```
+```atom
 main() {
   a := 5
   print("I think \(a * 2 + 1) is an odd number")
