@@ -20,7 +20,7 @@ LOG_LEVEL = Info
 ) {
     // TODO: Explain enum comparison in README
     match(level >= LOG_LEVEL) {
-        True { cstdlib::printf(as_cstring(msg ++ delimiter) }
+        True { cstdlib::printf(as_cstring(msg ++ delimiter)) }
         False {}
     }
 }
