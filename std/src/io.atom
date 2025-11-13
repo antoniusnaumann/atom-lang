@@ -8,8 +8,8 @@
 )
 
 // TODO: Get the default for this from the debug build, debug builds should specify Debug, production builds Info
-// TODO: Explain overridable const values in README.md
-LOG_LEVEL = Info
+// TODO: Explain overridable functions in README.md
++logLevel() LogLevel { Info }
 
 /// Prints to stdout, except for levels above error which print to stderr
 /// Messages below the specified LOG_LEVEL are not printed
