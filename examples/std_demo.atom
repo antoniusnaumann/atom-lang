@@ -11,17 +11,17 @@ test_array_operations() {
     
     // Test map
     numbers: Int* = (1, 2, 3, 4, 5)
-    doubled := map(numbers, \x { x * 2 })
+    doubled := map(numbers, (x) { x * 2 })
     print("Doubled: ")
     loop(doubled) { print($0) }
     
     // Test filter  
-    evens := filter(numbers, \x { x % 2 == 0 })
+    evens := filter(numbers, (x) { x % 2 == 0 })
     print("\nEvens: ")
     loop(evens) { print($0) }
     
     // Test reduce/fold
-    sum := reduce(numbers, 0, \(acc, x) { acc + x })
+    sum := reduce(numbers, 0, (acc, x) { acc + x })
     print("\nSum: ")
     print(sum)
     
@@ -55,7 +55,7 @@ test_array_operations() {
     }
     
     // Test find
-    found := find(numbers, \x { x > 3 })
+    found := find(numbers, (x) { x > 3 })
     print("\nFirst > 3: ")
     match(found) {
         Some(val) { print(val) }
@@ -63,7 +63,7 @@ test_array_operations() {
     }
     
     // Test partition
-    parts := partition(numbers, \x { x % 2 == 0 })
+    parts := partition(numbers, (x) { x % 2 == 0 })
     match(parts) {
         (pass, fail) {
             print("\nEven: ")
@@ -86,11 +86,11 @@ test_array_operations() {
     }
     
     // Test predicates
-    all_positive := all(numbers, \x { x > 0 })
+    all_positive := all(numbers, (x) { x > 0 })
     print("\nAll positive: ")
     print(all_positive)
     
-    any_negative := any(numbers, \x { x < 0 })
+    any_negative := any(numbers, (x) { x < 0 })
     print("\nAny negative: ")
     print(any_negative)
     

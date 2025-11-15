@@ -245,28 +245,28 @@
 
 /// Sum all elements in a numeric array
 +sum(arr Int*) Int {
-    reduce(arr, 0, \(acc, x) { acc + x })
+    reduce(arr, 0, (acc, x) { acc + x })
 }
 
 +sum(arr Float*) Float {
-    reduce(arr, 0.0, \(acc, x) { acc + x })
+    reduce(arr, 0.0, (acc, x) { acc + x })
 }
 
 +sum(arr Float(32)*) Float(32) {
-    reduce(arr, 0.0, \(acc, x) { acc + x })
+    reduce(arr, 0.0, (acc, x) { acc + x })
 }
 
 /// Product of all elements in a numeric array
 +product(arr Int*) Int {
-    reduce(arr, 1, \(acc, x) { acc * x })
+    reduce(arr, 1, (acc, x) { acc * x })
 }
 
 +product(arr Float*) Float {
-    reduce(arr, 1.0, \(acc, x) { acc * x })
+    reduce(arr, 1.0, (acc, x) { acc * x })
 }
 
 +product(arr Float(32)*) Float(32) {
-    reduce(arr, 1.0, \(acc, x) { acc * x })
+    reduce(arr, 1.0, (acc, x) { acc * x })
 }
 
 /// Get minimum value from array
