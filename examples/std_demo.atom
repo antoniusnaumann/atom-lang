@@ -1,0 +1,185 @@
+// Demonstration of Atom standard library functions
+// Tests array and string operations
+
+main() {
+    test_array_operations()
+    test_string_operations()
+}
+
+test_array_operations() {
+    print("\n=== Array Operations ===\n")
+    
+    // Test map
+    numbers: Int* = (1, 2, 3, 4, 5)
+    doubled := map(numbers, \x { x * 2 })
+    print("Doubled: ")
+    loop(doubled) { print($0) }
+    
+    // Test filter  
+    evens := filter(numbers, \x { x % 2 == 0 })
+    print("\nEvens: ")
+    loop(evens) { print($0) }
+    
+    // Test reduce/fold
+    sum := reduce(numbers, 0, \(acc, x) { acc + x })
+    print("\nSum: ")
+    print(sum)
+    
+    // Test zip
+    letters: Rune* = ('a', 'b', 'c')
+    zipped := zip(numbers, letters)
+    print("\nZipped: ")
+    loop(zipped) {
+        match($0) {
+            (n, c) {
+                print(n)
+                print(" -> ")
+                print(c)
+                print(", ")
+            }
+        }
+    }
+    
+    // Test enumerate
+    enumerated := enumerate(letters)
+    print("\nEnumerated: ")
+    loop(enumerated) {
+        match($0) {
+            (i, c) {
+                print(i)
+                print(": ")
+                print(c)
+                print(", ")
+            }
+        }
+    }
+    
+    // Test find
+    found := find(numbers, \x { x > 3 })
+    print("\nFirst > 3: ")
+    match(found) {
+        Some(val) { print(val) }
+        None { print("not found") }
+    }
+    
+    // Test partition
+    parts := partition(numbers, \x { x % 2 == 0 })
+    match(parts) {
+        (pass, fail) {
+            print("\nEven: ")
+            loop(pass) { print($0) }
+            print("\nOdd: ")
+            loop(fail) { print($0) }
+        }
+    }
+    
+    // Test chunk
+    chunks := chunk(numbers, 2)
+    print("\nChunks of 2: ")
+    loop(chunks) {
+        print("[ ")
+        loop($0) {
+            print($0)
+            print(" ")
+        }
+        print("] ")
+    }
+    
+    // Test predicates
+    all_positive := all(numbers, \x { x > 0 })
+    print("\nAll positive: ")
+    print(all_positive)
+    
+    any_negative := any(numbers, \x { x < 0 })
+    print("\nAny negative: ")
+    print(any_negative)
+    
+    // Test aggregations
+    total := sum(numbers)
+    print("\nTotal: ")
+    print(total)
+    
+    product := product(numbers)
+    print("\nProduct: ")
+    print(product)
+    
+    minimum := min(numbers)
+    print("\nMin: ")
+    match(minimum) {
+        Some(val) { print(val) }
+        None { print("empty") }
+    }
+    
+    maximum := max(numbers)
+    print("\nMax: ")
+    match(maximum) {
+        Some(val) { print(val) }
+        None { print("empty") }
+    }
+}
+
+test_string_operations() {
+    print("\n\n=== String Operations ===\n")
+    
+    text := "  Hello, World!  "
+    
+    // Test trim
+    trimmed := trim(text)
+    print("Trimmed: '")
+    print(trimmed)
+    print("'\n")
+    
+    // Test case conversion
+    upper := to_upper("hello")
+    lower := to_lower("WORLD")
+    print("Upper: ")
+    print(upper)
+    print(", Lower: ")
+    print(lower)
+    print("\n")
+    
+    // Test starts_with/ends_with
+    starts := starts_with("hello world", "hello")
+    ends := ends_with("hello world", "world")
+    print("Starts with 'hello': ")
+    print(starts)
+    print(", Ends with 'world': ")
+    print(ends)
+    print("\n")
+    
+    // Test contains
+    has_world := contains("hello world", "world")
+    print("Contains 'world': ")
+    print(has_world)
+    print("\n")
+    
+    // Test replace
+    replaced := replace("hello world", "world", "Atom")
+    print("Replaced: ")
+    print(replaced)
+    print("\n")
+    
+    // Test substring
+    sub := substring("hello", 1, 4)
+    print("Substring [1:4]: ")
+    print(sub)
+    print("\n")
+    
+    // Test char_at
+    ch := char_at("hello", 1)
+    match(ch) {
+        Some(c) {
+            print("Char at 1: ")
+            print(c)
+            print("\n")
+        }
+        None { print("Out of bounds\n") }
+    }
+    
+    // Test join
+    words: String* = ("hello", "world", "from", "Atom")
+    joined := join(words, " ")
+    print("Joined: ")
+    print(joined)
+    print("\n")
+}

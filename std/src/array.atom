@@ -108,3 +108,229 @@
     }
     result
 }
+
+/// Map a function over an array
++map(arr t*, fn (t) {u}) u* {
+    result: u*
+    loop(arr) {
+        result ++= fn($0)
+    }
+    result
+}
+
+/// Filter array elements by predicate
++filter(arr t*, predicate (t) {Bool}) t* {
+    result: t*
+    loop(arr) {
+        match(predicate($0)) {
+            True { result ++= $0 }
+            False { }
+        }
+    }
+    result
+}
+
+/// Reduce array to single value using accumulator function
++reduce(arr t*, init u, fn (u, t) {u}) u {
+    acc := init
+    loop(arr) {
+        acc = fn(acc, $0)
+    }
+    acc
+}
+
+/// Fold is an alias for reduce (common in functional programming)
++fold(arr t*, init u, fn (u, t) {u}) u {
+    reduce(arr, init, fn)
+}
+
+/// Zip two arrays together into pairs
++zip(arr1 t*, arr2 u*) (t, u)* {
+    result: (t, u)*
+    len1 := len(arr1)
+    len2 := len(arr2)
+    min_len := match(len1 < len2) { True { len1 }, False { len2 } }
+    
+    i := 0
+    loop(i < min_len) {
+        result ++= (arr1(i), arr2(i))
+        i += 1
+    }
+    result
+}
+
+/// Enumerate array elements with their indices
++enumerate(arr t*) (Int, t)* {
+    result: (Int, t)*
+    i := 0
+    loop(arr) {
+        result ++= (i, $0)
+        i += 1
+    }
+    result
+}
+
+/// Find first element matching predicate
++find(arr t*, predicate (t) {Bool}) Option(t) {
+    loop(arr) {
+        match(predicate($0)) {
+            True { Some($0) }
+            False { }
+        }
+    }
+    None
+}
+
+/// Partition array into two arrays based on predicate
++partition(arr t*, predicate (t) {Bool}) (t*, t*) {
+    true_arr: t*
+    false_arr: t*
+    loop(arr) {
+        match(predicate($0)) {
+            True { true_arr ++= $0 }
+            False { false_arr ++= $0 }
+        }
+    }
+    (true_arr, false_arr)
+}
+
+/// Split array into chunks of specified size
++chunk(arr t*, size Int) t** {
+    result: t**
+    current: t*
+    count := 0
+    
+    loop(arr) {
+        current ++= $0
+        count += 1
+        match(count >= size) {
+            True {
+                result ++= current
+                current = ()
+                count = 0
+            }
+            False { }
+        }
+    }
+    
+    // Add remaining elements if any
+    match(count > 0) {
+        True { result ++= current }
+        False { }
+    }
+    result
+}
+
+/// Check if all elements satisfy predicate
++all(arr t*, predicate (t) {Bool}) Bool {
+    loop(arr) {
+        match(predicate($0)) {
+            False { False }
+            True { }
+        }
+    }
+    True
+}
+
+/// Check if any element satisfies predicate
++any(arr t*, predicate (t) {Bool}) Bool {
+    loop(arr) {
+        match(predicate($0)) {
+            True { True }
+            False { }
+        }
+    }
+    False
+}
+
+/// Sum all elements in a numeric array
++sum(arr Int*) Int {
+    reduce(arr, 0, \(acc, x) { acc + x })
+}
+
++sum(arr Float*) Float {
+    reduce(arr, 0.0, \(acc, x) { acc + x })
+}
+
++sum(arr Float(32)*) Float(32) {
+    reduce(arr, 0.0, \(acc, x) { acc + x })
+}
+
+/// Product of all elements in a numeric array
++product(arr Int*) Int {
+    reduce(arr, 1, \(acc, x) { acc * x })
+}
+
++product(arr Float*) Float {
+    reduce(arr, 1.0, \(acc, x) { acc * x })
+}
+
++product(arr Float(32)*) Float(32) {
+    reduce(arr, 1.0, \(acc, x) { acc * x })
+}
+
+/// Get minimum value from array
++min(arr Int*) Option(Int) {
+    match(is_empty(arr)) {
+        True { None }
+        False {
+            min_val := arr(0)
+            loop(arr) {
+                match($0 < min_val) {
+                    True { min_val = $0 }
+                    False { }
+                }
+            }
+            Some(min_val)
+        }
+    }
+}
+
++min(arr Float*) Option(Float) {
+    match(is_empty(arr)) {
+        True { None }
+        False {
+            min_val := arr(0)
+            loop(arr) {
+                match($0 < min_val) {
+                    True { min_val = $0 }
+                    False { }
+                }
+            }
+            Some(min_val)
+        }
+    }
+}
+
+/// Get maximum value from array
++max(arr Int*) Option(Int) {
+    match(is_empty(arr)) {
+        True { None }
+        False {
+            max_val := arr(0)
+            loop(arr) {
+                match($0 > max_val) {
+                    True { max_val = $0 }
+                    False { }
+                }
+            }
+            Some(max_val)
+        }
+    }
+}
+
++max(arr Float*) Option(Float) {
+    match(is_empty(arr)) {
+        True { None }
+        False {
+            max_val := arr(0)
+            loop(arr) {
+                match($0 > max_val) {
+                    True { max_val = $0 }
+                    False { }
+                }
+            }
+            Some(max_val)
+        }
+    }
+}

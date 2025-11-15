@@ -122,3 +122,265 @@
     result
 }
 
+/// Check if a rune is whitespace
+-is_whitespace(r Rune) Bool {
+    // Space=32, Tab=9, Newline=10, Carriage Return=13
+    r == 32 || r == 9 || r == 10 || r == 13
+}
+
+/// Trim leading and trailing whitespace from string
++trim(s String) String {
+    trim_end(trim_start(s))
+}
+
+/// Trim leading whitespace from string
++trim_start(s String) String {
+    rune_arr := s.runes()
+    start := 0
+    loop(start < len(rune_arr)) {
+        match(is_whitespace(rune_arr(start))) {
+            True { start += 1 }
+            False { break }
+        }
+    }
+    
+    result: String
+    i := start
+    loop(i < len(rune_arr)) {
+        result ++= rune_arr(i)
+        i += 1
+    }
+    result
+}
+
+/// Trim trailing whitespace from string
++trim_end(s String) String {
+    rune_arr := s.runes()
+    arr_len := len(rune_arr)
+    end := arr_len
+    
+    loop(end > 0) {
+        match(is_whitespace(rune_arr(end - 1))) {
+            True { end -= 1 }
+            False { break }
+        }
+    }
+    
+    result: String
+    i := 0
+    loop(i < end) {
+        result ++= rune_arr(i)
+        i += 1
+    }
+    result
+}
+
+/// Check if string starts with prefix
++starts_with(s String, prefix String) Bool {
+    s_len := len(s)
+    p_len := len(prefix)
+    
+    match(p_len > s_len) {
+        True { False }
+        False {
+            i := 0
+            loop(i < p_len) {
+                match(s.bytes(i) == prefix.bytes(i)) {
+                    False { False }
+                    True { }
+                }
+                i += 1
+            }
+            True
+        }
+    }
+}
+
+/// Check if string ends with suffix
++ends_with(s String, suffix String) Bool {
+    s_len := len(s)
+    suf_len := len(suffix)
+    
+    match(suf_len > s_len) {
+        True { False }
+        False {
+            offset := s_len - suf_len
+            i := 0
+            loop(i < suf_len) {
+                match(s.bytes(offset + i) == suffix.bytes(i)) {
+                    False { False }
+                    True { }
+                }
+                i += 1
+            }
+            True
+        }
+    }
+}
+
+/// Check if string contains substring
++contains(s String, substring String) Bool {
+    s_len := len(s)
+    sub_len := len(substring)
+    
+    match(sub_len > s_len) {
+        True { False }
+        False {
+            i := 0
+            loop(i <= s_len - sub_len) {
+                // Check if substring matches at position i
+                found := True
+                j := 0
+                loop(j < sub_len) {
+                    match(s.bytes(i + j) == substring.bytes(j)) {
+                        False {
+                            found = False
+                            break
+                        }
+                        True { }
+                    }
+                    j += 1
+                }
+                match(found) {
+                    True { True }
+                    False { }
+                }
+                i += 1
+            }
+            False
+        }
+    }
+}
+
+/// Replace all occurrences of 'from' with 'to' in string
++replace(s String, from String, to String) String {
+    s_len := len(s)
+    from_len := len(from)
+    
+    match(from_len == 0 || from_len > s_len) {
+        True { s }
+        False {
+            result: String
+            i := 0
+            
+            loop(i < s_len) {
+                // Check if 'from' matches at position i
+                match(i <= s_len - from_len) {
+                    True {
+                        found := True
+                        j := 0
+                        loop(j < from_len) {
+                            match(s.bytes(i + j) == from.bytes(j)) {
+                                False {
+                                    found = False
+                                    break
+                                }
+                                True { }
+                            }
+                            j += 1
+                        }
+                        
+                        match(found) {
+                            True {
+                                result ++= to
+                                i += from_len
+                            }
+                            False {
+                                result ++= s.bytes(i)
+                                i += 1
+                            }
+                        }
+                    }
+                    False {
+                        result ++= s.bytes(i)
+                        i += 1
+                    }
+                }
+            }
+            result
+        }
+    }
+}
+
+/// Convert ASCII uppercase letters to lowercase
++to_lower(s String) String {
+    result: String
+    loop(s.bytes) {
+        b := $0
+        // Check if ASCII uppercase (A-Z is 65-90)
+        match(b >= 65 && b <= 90) {
+            True { result ++= (b + 32) }  // Convert to lowercase
+            False { result ++= b }
+        }
+    }
+    result
+}
+
+/// Convert ASCII lowercase letters to uppercase
++to_upper(s String) String {
+    result: String
+    loop(s.bytes) {
+        b := $0
+        // Check if ASCII lowercase (a-z is 97-122)
+        match(b >= 97 && b <= 122) {
+            True { result ++= (b - 32) }  // Convert to uppercase
+            False { result ++= b }
+        }
+    }
+    result
+}
+
+/// Join array of strings with delimiter
++join(arr String*, delimiter String) String {
+    match(is_empty(arr)) {
+        True { "" }
+        False {
+            result := arr(0)
+            i := 1
+            loop(i < len(arr)) {
+                result ++= delimiter
+                result ++= arr(i)
+                i += 1
+            }
+            result
+        }
+    }
+}
+
+/// Get rune at specific index (returns None if out of bounds)
++char_at(s String, index Int) Option(Rune) {
+    rune_arr := s.runes()
+    match(index >= 0 && index < len(rune_arr)) {
+        True { Some(rune_arr(index)) }
+        False { None }
+    }
+}
+
+/// Get substring from start index (inclusive) to end index (exclusive)
++substring(s String, start Int, end Int) String {
+    rune_arr := s.runes()
+    arr_len := len(rune_arr)
+    
+    // Clamp indices to valid range
+    start_idx := match(start < 0) { True { 0 }, False { start } }
+    end_idx := match(end > arr_len) { True { arr_len }, False { end } }
+    
+    match(start_idx >= end_idx) {
+        True { "" }
+        False {
+            result: String
+            i := start_idx
+            loop(i < end_idx) {
+                result ++= rune_arr(i)
+                i += 1
+            }
+            result
+        }
+    }
+}
+
+/// Get substring from start index to end of string
++substring(s String, start Int) String {
+    substring(s, start, len(s.runes()))
+}
+

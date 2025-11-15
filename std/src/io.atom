@@ -9,17 +9,17 @@
 
 // TODO: Get the default for this from the debug build, debug builds should specify Debug, production builds Info
 // TODO: Explain overridable functions in README.md
-+logLevel() LogLevel { Info }
++log_level() LogLevel { Info }
 
 /// Prints to stdout, except for levels above error which print to stderr
-/// Messages below the specified LOG_LEVEL are not printed
+/// Messages below the specified log_level() are not printed
 +print(
     msg String
     level LogLevel = Info
     delimiter Rune = '\n'
 ) {
     // TODO: Explain enum comparison in README
-    match(level >= LOG_LEVEL) {
+    match(level >= log_level) {
         True { cstdlib::printf(as_cstring(msg ++ delimiter)) }
         False {}
     }

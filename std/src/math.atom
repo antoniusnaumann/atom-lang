@@ -224,11 +224,11 @@
     x.cmath::roundf()
 }
 
-+fmod(x Float, y Float) Float {
++mod(x Float, y Float) Float {
     cmath::fmod(x, y)
 }
 
-+fmod(x Float(32), y Float(32)) Float(32) {
++mod(x Float(32), y Float(32)) Float(32) {
     cmath::fmodf(x, y)
 }
 
@@ -255,11 +255,11 @@
     x.cstdlib::abs()
 }
 
-+copysign(x Float, y Float) Float {
++copy_sign(x Float, y Float) Float {
     cmath::copysign(x, y)
 }
 
-+copysign(x Float(32), y Float(32)) Float(32) {
++copy_sign(x Float(32), y Float(32)) Float(32) {
     cmath::copysignf(x, y)
 }
 
@@ -283,42 +283,42 @@
 
 // Classification functions
 
-+isnan(x Float) Bool {
++is_nan(x Float) Bool {
     cmath::isnan(x).match() {
         0 { False }
         _ { True }
     }
 }
 
-+isnan(x Float(32)) Bool {
++is_nan(x Float(32)) Bool {
     cmath::isnan(x).match() {
         0 { False }
         _ { True }
     }
 }
 
-+isinf(x Float) Bool {
++is_inf(x Float) Bool {
     cmath::isinf(x).match() {
         0 { False }
         _ { True }
     }
 }
 
-+isinf(x Float(32)) Bool {
++is_inf(x Float(32)) Bool {
     cmath::isinf(x).match() {
         0 { False }
         _ { True }
     }
 }
 
-+isfinite(x Float) Bool {
++is_finite(x Float) Bool {
     cmath::isfinite(x).match() {
         0 { False }
         _ { True }
     }
 }
 
-+isfinite(x Float(32)) Bool {
++is_finite(x Float(32)) Bool {
     cmath::isfinite(x).match() {
         0 { False }
         _ { True }
