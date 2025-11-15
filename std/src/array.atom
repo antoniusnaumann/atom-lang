@@ -1,12 +1,18 @@
 // Array/Collection utilities for variadic types
 
 /// Get the length of an array
+// TODO: this should be a builtin, no need to loop over elements to get the length
 +len(arr t*) Int {
     count := 0
     loop(arr) {
         count += 1
     }
     count
+}
+
++len(n Int; arr t*n) Int {
+    // quite simple for static arrays, just return the comptime known length
+    n
 }
 
 /// Check if array is empty
