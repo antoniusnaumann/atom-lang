@@ -397,7 +397,7 @@ impl Parser {
         
         // Parse return type if present (before the body)
         let return_type = if !self.check(&TokenKind::LBrace) {
-            Some(Box::new(self.parse_type()?))
+            Some(Box::new(self.parse_return_type()?))
         } else {
             None
         };
@@ -534,6 +534,83 @@ impl Parser {
         let start = self.current_span();
         self.expect(&TokenKind::LBrace)?;
         
+        // Skip leading newlines/semicolons
+        while self.match_token(&TokenKind::NewlineOrSemi) {}
+        
+        // Check if this looks like an inline match block: TypeIdent { ... }, TypeIdent { ... }
+        // Pattern: TypeIdent followed by LBrace
+        let is_inline_match = self.check(&TokenKind::TypeIdent) && 
+                             self.peek_ahead(1).map(|t| t.kind == TokenKind::LBrace).unwrap_or(false);
+        
+        if is_inline_match {
+            // Parse as match arms instead of statements
+            let mut stmts = Vec::new();
+            while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+                // Skip newlines
+                while self.match_token(&TokenKind::NewlineOrSemi) {}
+                
+                if self.check(&TokenKind::RBrace) {
+                    break;
+                }
+                
+                // Parse pattern { body }
+                let pattern = self.expect_type_ident()?;
+                self.expect(&TokenKind::LBrace)?;
+                
+                // Parse the body as a block of statements
+                let mut arm_stmts = Vec::new();
+                while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+                    // Skip newlines
+                    if self.match_token(&TokenKind::NewlineOrSemi) {
+                        continue;
+                    }
+                    
+                    if self.check(&TokenKind::RBrace) {
+                        break;
+                    }
+                    
+                    arm_stmts.push(self.parse_statement()?);
+                    
+                    // Optional semicolon/newline after statement
+                    self.match_token(&TokenKind::NewlineOrSemi);
+                }
+                
+                self.expect(&TokenKind::RBrace)?;
+                
+                // Create a block expression for the match arm body
+                let arm_body = Expr::Block(Block {
+                    stmts: arm_stmts,
+                    span: start.merge(self.previous_span()),
+                });
+                
+                // Create an expression statement that represents the match arm
+                // For now, we'll represent it as: pattern(arm_body)
+                // This is a bit of a hack - ideally we'd have a MatchArm statement type
+                let match_arm_expr = Expr::Call {
+                    func: Box::new(Expr::Ident(pattern)),
+                    args: vec![arm_body],
+                    span: start.merge(self.previous_span()),
+                };
+                stmts.push(Stmt::Expression(match_arm_expr));
+                
+                // Check for comma separator
+                if !self.match_token(&TokenKind::Comma) {
+                    // No comma, check for newline or end of block
+                    if !self.check(&TokenKind::RBrace) {
+                        self.match_token(&TokenKind::NewlineOrSemi);
+                    }
+                }
+            }
+            
+            self.expect(&TokenKind::RBrace)?;
+            
+            return Ok(Block {
+                stmts,
+                span: start.merge(self.previous_span()),
+            });
+        }
+        
+        // Regular block with statements
         let mut stmts = Vec::new();
         
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
@@ -647,13 +724,62 @@ impl Parser {
             if self.match_token(&TokenKind::LParen) {
                 let mut params = Vec::new();
                 while !self.check(&TokenKind::RParen) {
-                    // TODO: Parse type parameters properly
-                    params.push(Box::new(TypeParam {
-                        name: None,
-                        ty: Some(Box::new(self.parse_type()?)),
-                        default: None,
-                        span: self.current_span(),
-                    }));
+                    // Type parameters can be types OR expressions (for const generics like Float(32))
+                    // Try to parse as type first, if that fails, try as expression
+                    let param_start = self.current_span();
+                    
+                    // Check if this looks like a type (TypeIdent, ValueIdent for type params, or LParen for tuple)
+                    if self.check(&TokenKind::TypeIdent) || self.check(&TokenKind::ValueIdent) || self.check(&TokenKind::LParen) {
+                        // Try parsing as type
+                        let checkpoint = self.pos;
+                        match self.parse_type() {
+                            Ok(ty) => {
+                                params.push(Box::new(TypeParam {
+                                    name: None,
+                                    ty: Some(Box::new(ty)),
+                                    default: None,
+                                    span: param_start.merge(self.previous_span()),
+                                }));
+                            }
+                            Err(_) => {
+                                // Failed as type, try as expression (for const generics)
+                                self.pos = checkpoint;
+                                // For now, just parse integers as a simple case
+                                // TODO: Full expression parsing for const generics
+                                if self.check(&TokenKind::Integer) {
+                                    let tok = self.advance();
+                                    // Store as a type param with a "fake" type that's just the number
+                                    // This is a hack - ideally TypeParam should support expressions
+                                    params.push(Box::new(TypeParam {
+                                        name: Some(Ident {
+                                            name: tok.text.clone(),
+                                            span: tok.span,
+                                        }),
+                                        ty: None,
+                                        default: None,
+                                        span: tok.span,
+                                    }));
+                                } else {
+                                    return Err(self.error("Expected type or const expression in generic parameter"));
+                                }
+                            }
+                        }
+                    } else if self.check(&TokenKind::Integer) {
+                        // Const parameter (like 32 in Float(32))
+                        let tok = self.advance();
+                        params.push(Box::new(TypeParam {
+                            name: Some(Ident {
+                                name: tok.text.clone(),
+                                span: tok.span,
+                            }),
+                            ty: None,
+                            default: None,
+                            span: tok.span,
+                        }));
+                    } else {
+                        return Err(self.error("Expected type or const parameter"));
+                    }
+                    
                     if !self.match_token(&TokenKind::Comma) {
                         break;
                     }
@@ -724,6 +850,49 @@ impl Parser {
             } else {
                 break;
             }
+        }
+        
+        Ok(ty)
+    }
+
+    fn parse_return_type(&mut self) -> ParseResult<Type> {
+        let start = self.current_span();
+        
+        // For return types, we need special handling because:
+        // 1. Tuple types like (T, U) might be followed by { which could be confused with function type
+        // 2. Relaxed tuple notation T, U is allowed
+        // 3. Function types (T) { U } are NOT allowed as bare return types (use closure syntax instead)
+        
+        // Check if it starts with ( for explicit tuple
+        if self.check(&TokenKind::LParen) {
+            // Parse tuple type but DON'T allow it to become a function type
+            self.advance(); // consume (
+            let mut types = Vec::new();
+            
+            while !self.check(&TokenKind::RParen) {
+                types.push(Box::new(self.parse_type()?));
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            
+            self.expect(&TokenKind::RParen)?;
+            
+            // DO NOT check for { to make it a function type - that's the function body!
+            return Ok(Type::Tuple(types, start.merge(self.previous_span())));
+        }
+        
+        // Parse first type
+        let mut ty = self.parse_type()?;
+        
+        // Check for relaxed tuple notation: T, U, V (without parentheses)
+        // This is only valid for return types, not for parameter types
+        if self.check(&TokenKind::Comma) {
+            let mut types = vec![Box::new(ty)];
+            while self.match_token(&TokenKind::Comma) {
+                types.push(Box::new(self.parse_type()?));
+            }
+            ty = Type::Tuple(types, start.merge(self.previous_span()));
         }
         
         Ok(ty)
@@ -864,7 +1033,17 @@ impl Parser {
                 });
             } else if self.match_token(&TokenKind::Dot) {
                 // Method call or field access
-                let method = self.expect_value_ident()?;
+                // Can be: .method() or .namespace::method() or .field
+                let mut method = self.expect_value_ident()?;
+                
+                // Check for namespace operator after the method name
+                while self.match_token(&TokenKind::ColonColon) {
+                    let item = self.expect_value_ident()?;
+                    method = Ident {
+                        name: format!("{}::{}", method.name, item.name),
+                        span: method.span.merge(item.span),
+                    };
+                }
                 
                 if self.match_token(&TokenKind::LParen) {
                     // Method call
@@ -1993,6 +2172,24 @@ mod tests {
     }
 
     #[test]
+    fn test_inline_match_with_commas() {
+        // match(x) { True { 1 }, False { 2 } }
+        let expr = parse_expr("match(x) { True { 1 }, False { 2 } }").unwrap();
+        match expr {
+            Expr::Call { func, args, .. } => {
+                match *func {
+                    Expr::Ident(ref ident) if ident.name == "match" => {},
+                    _ => panic!("Expected match function, got {:?}", func),
+                }
+                // args should be [x, closure_block]
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[1], Expr::Block(_)));
+            },
+            _ => panic!("Expected match as function call, got {:?}", expr),
+        }
+    }
+
+    #[test]
     fn test_loop_with_condition_trailing_closure() {
         // loop(i < 10) { i += 1 }
         let expr = parse_expr("loop(i < 10) { i += 1 }").unwrap();
@@ -2179,6 +2376,18 @@ fib(nth Int) Int {
                 assert_eq!(def.name.name, "len");
             },
             _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_multiline_match() {
+        let expr = parse_expr(r#"match(x) {
+    True { }
+    False { 1 }
+}"#).unwrap();
+        match expr {
+            Expr::Call { .. } => {},
+            _ => panic!("Expected call expression"),
         }
     }
 }
