@@ -1,0 +1,72 @@
+name: Parse Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test-parsing:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install tree-sitter CLI
+        run: npm install -g tree-sitter-cli
+      
+      - name: Build parser
+        working-directory: tree-sitter-atom
+        run: tree-sitter generate
+      
+      - name: Find and parse all .atom files
+        run: |
+          set -e
+          
+          echo "Finding all .atom files..."
+          atom_files=$(find examples std tree-sitter-atom/example -name "*.atom" -type f | sort)
+          
+          if [ -z "$atom_files" ]; then
+            echo "ERROR: No .atom files found!"
+            exit 1
+          fi
+          
+          file_count=$(echo "$atom_files" | wc -l)
+          echo "Found $file_count .atom files"
+          echo ""
+          
+          failed=0
+          passed=0
+          
+          for file in $atom_files; do
+            echo "Parsing: $file"
+            if tree-sitter parse "$file" --quiet --stat; then
+              echo "  ✓ PASSED"
+              ((passed++))
+            else
+              echo "  ✗ FAILED"
+              ((failed++))
+            fi
+            echo ""
+          done
+          
+          echo "========================================="
+          echo "Results: $passed passed, $failed failed out of $file_count total"
+          echo "========================================="
+          
+          if [ $failed -gt 0 ]; then
+            echo "ERROR: $failed file(s) failed to parse"
+            exit 1
+          fi
+          
+          echo "SUCCESS: All files parsed successfully!"

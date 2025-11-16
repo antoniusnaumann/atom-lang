@@ -2,8 +2,9 @@
     bytes UInt(8)*
 )
 
+/// The byte length of the string
 +len(s String) Int {
-    s.cstring::strlen()
+    s.bytes.len()
 }
 
 +split(s String, delim Rune) String* {
