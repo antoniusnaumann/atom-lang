@@ -1,4 +1,6 @@
 # Atom
+[![Tree-Sitter](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parse-tests.yml/badge.svg)](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parse-tests.yml)
+
 Atom is a small language with value semantics, providing modern features with a focus on orthogonality, i.e., many small features that generalize and compose well. A key aspect of Atom's syntax is that it has no keywords.
 
 ## Structure
