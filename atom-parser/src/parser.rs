@@ -404,6 +404,7 @@ impl Parser {
         
         // Parse body
         let body = self.parse_block()?;
+
         
         let span = start.merge(self.previous_span());
         
@@ -863,8 +864,7 @@ impl Parser {
         // 2. Relaxed tuple notation T, U is allowed
         // 3. Function types (T) { U } are NOT allowed as bare return types (use closure syntax instead)
         
-        // Check if it starts with ( for explicit tuple
-        if self.check(&TokenKind::LParen) {
+        let mut ty = if self.check(&TokenKind::LParen) {
             // Parse tuple type but DON'T allow it to become a function type
             self.advance(); // consume (
             let mut types = Vec::new();
@@ -879,11 +879,32 @@ impl Parser {
             self.expect(&TokenKind::RParen)?;
             
             // DO NOT check for { to make it a function type - that's the function body!
-            return Ok(Type::Tuple(types, start.merge(self.previous_span())));
-        }
+            Type::Tuple(types, start.merge(self.previous_span()))
+        } else {
+            // Parse first type
+            self.parse_type()?
+        };
         
-        // Parse first type
-        let mut ty = self.parse_type()?;
+        // After parsing the base type (whether tuple or simple), check for postfix operators
+        // like * (variadic) that can apply to return types
+        loop {
+            if self.match_token(&TokenKind::Star) {                // Variadic return type: (T, U)* or T*
+                ty = Type::Variadic {
+                    element: Box::new(ty),
+                    non_empty: false,
+                    span: start.merge(self.previous_span()),
+                };
+            } else if self.match_token(&TokenKind::Plus) {
+                // Non-empty variadic: (T, U)+ or T+
+                ty = Type::Variadic {
+                    element: Box::new(ty),
+                    non_empty: true,
+                    span: start.merge(self.previous_span()),
+                };
+            } else {
+                break;
+            }
+        }
         
         // Check for relaxed tuple notation: T, U, V (without parentheses)
         // This is only valid for return types, not for parameter types
