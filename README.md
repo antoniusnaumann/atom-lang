@@ -333,7 +333,7 @@ main() {
   }
 
   print("This will run forever...")
-  loop {
+  loop() {
     print("...and ever...")
   }
 }  

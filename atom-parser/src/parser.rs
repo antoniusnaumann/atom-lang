@@ -1113,7 +1113,7 @@ impl Parser {
         // Literals
         if self.check(&TokenKind::Integer) {
             let tok = self.advance();
-            let value = tok.text.parse::<i64>()
+            let value = self.parse_integer_literal(&tok.text)
                 .map_err(|_| ParseError::new("Invalid integer literal", tok.span))?;
             return Ok(Expr::Literal(Literal::Integer(value), tok.span));
         }
@@ -1423,6 +1423,18 @@ impl Parser {
             })
         } else {
             Err(self.error("Expected value identifier"))
+        }
+    }
+
+    fn parse_integer_literal(&self, text: &str) -> Result<i64, std::num::ParseIntError> {
+        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            i64::from_str_radix(hex, 16)
+        } else if let Some(bin) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+            i64::from_str_radix(bin, 2)
+        } else if let Some(oct) = text.strip_prefix("0o").or_else(|| text.strip_prefix("0O")) {
+            i64::from_str_radix(oct, 8)
+        } else {
+            text.parse::<i64>()
         }
     }
 
@@ -2409,6 +2421,39 @@ fib(nth Int) Int {
         match expr {
             Expr::Call { .. } => {},
             _ => panic!("Expected call expression"),
+        }
+    }
+
+    #[test]
+    fn test_hex_literal() {
+        let expr = parse_expr("0xFFFD").unwrap();
+        match expr {
+            Expr::Literal(Literal::Integer(val), _) => {
+                assert_eq!(val, 0xFFFD);
+            },
+            _ => panic!("Expected hex literal"),
+        }
+    }
+
+    #[test]
+    fn test_binary_literal() {
+        let expr = parse_expr("0b10000000").unwrap();
+        match expr {
+            Expr::Literal(Literal::Integer(val), _) => {
+                assert_eq!(val, 0b10000000);
+            },
+            _ => panic!("Expected binary literal"),
+        }
+    }
+
+    #[test]
+    fn test_octal_literal() {
+        let expr = parse_expr("0o755").unwrap();
+        match expr {
+            Expr::Literal(Literal::Integer(val), _) => {
+                assert_eq!(val, 0o755);
+            },
+            _ => panic!("Expected octal literal"),
         }
     }
 }

@@ -342,6 +342,82 @@ impl Lexer {
     }
 
     fn lex_number(&mut self, start: usize) -> ParseResult<Token> {
+        // Check for hex, binary, or octal literals
+        if self.current() == '0' && !self.is_at_end() {
+            if let Some(next) = self.peek() {
+                match next {
+                    'x' | 'X' => {
+                        self.advance(); // Skip '0'
+                        self.advance(); // Skip 'x' or 'X'
+                        
+                        // Parse hex digits
+                        if self.is_at_end() || !self.current().is_ascii_hexdigit() {
+                            return Err(ParseError::new(
+                                "Expected hex digit after '0x'",
+                                Span::new(start, self.pos),
+                            ));
+                        }
+                        
+                        while !self.is_at_end() && self.current().is_ascii_hexdigit() {
+                            self.advance();
+                        }
+                        
+                        return Ok(Token {
+                            kind: TokenKind::Integer,
+                            span: Span::new(start, self.pos),
+                            text: self.slice(start, self.pos),
+                        });
+                    }
+                    'b' | 'B' => {
+                        self.advance(); // Skip '0'
+                        self.advance(); // Skip 'b' or 'B'
+                        
+                        // Parse binary digits
+                        if self.is_at_end() || !matches!(self.current(), '0' | '1') {
+                            return Err(ParseError::new(
+                                "Expected binary digit after '0b'",
+                                Span::new(start, self.pos),
+                            ));
+                        }
+                        
+                        while !self.is_at_end() && matches!(self.current(), '0' | '1') {
+                            self.advance();
+                        }
+                        
+                        return Ok(Token {
+                            kind: TokenKind::Integer,
+                            span: Span::new(start, self.pos),
+                            text: self.slice(start, self.pos),
+                        });
+                    }
+                    'o' | 'O' => {
+                        self.advance(); // Skip '0'
+                        self.advance(); // Skip 'o' or 'O'
+                        
+                        // Parse octal digits
+                        if self.is_at_end() || !matches!(self.current(), '0'..='7') {
+                            return Err(ParseError::new(
+                                "Expected octal digit after '0o'",
+                                Span::new(start, self.pos),
+                            ));
+                        }
+                        
+                        while !self.is_at_end() && matches!(self.current(), '0'..='7') {
+                            self.advance();
+                        }
+                        
+                        return Ok(Token {
+                            kind: TokenKind::Integer,
+                            span: Span::new(start, self.pos),
+                            text: self.slice(start, self.pos),
+                        });
+                    }
+                    _ => {} // Fall through to decimal parsing
+                }
+            }
+        }
+        
+        // Parse decimal digits
         while !self.is_at_end() && self.current().is_ascii_digit() {
             self.advance();
         }
@@ -528,5 +604,40 @@ mod tests {
         
         assert_eq!(tokens[0].kind, TokenKind::String);
         assert_eq!(tokens[0].text, "hello world");
+    }
+
+    #[test]
+    fn test_hex_literals() {
+        let mut lexer = Lexer::new("0xFFFD 0x10 0xFF");
+        let tokens = lexer.tokenize().unwrap();
+        
+        assert_eq!(tokens[0].kind, TokenKind::Integer);
+        assert_eq!(tokens[0].text, "0xFFFD");
+        assert_eq!(tokens[1].kind, TokenKind::Integer);
+        assert_eq!(tokens[1].text, "0x10");
+        assert_eq!(tokens[2].kind, TokenKind::Integer);
+        assert_eq!(tokens[2].text, "0xFF");
+    }
+
+    #[test]
+    fn test_binary_literals() {
+        let mut lexer = Lexer::new("0b1010 0b11111111");
+        let tokens = lexer.tokenize().unwrap();
+        
+        assert_eq!(tokens[0].kind, TokenKind::Integer);
+        assert_eq!(tokens[0].text, "0b1010");
+        assert_eq!(tokens[1].kind, TokenKind::Integer);
+        assert_eq!(tokens[1].text, "0b11111111");
+    }
+
+    #[test]
+    fn test_octal_literals() {
+        let mut lexer = Lexer::new("0o755 0o644");
+        let tokens = lexer.tokenize().unwrap();
+        
+        assert_eq!(tokens[0].kind, TokenKind::Integer);
+        assert_eq!(tokens[0].text, "0o755");
+        assert_eq!(tokens[1].kind, TokenKind::Integer);
+        assert_eq!(tokens[1].text, "0o644");
     }
 }
