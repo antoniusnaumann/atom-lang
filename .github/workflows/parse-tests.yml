@@ -29,6 +29,12 @@ jobs:
         working-directory: tree-sitter-atom
         run: tree-sitter generate
       
+      - name: Configure tree-sitter parser directory
+        run: |
+          mkdir -p ~/.config/tree-sitter
+          echo '{"parser-directories": ["'$(pwd)'"]}' > ~/.config/tree-sitter/config.json
+          cat ~/.config/tree-sitter/config.json
+      
       - name: Find and parse all .atom files
         run: |
           set -e
