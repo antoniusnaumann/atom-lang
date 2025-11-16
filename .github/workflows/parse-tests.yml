@@ -1,4 +1,4 @@
-name: Parse Tests
+name: Tree-Sitter
 
 on:
   push:
@@ -58,10 +58,10 @@ jobs:
             echo "Parsing: $file"
             if tree-sitter parse "$file" --quiet --stat; then
               echo "  ✓ PASSED"
-              ((passed++))
+              passed=$((passed + 1))
             else
               echo "  ✗ FAILED"
-              ((failed++))
+              failed=$((failed + 1))
             fi
             echo ""
           done
