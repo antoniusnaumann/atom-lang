@@ -41,6 +41,7 @@ pub enum TokenKind {
     Comma,      // ,
     Colon,      // :
     Semicolon,  // ;
+    Hash,       // #
 
     // Multi-char operators
     PlusPlus,   // ++

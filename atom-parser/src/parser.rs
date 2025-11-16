@@ -207,65 +207,75 @@ impl Parser {
         let mut type_params = Vec::new();
         let mut cases = Vec::new();
         
-        // Parse type parameters if there's a semicolon before enum cases
-        // Check if we have type parameters by looking for semicolon
-        let saved_pos = self.pos;
-        let mut has_type_params = false;
-        
-        // Look ahead to see if there's a semicolon (indicating type params before cases)
-        let mut depth = 0;
-        while !self.is_at_end() {
-            if self.check(&TokenKind::NewlineOrSemi) && depth == 0 {
-                // This could be a semicolon separator - mark it for type param parsing
-                has_type_params = true;
-                break;
+        // Check if we have type parameters by looking at the pattern
+        // Type params: lowercase ident optionally followed by type or = default
+        // Cases: uppercase ident (TypeIdent)
+        // Look ahead to distinguish
+        let has_type_params = if self.check(&TokenKind::ValueIdent) {
+            // Could be type param like `t` or `e String` or `e = String`
+            // Check what comes after
+            let next = self.peek_ahead(1);
+            match next.map(|t| &t.kind) {
+                Some(TokenKind::Comma) | Some(TokenKind::NewlineOrSemi) | Some(TokenKind::Semicolon) => {
+                    // Pattern: valueIdent , or valueIdent ; - could be type param like `t;`
+                    // Need to look further to see if there's an explicit semicolon separator
+                    // For now, assume if we see any explicit looking separator pattern, it's type params
+                    true
+                },
+                Some(TokenKind::TypeIdent) | Some(TokenKind::Eq) => {
+                    // Pattern: valueIdent TypeIdent or valueIdent = - definitely type param
+                    true
+                },
+                _ => false,
             }
-            if self.check(&TokenKind::LParen) {
-                depth += 1;
-            } else if self.check(&TokenKind::RParen) {
-                if depth == 0 {
-                    break;
-                }
-                depth -= 1;
-            }
-            self.advance();
-        }
-        
-        // Restore position
-        self.pos = saved_pos;
+        } else if self.check(&TokenKind::TypeIdent) {
+            // Could be:  
+            // 1. Type param that's a type: `String;` 
+            // 2. Enum case: `Some(t)`
+            // Distinguish by looking for explicit semicolon separator
+            // If we see TypeIdent followed eventually by an explicit `;` before any actual cases, it's params
+            // For now, be conservative: TypeIdent at start = enum case (no type params)
+            false
+        } else {
+            false
+        };
         
         if has_type_params {
-            // Parse type parameters
-            while !self.check(&TokenKind::NewlineOrSemi) && !self.check(&TokenKind::RParen) {
+            // Parse type parameters until we hit a semicolon separator
+            loop {
                 type_params.push(self.parse_type_param()?);
                 
-                // Check what comes next
-                if self.match_token(&TokenKind::Comma) {
-                    // More type params, skip newlines and continue
+                // Check if we're at the separator
+                if self.check(&TokenKind::Semicolon) || 
+                   (self.check(&TokenKind::NewlineOrSemi) && self.is_semicolon_separator()) {
+                    self.advance(); // Consume the separator
                     while self.match_token(&TokenKind::NewlineOrSemi) {}
-                } else {
-                    // No comma, must be at the semicolon separator or RParen
                     break;
                 }
-            }
-            
-            // Expect the semicolon separator (which is lexed as NewlineOrSemi)
-            if !self.check(&TokenKind::RParen) {
-                self.expect(&TokenKind::NewlineOrSemi)?;
+                
+                // Otherwise expect comma
+                if !self.match_token(&TokenKind::Comma) {
+                    // No comma, we might be at RParen (no cases)
+                    break;
+                }
+                
+                // Skip newlines after comma
                 while self.match_token(&TokenKind::NewlineOrSemi) {}
             }
         }
         
         // Parse enum cases
-        while !self.check(&TokenKind::RParen) {
+        while !self.check(&TokenKind::RParen) && !self.is_at_end() {
             cases.push(self.parse_enum_case()?);
             
-            if !self.match_token(&TokenKind::Comma) && !self.match_token(&TokenKind::NewlineOrSemi) {
+            // After each case, there may be a comma or newline
+            if self.match_token(&TokenKind::Comma) || self.match_token(&TokenKind::NewlineOrSemi) {
+                // Skip additional newlines
+                while self.match_token(&TokenKind::NewlineOrSemi) {}
+            } else {
+                // No separator, stop
                 break;
             }
-            
-            // Skip trailing newlines/semicolons
-            while self.match_token(&TokenKind::NewlineOrSemi) {}
         }
         
         self.expect(&TokenKind::RParen)?;
@@ -279,6 +289,20 @@ impl Parser {
             cases,
             span,
         }))
+    }
+    
+    // Helper to check if a NewlineOrSemi is actually a semicolon separator (not just a newline)
+    // Heuristic: if next token after NewlineOrSemi is TypeIdent (enum case), previous was likely just newline
+    // if next is valueIdent or more type stuff, it's likely a separator
+    fn is_semicolon_separator(&self) -> bool {
+        // Look ahead: if next is TypeIdent at start of line, this is probably just a newline between cases
+        // if next is anything else or EOF or RParen, this might be a separator
+        // This is a heuristic and not perfect, but works for common cases
+        if let Some(next) = self.peek_ahead(1) {
+            !matches!(next.kind, TokenKind::TypeIdent)
+        } else {
+            true
+        }
     }
 
     fn parse_type_param(&mut self) -> ParseResult<TypeParam> {
@@ -919,6 +943,15 @@ impl Parser {
             return Ok(Expr::Block(block));
         }
         
+        // Compile-time evaluation: #expr or #(expr)
+        if self.match_token(&TokenKind::Hash) {
+            let expr = Box::new(self.parse_primary_expression()?);
+            return Ok(Expr::Comptime {
+                expr,
+                span: start.merge(self.previous_span()),
+            });
+        }
+        
         // Parenthesized expression, tuple, or closure
         if self.match_token(&TokenKind::LParen) {
             return self.parse_paren_or_closure_or_tuple(start);
@@ -1228,6 +1261,924 @@ impl Expr {
             Expr::Break(span) => *span,
             Expr::Continue(span) => *span,
             Expr::Comptime { span, .. } => *span,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse_expr(input: &str) -> ParseResult<Expr> {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        parser.parse_expression()
+    }
+
+    fn parse(input: &str) -> ParseResult<Vec<TopLevel>> {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        parser.parse()
+    }
+
+    // ===== BASIC LITERALS =====
+    
+    #[test]
+    fn test_integer_literal() {
+        let expr = parse_expr("42").unwrap();
+        match expr {
+            Expr::Literal(Literal::Integer(42), _) => {},
+            _ => panic!("Expected integer literal 42, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_float_literal() {
+        let expr = parse_expr("3.14").unwrap();
+        match expr {
+            Expr::Literal(Literal::Float(f), _) if (f - 3.14).abs() < 0.001 => {},
+            _ => panic!("Expected float literal 3.14, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_string_literal() {
+        let expr = parse_expr(r#""hello world""#).unwrap();
+        match expr {
+            Expr::Literal(Literal::String(s), _) if s == "hello world" => {},
+            _ => panic!("Expected string literal, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_rune_literal() {
+        let expr = parse_expr("'a'").unwrap();
+        match expr {
+            Expr::Literal(Literal::Rune('a'), _) => {},
+            _ => panic!("Expected rune literal 'a', got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_bool_literals() {
+        // Note: True and False are actually TypeIdents (uppercase), not special keywords
+        // They are enum variants of the Bool type
+        let expr = parse_expr("True").unwrap();
+        match expr {
+            Expr::Ident(ident) if ident.name == "True" => {},
+            _ => panic!("Expected True identifier, got {:?}", expr),
+        }
+
+        let expr = parse_expr("False").unwrap();
+        match expr {
+            Expr::Ident(ident) if ident.name == "False" => {},
+            _ => panic!("Expected False identifier, got {:?}", expr),
+        }
+    }
+
+    // ===== IDENTIFIERS =====
+
+    #[test]
+    fn test_value_identifier() {
+        let expr = parse_expr("my_var").unwrap();
+        match expr {
+            Expr::Ident(ident) if ident.name == "my_var" => {},
+            _ => panic!("Expected identifier 'my_var', got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_dollar_identifier() {
+        let expr = parse_expr("$0").unwrap();
+        match expr {
+            Expr::Ident(ident) if ident.name == "$0" => {},
+            _ => panic!("Expected identifier '$0', got {:?}", expr),
+        }
+    }
+
+    // ===== BINARY EXPRESSIONS =====
+
+    #[test]
+    fn test_addition() {
+        let expr = parse_expr("1 + 2").unwrap();
+        match expr {
+            Expr::Binary { op: BinOp::Add, .. } => {},
+            _ => panic!("Expected addition, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_multiplication_precedence() {
+        let expr = parse_expr("1 + 2 * 3").unwrap();
+        // Should parse as 1 + (2 * 3)
+        match expr {
+            Expr::Binary { 
+                op: BinOp::Add, 
+                left,
+                right,
+                .. 
+            } => {
+                assert!(matches!(*left, Expr::Literal(Literal::Integer(1), _)));
+                assert!(matches!(*right, Expr::Binary { op: BinOp::Mul, .. }));
+            },
+            _ => panic!("Expected 1 + (2 * 3), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_concatenation() {
+        let expr = parse_expr(r#""Hello " ++ "World""#).unwrap();
+        match expr {
+            Expr::Binary { op: BinOp::Concat, .. } => {},
+            _ => panic!("Expected concatenation, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_comparison() {
+        let expr = parse_expr("a == b").unwrap();
+        match expr {
+            Expr::Binary { op: BinOp::Eq, .. } => {},
+            _ => panic!("Expected equality comparison, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_logical_and() {
+        let expr = parse_expr("a && b").unwrap();
+        match expr {
+            Expr::Binary { op: BinOp::And, .. } => {},
+            _ => panic!("Expected logical AND, got {:?}", expr),
+        }
+    }
+
+    // ===== UNARY EXPRESSIONS =====
+
+    #[test]
+    fn test_negation() {
+        let expr = parse_expr("-5").unwrap();
+        match expr {
+            Expr::Unary { op: UnOp::Neg, .. } => {},
+            _ => panic!("Expected negation, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_logical_not() {
+        let expr = parse_expr("!condition").unwrap();
+        match expr {
+            Expr::Unary { op: UnOp::Not, .. } => {},
+            _ => panic!("Expected logical NOT, got {:?}", expr),
+        }
+    }
+
+    // ===== FUNCTION CALLS =====
+
+    #[test]
+    fn test_function_call_no_args() {
+        let expr = parse_expr("foo()").unwrap();
+        match expr {
+            Expr::Call { func, args, .. } => {
+                assert!(matches!(*func, Expr::Ident(_)));
+                assert_eq!(args.len(), 0);
+            },
+            _ => panic!("Expected function call, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_function_call_with_args() {
+        let expr = parse_expr("sum(1, 2, 3)").unwrap();
+        match expr {
+            Expr::Call { func, args, .. } => {
+                assert!(matches!(*func, Expr::Ident(_)));
+                assert_eq!(args.len(), 3);
+            },
+            _ => panic!("Expected function call with 3 args, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_method_call() {
+        let expr = parse_expr("arr.len()").unwrap();
+        match expr {
+            Expr::MethodCall { receiver, method, args, .. } => {
+                assert!(matches!(*receiver, Expr::Ident(_)));
+                assert_eq!(method.name, "len");
+                assert_eq!(args.len(), 0);
+            },
+            _ => panic!("Expected method call, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_chained_method_calls() {
+        let expr = parse_expr("arr.reverse().first()").unwrap();
+        match expr {
+            Expr::MethodCall { method, .. } if method.name == "first" => {},
+            _ => panic!("Expected chained method calls, got {:?}", expr),
+        }
+    }
+
+    // ===== FIELD ACCESS =====
+
+    #[test]
+    fn test_field_access() {
+        let expr = parse_expr("point.x").unwrap();
+        match expr {
+            Expr::FieldAccess { object, field, .. } => {
+                assert!(matches!(*object, Expr::Ident(_)));
+                assert_eq!(field.name, "x");
+            },
+            _ => panic!("Expected field access, got {:?}", expr),
+        }
+    }
+
+    // ===== STRUCT INITIALIZATION =====
+
+    #[test]
+    fn test_struct_init_named_fields() {
+        let expr = parse_expr("Point(x: 1, y: 2)").unwrap();
+        match expr {
+            Expr::StructInit { ty, fields, .. } => {
+                assert_eq!(ty.as_ref().unwrap().name, "Point");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name.as_ref().unwrap().name, "x");
+                assert_eq!(fields[1].name.as_ref().unwrap().name, "y");
+            },
+            _ => panic!("Expected struct initialization, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_struct_init_positional() {
+        let expr = parse_expr("Pair(5, 7)").unwrap();
+        match expr {
+            Expr::StructInit { ty, fields, .. } => {
+                assert_eq!(ty.as_ref().unwrap().name, "Pair");
+                assert_eq!(fields.len(), 2);
+                assert!(fields[0].name.is_none());
+                assert!(fields[1].name.is_none());
+            },
+            _ => panic!("Expected struct initialization, got {:?}", expr),
+        }
+    }
+
+    // ===== TUPLES =====
+
+    #[test]
+    fn test_tuple_expression() {
+        let expr = parse_expr("(1, 2, 3)").unwrap();
+        match expr {
+            Expr::Tuple(exprs, _) => {
+                assert_eq!(exprs.len(), 3);
+            },
+            _ => panic!("Expected tuple, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_expression() {
+        let expr = parse_expr("(42)").unwrap();
+        // Single element in parens is not a tuple
+        match expr {
+            Expr::Literal(Literal::Integer(42), _) => {},
+            _ => panic!("Expected parenthesized expression (unwrapped), got {:?}", expr),
+        }
+    }
+
+    // ===== CLOSURES =====
+
+    #[test]
+    fn test_closure_no_params() {
+        let expr = parse_expr("() { 42 }").unwrap();
+        match expr {
+            Expr::Closure { params, body, .. } => {
+                assert_eq!(params.len(), 0);
+                assert!(!body.stmts.is_empty());
+            },
+            _ => panic!("Expected closure, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_closure_with_params() {
+        let expr = parse_expr("(x Int, y Int) { x + y }").unwrap();
+        match expr {
+            Expr::Closure { params, .. } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].name.name, "x");
+                assert_eq!(params[1].name.name, "y");
+            },
+            _ => panic!("Expected closure with params, got {:?}", expr),
+        }
+    }
+
+    // ===== BLOCKS =====
+
+    #[test]
+    fn test_block_expression() {
+        let expr = parse_expr("{ a := 5; a * 2 }").unwrap();
+        match expr {
+            Expr::Block(block) => {
+                assert_eq!(block.stmts.len(), 2);
+            },
+            _ => panic!("Expected block expression, got {:?}", expr),
+        }
+    }
+
+    // ===== COMPTIME =====
+
+    #[test]
+    fn test_comptime_expression() {
+        // Comptime is parsed as #identifier, then it becomes a call
+        // So #add(3, 5) is Call(Comptime(add), [3, 5])
+        let expr = parse_expr("#add(3, 5)").unwrap();
+        match expr {
+            Expr::Call { func, args, .. } => {
+                assert!(matches!(*func, Expr::Comptime { .. }));
+                assert_eq!(args.len(), 2);
+            },
+            _ => panic!("Expected call with comptime function, got {:?}", expr),
+        }
+    }
+
+    // ===== STRUCT DEFINITIONS =====
+
+    #[test]
+    fn test_struct_definition_simple() {
+        let items = parse("Point(x Float, y Float)").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Struct(def) => {
+                assert_eq!(def.name.name, "Point");
+                assert_eq!(def.fields.len(), 2);
+                assert_eq!(def.fields[0].name.as_ref().unwrap().name, "x");
+                assert_eq!(def.fields[1].name.as_ref().unwrap().name, "y");
+            },
+            _ => panic!("Expected struct definition"),
+        }
+    }
+
+    #[test]
+    fn test_struct_definition_with_visibility() {
+        let items = parse("+ExportedStruct(field Int)").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Struct(def) => {
+                assert_eq!(def.visibility, Visibility::Public);
+                assert_eq!(def.name.name, "ExportedStruct");
+            },
+            _ => panic!("Expected public struct definition"),
+        }
+    }
+
+    #[test]
+    fn test_struct_definition_with_spread() {
+        let items = parse("Vec3(..Vec2, z Float)").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Struct(def) => {
+                assert_eq!(def.name.name, "Vec3");
+                assert_eq!(def.fields.len(), 2);
+                // First field should be spread
+                assert!(def.fields[0].name.is_none());
+            },
+            _ => panic!("Expected struct definition with spread"),
+        }
+    }
+
+    // ===== ENUM DEFINITIONS =====
+
+    #[test]
+    fn test_enum_definition_simple() {
+        // Newlines help distinguish enum cases from struct fields
+        let items = parse("Bool(\n  True\n  False\n)").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Enum(def) => {
+                assert_eq!(def.name.name, "Bool");
+                assert_eq!(def.cases.len(), 2, "Expected 2 enum cases");
+                assert_eq!(def.cases[0].name.name, "True");
+                assert_eq!(def.cases[1].name.name, "False");
+            },
+            _ => panic!("Expected enum definition, got {:?}", &items[0]),
+        }
+    }
+
+    #[test]
+    fn test_enum_definition_with_fields() {
+        let items = parse("Option(\n  Some(t)\n  None\n)").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Enum(def) => {
+                assert_eq!(def.name.name, "Option");
+                assert_eq!(def.cases.len(), 2);
+                assert_eq!(def.cases[0].name.name, "Some");
+                assert_eq!(def.cases[0].fields.len(), 1);
+                assert_eq!(def.cases[1].name.name, "None");
+                assert_eq!(def.cases[1].fields.len(), 0);
+            },
+            _ => panic!("Expected enum definition with fields, got {:?}", &items[0]),
+        }
+    }
+
+    // ===== FUNCTION DEFINITIONS =====
+
+    #[test]
+    fn test_function_definition_no_params() {
+        let items = parse("main() { print(\"Hello\") }").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Function(def) => {
+                assert_eq!(def.name.name, "main");
+                assert_eq!(def.params.len(), 0);
+                assert!(def.return_type.is_none());
+            },
+            _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_function_definition_with_params_and_return() {
+        let items = parse("add(a Int, b Int) Int { a + b }").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Function(def) => {
+                assert_eq!(def.name.name, "add");
+                assert_eq!(def.params.len(), 2);
+                assert!(def.return_type.is_some());
+            },
+            _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_function_definition_variadic() {
+        let items = parse("sum(values Int*) Int { 0 }").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Function(def) => {
+                assert_eq!(def.name.name, "sum");
+                assert_eq!(def.params.len(), 1);
+                // Check that the type is variadic
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::Variadic { non_empty: false, .. } => {},
+                    _ => panic!("Expected variadic type"),
+                }
+            },
+            _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_function_with_default_param() {
+        let items = parse("print(msg String, level LogLevel = Info) {}").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Function(def) => {
+                assert_eq!(def.params.len(), 2);
+                assert!(def.params[0].default.is_none());
+                assert!(def.params[1].default.is_some());
+            },
+            _ => panic!("Expected function with default param"),
+        }
+    }
+
+    // ===== VARIABLE DECLARATIONS =====
+
+    #[test]
+    fn test_var_decl_inferred() {
+        let items = parse("x := 5").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Variable(decl) => {
+                assert_eq!(decl.name.name, "x");
+                assert!(decl.ty.is_none());
+                assert!(decl.init.is_some());
+            },
+            _ => panic!("Expected variable declaration"),
+        }
+    }
+
+    #[test]
+    fn test_var_decl_typed() {
+        let items = parse("count: Int = 0").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Variable(decl) => {
+                assert_eq!(decl.name.name, "count");
+                assert!(decl.ty.is_some());
+                assert!(decl.init.is_some());
+            },
+            _ => panic!("Expected typed variable declaration"),
+        }
+    }
+
+    #[test]
+    fn test_var_decl_zero_init() {
+        let items = parse("value: Int").unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Variable(decl) => {
+                assert_eq!(decl.name.name, "value");
+                assert!(decl.ty.is_some());
+                assert!(decl.init.is_none());
+            },
+            _ => panic!("Expected zero-initialized variable"),
+        }
+    }
+
+    // ===== TYPES =====
+
+    #[test]
+    fn test_type_named() {
+        let items = parse("foo(x String) {}").unwrap();
+        match &items[0] {
+            TopLevel::Function(def) => {
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::Named(ident) if ident.name == "String" => {},
+                    _ => panic!("Expected named type String"),
+                }
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_type_tuple() {
+        let items = parse("foo(x (Int, Float)) {}").unwrap();
+        match &items[0] {
+            TopLevel::Function(def) => {
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::Tuple(types, _) => {
+                        assert_eq!(types.len(), 2);
+                    },
+                    _ => panic!("Expected tuple type"),
+                }
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_type_generic() {
+        let items = parse("foo(x Option(Int)) {}").unwrap();
+        match &items[0] {
+            TopLevel::Function(def) => {
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::Generic { name, params, .. } => {
+                        assert_eq!(name.name, "Option");
+                        assert_eq!(params.len(), 1);
+                    },
+                    _ => panic!("Expected generic type"),
+                }
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_type_variadic() {
+        let items = parse("foo(x Int*) {}").unwrap();
+        match &items[0] {
+            TopLevel::Function(def) => {
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::Variadic { non_empty: false, .. } => {},
+                    _ => panic!("Expected variadic type"),
+                }
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_type_non_empty_variadic() {
+        let items = parse("foo(x Int+) {}").unwrap();
+        match &items[0] {
+            TopLevel::Function(def) => {
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::Variadic { non_empty: true, .. } => {},
+                    _ => panic!("Expected non-empty variadic type"),
+                }
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_type_static_array() {
+        let items = parse("foo(x Int*4) {}").unwrap();
+        match &items[0] {
+            TopLevel::Function(def) => {
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::StaticArray { .. } => {},
+                    _ => panic!("Expected static array type"),
+                }
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_type_function() {
+        let items = parse("foo(f (Int, Int) { Int }) {}").unwrap();
+        match &items[0] {
+            TopLevel::Function(def) => {
+                match def.params[0].ty.as_ref().unwrap().as_ref() {
+                    Type::Function { params, return_type, .. } => {
+                        assert_eq!(params.len(), 2);
+                        assert!(return_type.is_some());
+                    },
+                    _ => panic!("Expected function type"),
+                }
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    // ===== ASSIGNMENT =====
+
+    #[test]
+    fn test_assignment() {
+        let expr = parse_expr("x = 5").unwrap();
+        match expr {
+            Expr::Binary { op: BinOp::Assign, .. } => {},
+            _ => panic!("Expected assignment, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_compound_assignment() {
+        let expr = parse_expr("x += 5").unwrap();
+        match expr {
+            Expr::Binary { op: BinOp::AddAssign, .. } => {},
+            _ => panic!("Expected compound assignment, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_concat_assignment() {
+        let expr = parse_expr("arr ++= 5").unwrap();
+        match expr {
+            Expr::Binary { op: BinOp::ConcatAssign, .. } => {},
+            _ => panic!("Expected concat assignment, got {:?}", expr),
+        }
+    }
+
+    // ===== NAMESPACE ACCESS =====
+
+    #[test]
+    fn test_namespace_access() {
+        let expr = parse_expr("std::print").unwrap();
+        match expr {
+            Expr::Ident(ident) if ident.name == "std::print" => {},
+            _ => panic!("Expected namespace access, got {:?}", expr),
+        }
+    }
+
+    // ===== TRAILING CLOSURE SYNTAX =====
+
+    #[test]
+    fn test_function_call_with_trailing_closure() {
+        // loop(arr) { $0 * 2 }
+        let expr = parse_expr("loop(arr) { $0 * 2 }").unwrap();
+        match expr {
+            Expr::Call { func, args, .. } => {
+                // func should be 'loop'
+                match *func {
+                    Expr::Ident(ref ident) if ident.name == "loop" => {},
+                    _ => panic!("Expected loop function, got {:?}", func),
+                }
+                // args should be [arr, closure_block]
+                assert_eq!(args.len(), 2, "Expected arr and closure block");
+                // Second arg should be a block
+                assert!(matches!(args[1], Expr::Block(_)));
+            },
+            _ => panic!("Expected call with trailing closure, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_match_as_function() {
+        // match(value) { True { 1 } False { 0 } }
+        let expr = parse_expr("match(x) { True { 1 } }").unwrap();
+        match expr {
+            Expr::Call { func, args, .. } => {
+                match *func {
+                    Expr::Ident(ref ident) if ident.name == "match" => {},
+                    _ => panic!("Expected match function, got {:?}", func),
+                }
+                // args should be [x, closure_block]
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[1], Expr::Block(_)));
+            },
+            _ => panic!("Expected match as function call, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_loop_with_condition_trailing_closure() {
+        // loop(i < 10) { i += 1 }
+        let expr = parse_expr("loop(i < 10) { i += 1 }").unwrap();
+        match expr {
+            Expr::Call { args, .. } => {
+                assert_eq!(args.len(), 2);
+                // First arg is condition
+                assert!(matches!(args[0], Expr::Binary { .. }));
+                // Second is block
+                assert!(matches!(args[1], Expr::Block(_)));
+            },
+            _ => panic!("Expected loop with condition and closure, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_chained_method_with_trailing_closure() {
+        // arr.loop() { print($0) }
+        let expr = parse_expr("arr.loop() { print($0) }").unwrap();
+        match expr {
+            Expr::MethodCall { receiver, method, args, .. } => {
+                assert!(matches!(*receiver, Expr::Ident(_)));
+                assert_eq!(method.name, "loop");
+                assert_eq!(args.len(), 1); // Just the block
+                assert!(matches!(args[0], Expr::Block(_)));
+            },
+            _ => panic!("Expected method call with trailing closure, got {:?}", expr),
+        }
+    }
+
+    // ===== STRING INTERPOLATION (NOT YET IMPLEMENTED) =====
+
+    #[test]
+    #[should_panic(expected = "interpolation")]
+    #[ignore] // TODO: Implement string interpolation
+    fn test_string_interpolation() {
+        let expr = parse_expr(r#""Hello \(name)!""#).unwrap();
+        // Should parse as interpolated string
+        panic!("String interpolation not yet implemented");
+    }
+
+    // ===== REAL-WORLD EXAMPLES FROM STDLIB =====
+
+    #[test]
+    fn test_fibonacci_function() {
+        let code = r#"
+fib(nth Int) Int {
+    match(nth) {
+        0 { 0 }
+        1 { 1 }
+        _ { fib(nth - 1) + fib(nth - 2) }
+    }
+}
+"#;
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Function(def) => {
+                assert_eq!(def.name.name, "fib");
+                assert_eq!(def.params.len(), 1);
+                assert!(def.return_type.is_some());
+                // Body should have a match call
+                assert!(!def.body.stmts.is_empty());
+            },
+            _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_array_map_from_stdlib() {
+        let code = r#"
++map(arr t*, fn (t) {u}) u* {
+    result: u*
+    loop(arr) {
+        result ++= fn($0)
+    }
+    result
+}
+"#;
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Function(def) => {
+                assert_eq!(def.visibility, Visibility::Public);
+                assert_eq!(def.name.name, "map");
+                assert_eq!(def.params.len(), 2);
+                
+                // Second param should be function type
+                match def.params[1].ty.as_ref().unwrap().as_ref() {
+                    Type::Function { .. } => {},
+                    _ => panic!("Expected function type for fn parameter"),
+                }
+            },
+            _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_option_enum_from_stdlib() {
+        let code = r#"
++Option(
+    Some(t)
+    None
+)
+"#;
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Enum(def) => {
+                assert_eq!(def.visibility, Visibility::Public);
+                assert_eq!(def.name.name, "Option");
+                assert_eq!(def.cases.len(), 2);
+                assert_eq!(def.cases[0].name.name, "Some");
+                assert_eq!(def.cases[0].fields.len(), 1);
+                assert_eq!(def.cases[1].name.name, "None");
+                assert_eq!(def.cases[1].fields.len(), 0);
+            },
+            _ => panic!("Expected enum definition"),
+        }
+    }
+
+    #[test]
+    fn test_result_enum_with_type_params() {
+        let code = r#"
++Result(t, e = String;
+    Ok(t)
+    Err(e)
+)
+"#;
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Enum(def) => {
+                assert_eq!(def.name.name, "Result");
+                assert_eq!(def.type_params.len(), 2);
+                // Second type param should have default
+                assert!(def.type_params[1].default.is_some());
+                assert_eq!(def.cases.len(), 2);
+            },
+            _ => panic!("Expected enum definition"),
+        }
+    }
+
+    #[test]
+    fn test_complex_expression_from_stdlib() {
+        // Simpler test: just a match call with trailing closure
+        let code = "match(x) { True { 1 } False { 2 } }";
+        let expr = parse_expr(code).unwrap();
+        match expr {
+            Expr::Call { .. } => {},
+            _ => panic!("Expected call expression (match with trailing closure)"),
+        }
+    }
+
+    #[test]
+    fn test_zero_initialized_variable() {
+        // From stdlib: result: u*
+        let code = "result: u*";
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Variable(decl) => {
+                assert_eq!(decl.name.name, "result");
+                assert!(decl.ty.is_some());
+                assert!(decl.init.is_none()); // Zero-initialized
+            },
+            _ => panic!("Expected variable declaration"),
+        }
+    }
+
+    #[test]
+    fn test_generic_type_in_function() {
+        let code = "+len(of String) Int { 0 }";
+        let items = parse(code).unwrap();
+        
+        match &items[0] {
+            TopLevel::Function(def) => {
+                assert_eq!(def.visibility, Visibility::Public);
+                assert_eq!(def.name.name, "len");
+            },
+            _ => panic!("Expected function"),
         }
     }
 }

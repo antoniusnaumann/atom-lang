@@ -96,6 +96,7 @@ impl Lexer {
             ';' => self.make_token(TokenKind::NewlineOrSemi, start),
             '?' => self.make_token(TokenKind::Question, start),
             '~' => self.make_token(TokenKind::Tilde, start),
+            '#' => self.make_token(TokenKind::Hash, start),
 
             // Operators (potentially multi-char)
             '+' => {
