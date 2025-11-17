@@ -689,7 +689,25 @@ impl Parser {
         };
         
         let (ty, init) = if self.match_token(&TokenKind::ColonEq) {
-            (None, Some(Box::new(self.parse_expression()?)))
+            // For tuple destructuring with multiple names, try to parse tuple literal
+            let init_expr = if names.len() > 1 {
+                // Multiple names: parse as comma-separated expressions (tuple literal)
+                let mut exprs = vec![self.parse_expression()?];
+                while self.match_token(&TokenKind::Comma) {
+                    exprs.push(self.parse_expression()?);
+                }
+                // If we got multiple expressions, wrap in tuple; otherwise keep as-is
+                if exprs.len() > 1 {
+                    let span = exprs.first().unwrap().span().merge(exprs.last().unwrap().span());
+                    Expr::Tuple(exprs, span)
+                } else {
+                    exprs.into_iter().next().unwrap()
+                }
+            } else {
+                // Single name: parse as normal expression
+                self.parse_expression()?
+            };
+            (None, Some(Box::new(init_expr)))
         } else if self.match_token(&TokenKind::Colon) {
             let ty = Some(Box::new(self.parse_type()?));
             let init = if self.match_token(&TokenKind::Eq) {
