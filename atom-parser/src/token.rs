@@ -69,14 +69,10 @@ pub enum TokenKind {
     RParen,     // )
     LBrace,     // {
     RBrace,     // }
-    LBracket,   // [
-    RBracket,   // ]
 
     // Special
     /// Inserted by ASI or explicit semicolon
     NewlineOrSemi,
-    /// Comment (line or doc)
-    Comment,
     /// End of file
     Eof,
 }
@@ -100,7 +96,6 @@ impl TokenKind {
                 | TokenKind::Or
                 | TokenKind::Comma
                 | TokenKind::RParen
-                | TokenKind::RBracket
                 | TokenKind::RBrace
         )
     }

@@ -90,8 +90,6 @@ impl Lexer {
             ')' => self.make_token(TokenKind::RParen, start),
             '{' => self.make_token(TokenKind::LBrace, start),
             '}' => self.make_token(TokenKind::RBrace, start),
-            '[' => self.make_token(TokenKind::LBracket, start),
-            ']' => self.make_token(TokenKind::RBracket, start),
             ',' => self.make_token(TokenKind::Comma, start),
             ';' => self.make_token(TokenKind::NewlineOrSemi, start),
             '?' => self.make_token(TokenKind::Question, start),
