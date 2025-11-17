@@ -92,11 +92,12 @@ pub struct Param {
 }
 
 /// Variable/constant declaration: `name := value` or `name: Type = value`
+/// Also supports tuple destructuring: `a, b := expr` or `a, b := 1, 2`
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarDecl {
     pub visibility: Visibility,
     pub is_const: bool,  // true for top-level declarations without :=
-    pub name: Ident,
+    pub names: Vec<Ident>,  // Single name for normal decl, multiple for tuple destructuring
     pub ty: Option<Box<Type>>,
     pub init: Option<Box<Expr>>,
     pub span: Span,

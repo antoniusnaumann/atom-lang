@@ -507,7 +507,7 @@ impl Parser {
         Ok(TopLevel::Variable(VarDecl {
             visibility,
             is_const: true, // Top-level declarations are constants
-            name,
+            names: vec![name],  // Top-level declarations are always single names
             ty,
             init,
             span: start.merge(self.previous_span()),
@@ -638,11 +638,23 @@ impl Parser {
         // Check if this is a variable declaration
         if self.check(&TokenKind::ValueIdent) {
             let saved_pos = self.pos;
-            let _name = self.advance();
+            self.advance(); // Skip first identifier
             
-            // Look ahead for := or :
+            // Look ahead for tuple destructuring (comma-separated identifiers)
+            // or single variable declaration (:= or :)
+            while self.check(&TokenKind::Comma) {
+                self.advance(); // Skip comma
+                if !self.check(&TokenKind::ValueIdent) {
+                    // Not a valid tuple destructuring, restore and parse as expression
+                    self.pos = saved_pos;
+                    return Ok(Stmt::Expression(self.parse_expression()?));
+                }
+                self.advance(); // Skip identifier
+            }
+            
+            // Now check for := or :
             if self.check(&TokenKind::ColonEq) || self.check(&TokenKind::Colon) {
-                // It's a variable declaration
+                // It's a variable declaration (single or tuple destructuring)
                 self.pos = saved_pos;
                 return Ok(Stmt::VarDecl(self.parse_var_decl()?));
             }
@@ -657,7 +669,24 @@ impl Parser {
 
     fn parse_var_decl(&mut self) -> ParseResult<VarDecl> {
         let start = self.current_span();
-        let name = self.expect_value_ident()?;
+        
+        // Parse first identifier
+        let first_name = self.expect_value_ident()?;
+        
+        // Check if this is tuple destructuring (comma after first name)
+        let names = if self.check(&TokenKind::Comma) {
+            // Tuple destructuring: a, b, c := ...
+            let mut names = vec![first_name];
+            
+            while self.match_token(&TokenKind::Comma) {
+                names.push(self.expect_value_ident()?);
+            }
+            
+            names
+        } else {
+            // Single variable
+            vec![first_name]
+        };
         
         let (ty, init) = if self.match_token(&TokenKind::ColonEq) {
             (None, Some(Box::new(self.parse_expression()?)))
@@ -676,7 +705,7 @@ impl Parser {
         Ok(VarDecl {
             visibility: Visibility::Internal,
             is_const: false,
-            name,
+            names,
             ty,
             init,
             span: start.merge(self.previous_span()),
@@ -1978,7 +2007,8 @@ mod tests {
         
         match &items[0] {
             TopLevel::Variable(decl) => {
-                assert_eq!(decl.name.name, "x");
+                assert_eq!(decl.names.len(), 1);
+                assert_eq!(decl.names[0].name, "x");
                 assert!(decl.ty.is_none());
                 assert!(decl.init.is_some());
             },
@@ -1993,11 +2023,12 @@ mod tests {
         
         match &items[0] {
             TopLevel::Variable(decl) => {
-                assert_eq!(decl.name.name, "count");
+                assert_eq!(decl.names.len(), 1);
+                assert_eq!(decl.names[0].name, "count");
                 assert!(decl.ty.is_some());
                 assert!(decl.init.is_some());
             },
-            _ => panic!("Expected typed variable declaration"),
+            _ => panic!("Expected variable declaration"),
         }
     }
 
@@ -2008,11 +2039,69 @@ mod tests {
         
         match &items[0] {
             TopLevel::Variable(decl) => {
-                assert_eq!(decl.name.name, "value");
+                assert_eq!(decl.names.len(), 1);
+                assert_eq!(decl.names[0].name, "value");
                 assert!(decl.ty.is_some());
                 assert!(decl.init.is_none());
             },
             _ => panic!("Expected zero-initialized variable"),
+        }
+    }
+
+    // ===== TUPLE DESTRUCTURING =====
+
+    fn parse_stmt(input: &str) -> ParseResult<Stmt> {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        parser.parse_statement()
+    }
+
+    #[test]
+    fn test_tuple_destructuring_two_vars() {
+        let stmt = parse_stmt("a, b := 1, 2").unwrap();
+        match stmt {
+            Stmt::VarDecl(decl) => {
+                assert_eq!(decl.names.len(), 2);
+                assert_eq!(decl.names[0].name, "a");
+                assert_eq!(decl.names[1].name, "b");
+                assert!(decl.init.is_some());
+            },
+            _ => panic!("Expected variable declaration"),
+        }
+    }
+
+    #[test]
+    fn test_tuple_destructuring_three_vars() {
+        let stmt = parse_stmt("x, y, z := 1, 2, 3").unwrap();
+        match stmt {
+            Stmt::VarDecl(decl) => {
+                assert_eq!(decl.names.len(), 3);
+                assert_eq!(decl.names[0].name, "x");
+                assert_eq!(decl.names[1].name, "y");
+                assert_eq!(decl.names[2].name, "z");
+            },
+            _ => panic!("Expected variable declaration"),
+        }
+    }
+
+    #[test]
+    fn test_tuple_destructuring_function_call() {
+        let stmt = parse_stmt("rune, consumed := decode_utf8_at(s, i, seq_len)").unwrap();
+        match stmt {
+            Stmt::VarDecl(decl) => {
+                assert_eq!(decl.names.len(), 2);
+                assert_eq!(decl.names[0].name, "rune");
+                assert_eq!(decl.names[1].name, "consumed");
+                // Check that init is a function call
+                match decl.init.as_ref() {
+                    Some(expr) => {
+                        assert!(matches!(**expr, Expr::Call { .. }));
+                    },
+                    None => panic!("Expected init expression"),
+                }
+            },
+            _ => panic!("Expected variable declaration"),
         }
     }
 
@@ -2390,7 +2479,8 @@ fib(nth Int) Int {
         
         match &items[0] {
             TopLevel::Variable(decl) => {
-                assert_eq!(decl.name.name, "result");
+                assert_eq!(decl.names.len(), 1);
+                assert_eq!(decl.names[0].name, "result");
                 assert!(decl.ty.is_some());
                 assert!(decl.init.is_none()); // Zero-initialized
             },
