@@ -8,11 +8,31 @@ use crate::{
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    filename: Option<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { 
+            tokens, 
+            pos: 0,
+            filename: None,
+        }
+    }
+
+    pub fn new_with_filename(tokens: Vec<Token>, filename: String) -> Self {
+        Self { 
+            tokens, 
+            pos: 0,
+            filename: Some(filename),
+        }
+    }
+
+    fn is_test_file(&self) -> bool {
+        self.filename
+            .as_ref()
+            .map(|f| f.ends_with(".test.atom"))
+            .unwrap_or(false)
     }
 
     pub fn parse(&mut self) -> ParseResult<Vec<TopLevel>> {
@@ -28,7 +48,29 @@ impl Parser {
             items.push(self.parse_top_level()?);
         }
 
+        // Validate: check for top-level statements in non-test files
+        self.validate_top_level_items(&items)?;
+
         Ok(items)
+    }
+
+    fn validate_top_level_items(&self, items: &[TopLevel]) -> ParseResult<()> {
+        if !self.is_test_file() {
+            for item in items {
+                if let TopLevel::Statement(stmt) = item {
+                    // Get span from the statement
+                    let span = match stmt {
+                        Stmt::Expression(expr) => expr.span(),
+                        Stmt::VarDecl(decl) => decl.span,
+                    };
+                    return Err(ParseError::new(
+                        "Top-level statements are only allowed in .test.atom files",
+                        span,
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn parse_top_level(&mut self) -> ParseResult<TopLevel> {
@@ -75,15 +117,35 @@ impl Parser {
                 self.parse_struct_def(visibility, name, start)
             }
         } else if self.check(&TokenKind::ValueIdent) {
-            // Could be function definition or variable declaration
+            // Could be function definition, variable declaration, or statement (function call)
+            // Save position in case we need to backtrack
+            let saved_pos = self.pos;
             let name = self.expect_value_ident()?;
             
             if self.check(&TokenKind::LParen) {
-                // Function definition
-                self.parse_function_def(visibility, name, start)
+                // Could be function definition or function call
+                // Try to parse as function definition first
+                match self.parse_function_def(visibility, name, start) {
+                    Ok(func) => Ok(func),
+                    Err(_) => {
+                        // Not a function definition, restore and parse as statement
+                        self.pos = saved_pos;
+                        let stmt = self.parse_statement()?;
+                        Ok(TopLevel::Statement(stmt))
+                    }
+                }
             } else {
-                // Variable/constant declaration
-                self.parse_top_level_var_decl(visibility, name, start)
+                // Variable/constant declaration or statement
+                // Try variable declaration first
+                match self.parse_top_level_var_decl(visibility, name, start) {
+                    Ok(var) => Ok(var),
+                    Err(_) => {
+                        // Not a variable declaration, restore and parse as statement  
+                        self.pos = saved_pos;
+                        let stmt = self.parse_statement()?;
+                        Ok(TopLevel::Statement(stmt))
+                    }
+                }
             }
         } else if self.check(&TokenKind::String) {
             // Test block with name
@@ -92,7 +154,12 @@ impl Parser {
             // Anonymous test block or top-level code in test files
             self.parse_test_block(start)
         } else {
-            Err(self.error("Expected top-level item (struct, enum, function, or variable)"))
+            // Try to parse as a statement (for test files)
+            // This allows bare expressions like assert(...) at top level
+            match self.parse_statement() {
+                Ok(stmt) => Ok(TopLevel::Statement(stmt)),
+                Err(_) => Err(self.error("Expected top-level item (struct, enum, function, variable, or statement)"))
+            }
         }
     }
 
@@ -1733,6 +1800,7 @@ impl Clone for Parser {
         Self {
             tokens: self.tokens.clone(),
             pos: self.pos,
+            filename: self.filename.clone(),
         }
     }
 }
@@ -1775,6 +1843,60 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         parser.parse()
+    }
+
+    fn parse_with_filename(input: &str, filename: &str) -> ParseResult<Vec<TopLevel>> {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new_with_filename(tokens, filename.to_string());
+        parser.parse()
+    }
+
+    // ===== TOP-LEVEL STATEMENTS =====
+
+    #[test]
+    fn test_top_level_statements_allowed_in_test_files() {
+        let input = "assert(1 == 1)\nprint(\"test\")\nx := 42";
+        let result = parse_with_filename(input, "test.test.atom");
+        assert!(result.is_ok(), "Expected success, got error: {:?}", result);
+        
+        let items = result.unwrap();
+        assert_eq!(items.len(), 3, "Expected 3 top-level items");
+        
+        // Check that we have statement nodes
+        match &items[0] {
+            TopLevel::Statement(_) => {},
+            other => panic!("Expected TopLevel::Statement for assert, got {:?}", other),
+        }
+        match &items[1] {
+            TopLevel::Statement(_) => {},
+            other => panic!("Expected TopLevel::Statement for print, got {:?}", other),
+        }
+        match &items[2] {
+            TopLevel::Variable(_) => {},
+            other => panic!("Expected TopLevel::Variable for x, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_top_level_statements_error_in_regular_files() {
+        let input = "assert(1 == 1)";
+        let result = parse_with_filename(input, "main.atom");
+        assert!(result.is_err(), "Expected error for top-level statement in non-test file");
+        
+        let error = result.unwrap_err();
+        let error_msg = format!("{:?}", error);
+        assert!(
+            error_msg.contains("Top-level statements are only allowed in .test.atom files"),
+            "Expected error message about .test.atom files, got: {:?}", error
+        );
+    }
+
+    #[test]
+    fn test_top_level_statements_multiple_errors() {
+        let input = "assert(1 == 1)\nprint(\"hello\")\nfoo()";
+        let result = parse_with_filename(input, "main.atom");
+        assert!(result.is_err(), "Expected error for top-level statements in non-test file");
     }
 
     // ===== BASIC LITERALS =====

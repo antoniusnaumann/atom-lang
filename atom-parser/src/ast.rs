@@ -9,6 +9,8 @@ pub enum TopLevel {
     Function(FunctionDef),
     Variable(VarDecl),
     TestBlock(TestBlock),
+    /// Statement (only allowed in .test.atom files)
+    Statement(Stmt),
 }
 
 /// Visibility prefix: + (public), - (file-private), or none (package-internal)
