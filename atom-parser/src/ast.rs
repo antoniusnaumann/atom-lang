@@ -3,6 +3,7 @@ use crate::span::Span;
 /// Top-level item in an Atom source file
 #[derive(Debug, Clone, PartialEq)]
 pub enum TopLevel {
+    Import(ImportDecl),
     Struct(StructDef),
     Enum(EnumDef),
     Function(FunctionDef),
@@ -23,6 +24,23 @@ pub enum Visibility {
 pub struct Ident {
     pub name: String,
     pub span: Span,
+}
+
+/// Import declaration: `matrix::*` or `physics::(force, kinematics)`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    pub namespace: Ident,
+    pub items: ImportItems,
+    pub span: Span,
+}
+
+/// Items to import from a namespace
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportItems {
+    /// Import all items: `*`
+    All,
+    /// Import specific items: `(item1, item2)`
+    Named(Vec<Ident>),
 }
 
 /// Struct definition: `StructName(field1 Type1, field2 Type2)`
@@ -262,6 +280,9 @@ pub enum Pattern {
         fields: Vec<Pattern>,
         span: Span,
     },
+    /// Expression (guard): `x > 5`, `a && b`
+    /// Used in guard-style matches like: match(True) { x > 5 { ... } }
+    Expr(Box<Expr>),
 }
 
 /// Literal value

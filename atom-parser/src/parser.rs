@@ -34,6 +34,21 @@ impl Parser {
     fn parse_top_level(&mut self) -> ParseResult<TopLevel> {
         let start = self.current_span();
 
+        // Check for import first (no visibility prefix)
+        // Import syntax: valueIdent::* or valueIdent::(item1, item2)
+        // Package names are lowercase (matrix, physics, etc.)
+        if self.check(&TokenKind::ValueIdent) {
+            // Peek ahead to see if this is an import
+            let mut parser_copy = self.clone();
+            parser_copy.advance(); // Skip ValueIdent
+            if parser_copy.check(&TokenKind::ColonColon) {
+                // This is an import
+                let name = self.expect_value_ident()?;
+                self.expect(&TokenKind::ColonColon)?;
+                return self.parse_import(name, start);
+            }
+        }
+
         // Check for visibility prefix
         let visibility = if self.match_token(&TokenKind::Plus) {
             Visibility::Public
@@ -116,6 +131,48 @@ impl Parser {
         
         // Now check what's next - should be either TypeIdent (enum case) or valueIdent/.. (struct field)
         parser_copy.check(&TokenKind::TypeIdent)
+    }
+
+    fn parse_import(&mut self, namespace: Ident, start: Span) -> ParseResult<TopLevel> {
+        // Already consumed: TypeIdent::
+        // Now expecting either * or (item1, item2, ...)
+        
+        let items = if self.match_token(&TokenKind::Star) {
+            ImportItems::All
+        } else if self.match_token(&TokenKind::LParen) {
+            // Parse comma-separated list of identifiers
+            let mut names = Vec::new();
+            
+            while self.match_token(&TokenKind::NewlineOrSemi) {}
+            
+            if !self.check(&TokenKind::RParen) {
+                loop {
+                    let name = self.expect_value_ident()?;
+                    names.push(name);
+                    
+                    while self.match_token(&TokenKind::NewlineOrSemi) {}
+                    
+                    if !self.match_token(&TokenKind::Comma) {
+                        break;
+                    }
+                    
+                    while self.match_token(&TokenKind::NewlineOrSemi) {}
+                }
+            }
+            
+            self.expect(&TokenKind::RParen)?;
+            ImportItems::Named(names)
+        } else {
+            return Err(self.error("Expected '*' or '(' after '::' in import declaration"));
+        };
+        
+        let span = start.merge(self.previous_span());
+        
+        Ok(TopLevel::Import(ImportDecl {
+            namespace,
+            items,
+            span,
+        }))
     }
 
     fn parse_struct_def(&mut self, visibility: Visibility, name: Ident, start: Span) -> ParseResult<TopLevel> {
@@ -634,6 +691,169 @@ impl Parser {
         })
     }
 
+    fn parse_match_arms(&mut self) -> ParseResult<Vec<MatchArm>> {
+        self.expect(&TokenKind::LBrace)?;
+        
+        let mut arms = Vec::new();
+        
+        // Skip leading newlines/semicolons
+        while self.match_token(&TokenKind::NewlineOrSemi) {}
+        
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let arm_start = self.current_span();
+            
+            // Try to parse as pattern first, but if we don't see { after,
+            // it's actually an expression (guard-style match)
+            let pattern = self.parse_match_pattern_or_expr()?;
+            
+            // Expect { for the arm body
+            self.expect(&TokenKind::LBrace)?;
+            
+            // Parse the body expression
+            // The body is a single expression (block content)
+            let body = if self.check(&TokenKind::RBrace) {
+                // Empty body - use unit literal
+                Box::new(Expr::Tuple(vec![], self.current_span()))
+            } else {
+                // Parse as expression (could be a block or single expression)
+                // For simplicity, collect statements until we hit RBrace
+                let body_start = self.current_span();
+                let mut stmts = Vec::new();
+                
+                while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+                    if self.match_token(&TokenKind::NewlineOrSemi) {
+                        continue;
+                    }
+                    if self.check(&TokenKind::RBrace) {
+                        break;
+                    }
+                    stmts.push(self.parse_statement()?);
+                    self.match_token(&TokenKind::NewlineOrSemi);
+                }
+                
+                let body_span = body_start.merge(self.current_span());
+                Box::new(Expr::Block(Block { stmts, span: body_span }))
+            };
+            
+            self.expect(&TokenKind::RBrace)?;
+            
+            let span = arm_start.merge(self.previous_span());
+            arms.push(MatchArm { pattern, body, span });
+            
+            // Skip newlines/commas between arms
+            while self.match_token(&TokenKind::NewlineOrSemi) || self.match_token(&TokenKind::Comma) {}
+        }
+        
+        self.expect(&TokenKind::RBrace)?;
+        
+        Ok(arms)
+    }
+
+    fn parse_match_pattern_or_expr(&mut self) -> ParseResult<Pattern> {
+        // Save position in case we need to backtrack
+        let saved_pos = self.pos;
+        
+        // Try parsing as a pattern first
+        if let Ok(pattern) = self.parse_pattern() {
+            // Check if next token is {
+            if self.check(&TokenKind::LBrace) {
+                return Ok(pattern);
+            }
+        }
+        
+        // Restore position and parse as expression instead
+        self.pos = saved_pos;
+        let expr = self.parse_expression()?;
+        Ok(Pattern::Expr(Box::new(expr)))
+    }
+
+    fn parse_pattern(&mut self) -> ParseResult<Pattern> {
+        let start = self.current_span();
+        
+        // Wildcard: _
+        if self.check(&TokenKind::ValueIdent) {
+            let is_wildcard = self.peek().text == "_";
+            if is_wildcard {
+                let span = self.advance().span;
+                return Ok(Pattern::Wildcard(span));
+            }
+        }
+        
+        // Integer literal
+        if self.check(&TokenKind::Integer) {
+            let tok = self.advance();
+            let value = self.parse_integer_literal(&tok.text)
+                .map_err(|_| ParseError::new("Invalid integer literal in pattern", tok.span))?;
+            return Ok(Pattern::Literal(Literal::Integer(value), tok.span));
+        }
+        
+        // String literal
+        if self.check(&TokenKind::String) {
+            let tok = self.advance();
+            return Ok(Pattern::Literal(Literal::String(tok.text.clone()), tok.span));
+        }
+        
+        // Rune literal
+        if self.check(&TokenKind::Rune) {
+            let tok = self.advance();
+            let ch = tok.text.chars().next()
+                .ok_or_else(|| ParseError::new("Empty rune literal in pattern", tok.span))?;
+            return Ok(Pattern::Literal(Literal::Rune(ch), tok.span));
+        }
+        
+        // Tuple pattern: (a, b, c)
+        if self.match_token(&TokenKind::LParen) {
+            let mut patterns = Vec::new();
+            while !self.check(&TokenKind::RParen) {
+                patterns.push(self.parse_pattern()?);
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+                while self.match_token(&TokenKind::NewlineOrSemi) {}
+            }
+            self.expect(&TokenKind::RParen)?;
+            return Ok(Pattern::Tuple(patterns, start.merge(self.previous_span())));
+        }
+        
+        // Enum pattern or identifier binding: Some(x), None, x
+        if self.check(&TokenKind::TypeIdent) {
+            let name = self.expect_type_ident()?;
+            
+            // Check for enum pattern with fields
+            if self.match_token(&TokenKind::LParen) {
+                let mut fields = Vec::new();
+                while !self.check(&TokenKind::RParen) {
+                    fields.push(self.parse_pattern()?);
+                    if !self.match_token(&TokenKind::Comma) {
+                        break;
+                    }
+                    while self.match_token(&TokenKind::NewlineOrSemi) {}
+                }
+                self.expect(&TokenKind::RParen)?;
+                return Ok(Pattern::Enum {
+                    name,
+                    fields,
+                    span: start.merge(self.previous_span()),
+                });
+            }
+            
+            // Enum pattern without fields
+            return Ok(Pattern::Enum {
+                name,
+                fields: vec![],
+                span: start.merge(self.previous_span()),
+            });
+        }
+        
+        // Identifier binding: x
+        if self.check(&TokenKind::ValueIdent) {
+            let name = self.expect_value_ident()?;
+            return Ok(Pattern::Ident(name));
+        }
+        
+        Err(self.error("Expected pattern"))
+    }
+
     fn parse_statement(&mut self) -> ParseResult<Stmt> {
         // Check if this is a variable declaration
         if self.check(&TokenKind::ValueIdent) {
@@ -1072,7 +1292,26 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 
                 // Check for trailing closure
+                // Special case: match(expr) { Pattern { body } } should be parsed as Expr::Match
                 if self.check(&TokenKind::LBrace) {
+                    // Check if this is a match expression
+                    if let Expr::Ident(ref ident) = expr {
+                        if ident.name == "match" && args.len() == 1 {
+                            // This is match(expr) { arms }
+                            // Parse the match arms
+                            let match_expr = args.into_iter().next().unwrap();
+                            let arms = self.parse_match_arms()?;
+                            let span = expr.span().merge(self.previous_span());
+                            expr = Expr::Match {
+                                expr: Box::new(match_expr),
+                                arms,
+                                span,
+                            };
+                            continue; // Skip creating a Call expression
+                        }
+                    }
+                    
+                    // Regular function call with trailing closure
                     let block = self.parse_block()?;
                     args.push(Expr::Block(block));
                 }
@@ -2291,37 +2530,27 @@ mod tests {
 
     #[test]
     fn test_match_as_function() {
-        // match(value) { True { 1 } False { 0 } }
+        // match(value) { True { 1 } } - should now be parsed as Expr::Match
         let expr = parse_expr("match(x) { True { 1 } }").unwrap();
         match expr {
-            Expr::Call { func, args, .. } => {
-                match *func {
-                    Expr::Ident(ref ident) if ident.name == "match" => {},
-                    _ => panic!("Expected match function, got {:?}", func),
-                }
-                // args should be [x, closure_block]
-                assert_eq!(args.len(), 2);
-                assert!(matches!(args[1], Expr::Block(_)));
+            Expr::Match { expr: match_expr, arms, .. } => {
+                assert!(matches!(*match_expr, Expr::Ident(_)));
+                assert_eq!(arms.len(), 1);
             },
-            _ => panic!("Expected match as function call, got {:?}", expr),
+            _ => panic!("Expected match expression, got {:?}", expr),
         }
     }
 
     #[test]
     fn test_inline_match_with_commas() {
-        // match(x) { True { 1 }, False { 2 } }
+        // match(x) { True { 1 }, False { 2 } } - now parsed as Expr::Match
         let expr = parse_expr("match(x) { True { 1 }, False { 2 } }").unwrap();
         match expr {
-            Expr::Call { func, args, .. } => {
-                match *func {
-                    Expr::Ident(ref ident) if ident.name == "match" => {},
-                    _ => panic!("Expected match function, got {:?}", func),
-                }
-                // args should be [x, closure_block]
-                assert_eq!(args.len(), 2);
-                assert!(matches!(args[1], Expr::Block(_)));
+            Expr::Match { expr: match_expr, arms, .. } => {
+                assert!(matches!(*match_expr, Expr::Ident(_)));
+                assert_eq!(arms.len(), 2);
             },
-            _ => panic!("Expected match as function call, got {:?}", expr),
+            _ => panic!("Expected match expression, got {:?}", expr),
         }
     }
 
@@ -2475,12 +2704,12 @@ fib(nth Int) Int {
 
     #[test]
     fn test_complex_expression_from_stdlib() {
-        // Simpler test: just a match call with trailing closure
+        // Match expression with trailing closure - now parsed as Expr::Match
         let code = "match(x) { True { 1 } False { 2 } }";
         let expr = parse_expr(code).unwrap();
         match expr {
-            Expr::Call { .. } => {},
-            _ => panic!("Expected call expression (match with trailing closure)"),
+            Expr::Match { .. } => {},
+            _ => panic!("Expected match expression, got {:?}", expr),
         }
     }
 
@@ -2523,8 +2752,8 @@ fib(nth Int) Int {
     False { 1 }
 }"#).unwrap();
         match expr {
-            Expr::Call { .. } => {},
-            _ => panic!("Expected call expression"),
+            Expr::Match { .. } => {},
+            _ => panic!("Expected match expression, got {:?}", expr),
         }
     }
 
@@ -2558,6 +2787,166 @@ fib(nth Int) Int {
                 assert_eq!(val, 0o755);
             },
             _ => panic!("Expected octal literal"),
+        }
+    }
+
+    #[test]
+    fn test_import_all() {
+        let code = "matrix::*";
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Import(decl) => {
+                assert_eq!(decl.namespace.name, "matrix");
+                assert!(matches!(decl.items, ImportItems::All));
+            },
+            _ => panic!("Expected import declaration"),
+        }
+    }
+
+    #[test]
+    fn test_import_named() {
+        let code = "physics::(force, kinematics)";
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Import(decl) => {
+                assert_eq!(decl.namespace.name, "physics");
+                match &decl.items {
+                    ImportItems::Named(names) => {
+                        assert_eq!(names.len(), 2);
+                        assert_eq!(names[0].name, "force");
+                        assert_eq!(names[1].name, "kinematics");
+                    },
+                    _ => panic!("Expected named imports"),
+                }
+            },
+            _ => panic!("Expected import declaration"),
+        }
+    }
+
+    #[test]
+    fn test_import_single() {
+        let code = "math::(sqrt)";
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Import(decl) => {
+                assert_eq!(decl.namespace.name, "math");
+                match &decl.items {
+                    ImportItems::Named(names) => {
+                        assert_eq!(names.len(), 1);
+                        assert_eq!(names[0].name, "sqrt");
+                    },
+                    _ => panic!("Expected named imports"),
+                }
+            },
+            _ => panic!("Expected import declaration"),
+        }
+    }
+
+    #[test]
+    fn test_match_simple() {
+        let code = "match(x) { True { 1 } False { 2 } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { expr: match_expr, arms, .. } => {
+                // Check that we're matching on 'x'
+                assert!(matches!(*match_expr, Expr::Ident(_)));
+                
+                // Should have 2 arms
+                assert_eq!(arms.len(), 2);
+                
+                // First arm: True { 1 }
+                assert!(matches!(arms[0].pattern, Pattern::Enum { .. }));
+                
+                // Second arm: False { 2 }
+                assert!(matches!(arms[1].pattern, Pattern::Enum { .. }));
+            },
+            _ => panic!("Expected match expression, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_match_with_wildcard() {
+        let code = "match(x) { Some(val) { val } _ { 0 } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                
+                // First arm: Some(val)
+                if let Pattern::Enum { name, fields, .. } = &arms[0].pattern {
+                    assert_eq!(name.name, "Some");
+                    assert_eq!(fields.len(), 1);
+                    assert!(matches!(fields[0], Pattern::Ident(_)));
+                } else {
+                    panic!("Expected enum pattern");
+                }
+                
+                // Second arm: _
+                assert!(matches!(arms[1].pattern, Pattern::Wildcard(_)));
+            },
+            _ => panic!("Expected match expression"),
+        }
+    }
+
+    #[test]
+    fn test_match_nested_pattern() {
+        let code = "match(response) { Success(Some(payload)) { payload } _ { False } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                
+                // First arm: Success(Some(payload))
+                if let Pattern::Enum { name, fields, .. } = &arms[0].pattern {
+                    assert_eq!(name.name, "Success");
+                    assert_eq!(fields.len(), 1);
+                    
+                    // Nested pattern: Some(payload)
+                    if let Pattern::Enum { name: inner_name, fields: inner_fields, .. } = &fields[0] {
+                        assert_eq!(inner_name.name, "Some");
+                        assert_eq!(inner_fields.len(), 1);
+                        assert!(matches!(inner_fields[0], Pattern::Ident(_)));
+                    } else {
+                        panic!("Expected nested enum pattern");
+                    }
+                } else {
+                    panic!("Expected enum pattern");
+                }
+            },
+            _ => panic!("Expected match expression"),
+        }
+    }
+
+    #[test]
+    fn test_match_from_stdlib() {
+        // Real example from stdlib result.atom
+        let code = "unwrap(op Option(t), msg String) t { match(op) { Some(inner) { inner } None { error(msg) } } }";
+        
+        let items = parse(code).unwrap();
+        assert_eq!(items.len(), 1);
+        
+        match &items[0] {
+            TopLevel::Function(func) => {
+                assert_eq!(func.name.name, "unwrap");
+                // The body should contain a match expression
+                assert!(!func.body.stmts.is_empty());
+                // The first (and only) statement should be an expression containing a match
+                if let Stmt::Expression(Expr::Match { arms, .. }) = &func.body.stmts[0] {
+                    assert_eq!(arms.len(), 2);
+                } else {
+                    panic!("Expected match expression in function body, got {:?}", func.body.stmts[0]);
+                }
+            },
+            _ => panic!("Expected function definition"),
         }
     }
 }
