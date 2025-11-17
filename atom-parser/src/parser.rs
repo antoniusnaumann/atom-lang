@@ -1295,20 +1295,19 @@ impl Parser {
                 // Special case: match(expr) { Pattern { body } } should be parsed as Expr::Match
                 if self.check(&TokenKind::LBrace) {
                     // Check if this is a match expression
-                    if let Expr::Ident(ref ident) = expr {
-                        if ident.name == "match" && args.len() == 1 {
-                            // This is match(expr) { arms }
-                            // Parse the match arms
-                            let match_expr = args.into_iter().next().unwrap();
-                            let arms = self.parse_match_arms()?;
-                            let span = expr.span().merge(self.previous_span());
-                            expr = Expr::Match {
-                                expr: Box::new(match_expr),
-                                arms,
-                                span,
-                            };
-                            continue; // Skip creating a Call expression
-                        }
+                    if let Expr::Ident(ref ident) = expr
+                        && ident.name == "match" && args.len() == 1 {
+                        // This is match(expr) { arms }
+                        // Parse the match arms
+                        let match_expr = args.into_iter().next().unwrap();
+                        let arms = self.parse_match_arms()?;
+                        let span = expr.span().merge(self.previous_span());
+                        expr = Expr::Match {
+                            expr: Box::new(match_expr),
+                            arms,
+                            span,
+                        };
+                        continue; // Skip creating a Call expression
                     }
                     
                     // Regular function call with trailing closure
