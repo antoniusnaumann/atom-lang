@@ -222,12 +222,6 @@ pub enum Expr {
         arms: Vec<MatchArm>,
         span: Span,
     },
-    /// Loop expression: `loop { ... }` or `loop(cond) { ... }`
-    Loop {
-        condition: Option<Box<Expr>>,
-        body: Box<Block>,
-        span: Span,
-    },
     /// Comptime expression: `#expr`
     Comptime {
         expr: Box<Expr>,

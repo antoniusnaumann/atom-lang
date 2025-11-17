@@ -1515,7 +1515,6 @@ impl Expr {
             Expr::Closure { span, .. } => *span,
             Expr::Block(block) => block.span,
             Expr::Match { span, .. } => *span,
-            Expr::Loop { span, .. } => *span,
             Expr::Comptime { span, .. } => *span,
         }
     }
