@@ -343,8 +343,8 @@ impl Lexer {
 
     fn lex_number(&mut self, start: usize) -> ParseResult<Token> {
         // Check for hex, binary, or octal literals
-        if self.current() == '0' && !self.is_at_end() {
-            if let Some(next) = self.peek() {
+        if self.current() == '0' && !self.is_at_end()
+            && let Some(next) = self.peek() {
                 match next {
                     'x' | 'X' => {
                         self.advance(); // Skip '0'
@@ -415,7 +415,6 @@ impl Lexer {
                     _ => {} // Fall through to decimal parsing
                 }
             }
-        }
         
         // Parse decimal digits
         while !self.is_at_end() && self.current().is_ascii_digit() {
@@ -423,7 +422,7 @@ impl Lexer {
         }
 
         // Check for float
-        if !self.is_at_end() && self.current() == '.' && self.peek().map_or(false, |c| c.is_ascii_digit()) {
+        if !self.is_at_end() && self.current() == '.' && self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.advance(); // Skip '.'
             while !self.is_at_end() && self.current().is_ascii_digit() {
                 self.advance();

@@ -176,7 +176,7 @@ impl Parser {
         }
         
         // Field: name Type or just Type (for tuple-like)
-        if self.check(&TokenKind::ValueIdent) && self.peek_ahead(1).map_or(false, |t| 
+        if self.check(&TokenKind::ValueIdent) && self.peek_ahead(1).is_some_and(|t| 
             matches!(t.kind, TokenKind::TypeIdent | TokenKind::ValueIdent)) {
             // Named field
             let name = self.expect_value_ident()?;
