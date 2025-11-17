@@ -228,15 +228,6 @@ pub enum Expr {
         body: Box<Block>,
         span: Span,
     },
-    /// Return: `return` or `return expr`
-    Return {
-        value: Option<Box<Expr>>,
-        span: Span,
-    },
-    /// Break
-    Break(Span),
-    /// Continue
-    Continue(Span),
     /// Comptime expression: `#expr`
     Comptime {
         expr: Box<Expr>,
