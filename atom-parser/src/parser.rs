@@ -2366,7 +2366,7 @@ mod tests {
     #[should_panic(expected = "interpolation")]
     #[ignore] // TODO: Implement string interpolation
     fn test_string_interpolation() {
-        let expr = parse_expr(r#""Hello \(name)!""#).unwrap();
+        let _expr = parse_expr(r#""Hello \(name)!""#).unwrap();
         // Should parse as interpolated string
         panic!("String interpolation not yet implemented");
     }
