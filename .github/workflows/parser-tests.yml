@@ -1,0 +1,42 @@
+name: Parser Tests
+
+on:
+  push:
+    branches: [ main, master, parser-impl ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Parser Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      
+      - name: Run unit tests
+        working-directory: atom-parser
+        run: |
+          echo "Running parser unit tests..."
+          cargo test --lib --verbose
+      
+      - name: Run corpus tests (test_all_files)
+        working-directory: atom-parser
+        run: |
+          echo "Testing all .atom files in the corpus..."
+          cargo run --example test_all_files
+      
+      - name: Check for warnings
+        working-directory: atom-parser
+        run: |
+          echo "Checking for compiler warnings..."
+          cargo clippy -- -D warnings
