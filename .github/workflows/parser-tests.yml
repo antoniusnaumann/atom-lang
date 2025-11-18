@@ -2,7 +2,7 @@ name: Parser Tests
 
 on:
   push:
-    branches: [ main, master, parser-impl ]
+    branches: [ main, master, parser-impl, workspace-restructure ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -23,17 +23,14 @@ jobs:
         with:
           toolchain: stable
       
-      - name: Run unit tests
+      - name: Run all tests (unit + integration)
         run: |
-          echo "Running parser unit tests..."
-          cargo test --lib --verbose
-      
-      - name: Run corpus tests (test_all_files)
-        run: |
-          echo "Testing all .atom files in the corpus..."
-          cargo run --example test_all_files
+          echo "Running all parser tests (unit + integration)..."
+          cd atom-compiler
+          cargo test --workspace --verbose
       
       - name: Check for warnings
         run: |
           echo "Checking for compiler warnings..."
-          cargo clippy -- -D warnings
+          cd atom-compiler
+          cargo clippy --workspace -- -D warnings
