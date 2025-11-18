@@ -7,6 +7,10 @@
     s.bytes.len()
 }
 
++as_cstring(s String) String {
+    s ++ '\0'
+}
+
 +split(s String, delim Rune) String* {
     result: String*
     current: String

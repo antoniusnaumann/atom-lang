@@ -383,7 +383,8 @@ impl TypeEnvironment {
             "UInt" => return Ok(Type::UInt(None)),
             "Float" => return Ok(Type::Float(None)),
             "Rune" => return Ok(Type::Rune),
-            "String" => return Ok(Type::String),
+            // "String" is defined in stdlib as a struct, not a primitive
+            // "String" => return Ok(Type::String),
             "Type" => return Ok(Type::TypeMeta),
             _ => {}
         }
@@ -393,7 +394,7 @@ impl TypeEnvironment {
             return Ok(ty.clone());
         }
 
-        // Check structs
+        // Check structs (String is defined here)
         if let Some(struct_ty) = self.get_struct(name) {
             return Ok(Type::Struct(struct_ty.clone()));
         }
@@ -574,6 +575,11 @@ impl Type {
         }
 
         match (self, target) {
+            // Empty tuple () <-> Void are compatible (both represent "no value")
+            (Type::Tuple(t), Type::Void) | (Type::Void, Type::Tuple(t)) => {
+                t.fields.is_empty() && t.variadic.is_none()
+            }
+            
             // Struct -> Struct: all fields of target must be in source
             (Type::Struct(source), Type::Struct(target)) => {
                 target.fields.iter().all(|target_field| {
@@ -893,7 +899,7 @@ impl Type {
     /// Check if this type supports concatenation (++)
     fn supports_concat(&self) -> bool {
         match self {
-            Type::String => true,
+            Type::Struct(s) if s.name == "String" => true, // String struct from stdlib
             Type::Tuple(t) => t.variadic.is_some(), // Only variadic tuples
             Type::Void => true,
             _ => false,

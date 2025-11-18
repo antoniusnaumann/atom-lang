@@ -596,6 +596,33 @@ impl TypeChecker {
         }
 
         // Check type compatibility
+        // Special case for Concat: allow Rune to be concatenated with String
+        if type_op == BinaryOp::Concat {
+            // Helper to check if a type is the String struct
+            let is_string_type = |ty: &Type| -> bool {
+                if let Type::Struct(s) = ty {
+                    s.name == "String"
+                } else {
+                    false
+                }
+            };
+            
+            let is_left_string = is_string_type(&left_ty);
+            let is_right_string = is_string_type(&right_ty);
+            let is_left_rune = matches!(left_ty, Type::Rune);
+            let is_right_rune = matches!(right_ty, Type::Rune);
+            
+            if is_left_string && is_right_rune {
+                // Allow String ++ Rune -> returns String
+                return Ok(left_ty);
+            }
+            
+            if is_right_string && is_left_rune {
+                // Allow Rune ++ String -> returns String
+                return Ok(right_ty);
+            }
+        }
+        
         if !left_ty.structurally_equal(&right_ty) {
             return Err(TypeError::Incompatible {
                 expected: Box::new(left_ty.clone()),
@@ -1318,7 +1345,11 @@ impl TypeChecker {
         match lit {
             Literal::Integer(_) => Type::Int(None),
             Literal::Float(_) => Type::Float(None),
-            Literal::String(_) => Type::String,
+            Literal::String(_) => {
+                // String literals use the String struct from stdlib
+                // Safe to unwrap because stdlib should be loaded
+                self.type_env.resolve_type("String").unwrap()
+            }
             Literal::Rune(_) => Type::Rune,
             Literal::Bool(_) => {
                 // Bool literals become the Bool enum type
