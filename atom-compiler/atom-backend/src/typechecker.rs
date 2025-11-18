@@ -809,16 +809,22 @@ impl TypeChecker {
 
             for sig in &signatures {
                 if sig.params.len() == arg_types.len() {
+                    // Try to unify type parameters
+                    let mut type_bindings = std::collections::HashMap::new();
                     let mut matches = true;
+                    
                     for (i, (_, param_ty)) in sig.params.iter().enumerate() {
-                        if !arg_types[i].can_convert_to(param_ty) {
+                        if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
                             matches = false;
                             break;
                         }
                     }
 
                     if matches {
-                        return Ok(sig.return_type.clone().unwrap_or(Type::Void));
+                        // Substitute type parameters in return type
+                        let return_ty = sig.return_type.clone().unwrap_or(Type::Void);
+                        let substituted = self.substitute_type_params(&return_ty, &type_bindings);
+                        return Ok(substituted);
                     }
                 }
             }
@@ -828,6 +834,90 @@ impl TypeChecker {
             "No method '{}' found",
             method.name
         )))
+    }
+    
+    /// Try to unify an actual type with a parameter type (which may contain type parameters)
+    /// Returns true if unification succeeds, updating type_bindings with any new bindings
+    fn try_unify_type(
+        &self,
+        actual: &Type,
+        param: &Type,
+        bindings: &mut std::collections::HashMap<String, Type>,
+    ) -> bool {
+        match param {
+            Type::TypeParam(name) => {
+                // If we've already bound this type parameter, check consistency
+                if let Some(bound_ty) = bindings.get(name) {
+                    actual.can_convert_to(bound_ty)
+                } else {
+                    // Bind the type parameter
+                    bindings.insert(name.clone(), actual.clone());
+                    true
+                }
+            }
+            Type::Tuple(param_tuple) => {
+                // Handle variadic tuples specially
+                if let Type::Tuple(actual_tuple) = actual {
+                    // Check if param has variadic tail
+                    if let Some((var_ty, _)) = &param_tuple.variadic {
+                        // For variadic, just check the element type
+                        if let Some((actual_var_ty, _)) = &actual_tuple.variadic {
+                            self.try_unify_type(actual_var_ty, var_ty, bindings)
+                        } else {
+                            false
+                        }
+                    } else {
+                        // Non-variadic tuple: check each field
+                        if param_tuple.fields.len() != actual_tuple.fields.len() {
+                            return false;
+                        }
+                        for (actual_field, param_field) in
+                            actual_tuple.fields.iter().zip(param_tuple.fields.iter())
+                        {
+                            if !self.try_unify_type(&actual_field.ty, &param_field.ty, bindings) {
+                                return false;
+                            }
+                        }
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => {
+                // For non-generic types, just check convertibility
+                actual.can_convert_to(param)
+            }
+        }
+    }
+    
+    /// Substitute type parameters in a type with their bindings
+    fn substitute_type_params(
+        &self,
+        ty: &Type,
+        bindings: &std::collections::HashMap<String, Type>,
+    ) -> Type {
+        match ty {
+            Type::TypeParam(name) => bindings.get(name).cloned().unwrap_or(ty.clone()),
+            Type::Tuple(tuple_ty) => {
+                let fields = tuple_ty
+                    .fields
+                    .iter()
+                    .map(|f| TupleField {
+                        name: f.name.clone(),
+                        ty: Box::new(self.substitute_type_params(&f.ty, bindings)),
+                    })
+                    .collect();
+                let variadic = tuple_ty.variadic.as_ref().map(|(var_ty, non_empty)| {
+                    (
+                        Box::new(self.substitute_type_params(var_ty, bindings)),
+                        *non_empty,
+                    )
+                });
+                Type::Tuple(TupleType { fields, variadic })
+            }
+            _ => ty.clone(),
+        }
     }
 
     fn check_field_access(&mut self, object: &Expr, field: &Ident) -> TypeResult<Type> {
