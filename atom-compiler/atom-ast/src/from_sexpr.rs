@@ -1265,6 +1265,10 @@ impl FromSExpr for Expr {
                 expr: Box::new(Expr::from_sexpr(filtered[1])?),
                 span,
             }),
+            "rune" => {
+                // Rune literal: (rune 'x')
+                Ok(Expr::Literal(Literal::from_sexpr(sexpr)?, span))
+            }
             _ => Err(ParseError {
                 message: format!("Unknown expression: {}", head),
             }),
