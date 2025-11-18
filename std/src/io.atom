@@ -19,7 +19,7 @@
     delimiter Rune = '\n'
 ) {
     // TODO: Explain enum comparison in README
-    match(level >= log_level) {
+    match(level >= log_level()) {
         True { cstdlib::printf(as_cstring(msg ++ delimiter)) }
         False {}
     }

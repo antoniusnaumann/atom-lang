@@ -364,6 +364,19 @@ impl TypeEnvironment {
         self.aliases.get(name)
     }
 
+    /// Find an enum case by name across all enums
+    /// Returns (enum_name, case, case_index) if found
+    pub fn find_enum_case(&self, case_name: &str) -> Option<(&str, &EnumCase, usize)> {
+        for (enum_name, enum_type) in &self.enums {
+            for (idx, case) in enum_type.cases.iter().enumerate() {
+                if case.name == case_name {
+                    return Some((enum_name, case, idx));
+                }
+            }
+        }
+        None
+    }
+
     /// Resolve a type name to a Type
     pub fn resolve_type(&self, name: &str) -> TypeResult<Type> {
         // Check primitives first

@@ -460,6 +460,11 @@ impl TypeChecker {
                     Ok(ty.clone())
                 } else if let Some(ty) = self.globals.get(&ident.name) {
                     Ok(ty.clone())
+                } else if let Some((enum_name, _case, _idx)) = self.type_env.find_enum_case(&ident.name) {
+                    // It's an enum case - treat it as a value of that enum type
+                    // For now, return the enum type directly
+                    // TODO: Handle enum cases with fields (which are constructors)
+                    self.type_env.resolve_type(enum_name)
                 } else {
                     Err(TypeError::UndefinedVariable {
                         name: ident.name.clone(),
