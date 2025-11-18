@@ -455,6 +455,36 @@ impl TypeChecker {
             Expr::Literal(lit, _) => Ok(self.type_of_literal(lit)),
 
             Expr::Ident(ident) => {
+                // Check for C library function references (e.g., cstdlib::printf, cmath::sin)
+                if ident.name.starts_with('c') && ident.name.contains("::") {
+                    // C library functions are treated as function types
+                    // For simplicity, we create a generic function type that accepts any args
+                    // In a real implementation, we'd have proper signatures for each C function
+                    
+                    // Determine return type based on function name
+                    let return_type = if ident.name.contains("::exit") {
+                        Type::Void
+                    } else if ident.name.starts_with("cmath::") {
+                        if ident.name.ends_with('f') {
+                            Type::Float(Some(32))
+                        } else {
+                            Type::Float(Some(64))
+                        }
+                    } else if ident.name.contains("::printf") {
+                        Type::Int(None)
+                    } else {
+                        Type::Int(None)
+                    };
+                    
+                    // Return a function type - for now we use an empty param list
+                    // The actual type checking happens in check_call
+                    return Ok(Type::Function(FunctionType {
+                        const_params: vec![],
+                        params: vec![], // Variadic - will be checked at call site
+                        return_type: Some(Box::new(return_type)),
+                    }));
+                }
+                
                 // Look up in symbol table
                 if let Some(ty) = self.symbols.lookup(&ident.name) {
                     Ok(ty.clone())
@@ -629,6 +659,35 @@ impl TypeChecker {
         // Special case: if func is an identifier, check if it's a function
         if let Expr::Ident(ident) = func {
             let func_name = ident.name.clone();
+            
+            // Check for C library function calls (e.g., cstdlib::printf, cmath::sin)
+            if func_name.starts_with('c') && func_name.contains("::") {
+                // This is a C library function call - type check the arguments and assume it returns Void
+                // (or Int for most C functions - this is a simplified implementation)
+                for arg in args {
+                    self.check_expr(arg)?;
+                }
+                
+                // Most C functions return Int, but printf and similar return Int
+                // For now, we'll assume they all return Int (exit returns Void though)
+                // This is a simplified type system for C interop
+                if func_name.contains("::exit") || func_name.contains("::printf") {
+                    return Ok(Type::Void);
+                }
+                
+                // Math functions typically return Float or Float(32) depending on the suffix
+                if func_name.starts_with("cmath::") {
+                    // Functions ending in 'f' return Float(32), others return Float(64)
+                    if func_name.ends_with('f') {
+                        return Ok(Type::Float(Some(32)));
+                    } else {
+                        return Ok(Type::Float(Some(64)));
+                    }
+                }
+                
+                return Ok(Type::Int(None));
+            }
+            
             if let Some(signatures) = self.functions.get(&func_name).cloned() {
                 // Try to find matching signature
                 let arg_types: Result<Vec<_>, _> =
