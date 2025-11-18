@@ -51,21 +51,29 @@ fi
 
 # Parse arguments
 if [[ $# -lt 1 ]]; then
-    echo "Usage: atomc <path> [-o output]" >&2
+    echo "Usage: atomc <path> [OPTIONS]" >&2
     echo "" >&2
     echo "Arguments:" >&2
     echo "  <path>        A .atom file or directory containing .atom files" >&2
+    echo "" >&2
+    echo "Options:" >&2
     echo "  -o <output>   Output executable path (default: a.out)" >&2
+    echo "  --no-std      Don't include standard library" >&2
+    echo "" >&2
+    echo "Environment:" >&2
+    echo "  ATOM_STD      Path to standard library (default: ./std/src)" >&2
     echo "" >&2
     echo "Examples:" >&2
     echo "  atomc example.atom              # Compile single file" >&2
     echo "  atomc examples/                 # Compile all .atom files in directory" >&2
     echo "  atomc src/ -o myprogram         # Compile directory with custom output" >&2
+    echo "  atomc main.atom --no-std        # Compile without standard library" >&2
     exit 1
 fi
 
 INPUT_PATH="$1"
 OUTPUT_FILE="a.out"
+NO_STD=false
 
 # Parse output argument
 shift
@@ -79,6 +87,10 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_FILE="$2"
             shift 2
             ;;
+        --no-std)
+            NO_STD=true
+            shift
+            ;;
         *)
             echo "Error: Unknown argument: $1" >&2
             exit 1
@@ -89,6 +101,23 @@ done
 # Create temporary directory for AST files
 TMP_DIR=$(mktemp -d -t atom-compile.XXXXXX)
 trap "rm -rf $TMP_DIR" EXIT
+
+# Find standard library files (unless --no-std is passed)
+declare -a STDLIB_FILES
+if [[ "$NO_STD" == false ]]; then
+    STDLIB_PATH="${ATOM_STD:-${SCRIPT_DIR}/std/src}"
+    if [[ -d "$STDLIB_PATH" ]]; then
+        while IFS= read -r -d '' file; do
+            # Exclude test files
+            if [[ ! "$file" =~ \.test\.atom$ ]]; then
+                STDLIB_FILES+=("$file")
+            fi
+        done < <(find "$STDLIB_PATH" -maxdepth 1 -name "*.atom" -type f -print0)
+        echo "Found ${#STDLIB_FILES[@]} standard library file(s)"
+    else
+        echo "Warning: Standard library not found at $STDLIB_PATH" >&2
+    fi
+fi
 
 # Find all .atom files
 declare -a ATOM_FILES
@@ -110,23 +139,24 @@ elif [[ -d "$INPUT_PATH" ]]; then
         echo "Error: No .atom files found in $INPUT_PATH" >&2
         exit 1
     fi
-    echo "Found ${#ATOM_FILES[@]} .atom file(s)"
+    echo "Found ${#ATOM_FILES[@]} user .atom file(s)"
 else
     echo "Error: $INPUT_PATH is neither a file nor a directory" >&2
     exit 1
 fi
 
-# Parse all .atom files to S-Expression AST
-echo "Parsing ${#ATOM_FILES[@]} file(s)..."
+# Parse all .atom files to S-Expression AST (stdlib first, then user files)
+ALL_FILES=("${STDLIB_FILES[@]}" "${ATOM_FILES[@]}")
+echo "Parsing ${#ALL_FILES[@]} file(s) total..."
 declare -a AST_FILES
 FILE_COUNT=0
 
-for atom_file in "${ATOM_FILES[@]}"; do
+for atom_file in "${ALL_FILES[@]}"; do
     FILE_COUNT=$((FILE_COUNT + 1))
     filename=$(basename "$atom_file" .atom)
     ast_file="$TMP_DIR/${filename}_${FILE_COUNT}.sexpr"
     
-    echo "  [$FILE_COUNT/${#ATOM_FILES[@]}] Parsing $atom_file..."
+    echo "  [$FILE_COUNT/${#ALL_FILES[@]}] Parsing $atom_file..."
     
     if ! "$PARSER_BIN" --ast "$atom_file" > "$ast_file" 2>&1; then
         echo "Error: Failed to parse $atom_file" >&2
