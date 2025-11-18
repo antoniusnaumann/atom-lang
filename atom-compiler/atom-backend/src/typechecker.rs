@@ -574,8 +574,47 @@ impl TypeChecker {
             BinOp::RShift => BinaryOp::RShift,
             BinOp::Concat => BinaryOp::Concat,
             BinOp::Assign | BinOp::AddAssign | BinOp::SubAssign | BinOp::MulAssign
-            | BinOp::DivAssign | BinOp::ModAssign | BinOp::ConcatAssign => {
+            | BinOp::DivAssign | BinOp::ModAssign => {
                 // Assignment operators: check that left and right are compatible
+                if !right_ty.can_convert_to(&left_ty) {
+                    return Err(TypeError::Incompatible {
+                        expected: Box::new(left_ty),
+                        found: Box::new(right_ty),
+                        reason: "Assignment type mismatch".to_string(),
+                    });
+                }
+                return Ok(Type::Void);
+            }
+            BinOp::ConcatAssign => {
+                // Special handling for ++=: can append element to variadic tuple or concat strings
+                // Check if left is variadic tuple and right is element type
+                if let Type::Tuple(left_tuple) = &left_ty {
+                    if let Some((element_ty, _)) = &left_tuple.variadic {
+                        // Allow appending element to variadic tuple
+                        if right_ty.can_convert_to(element_ty) {
+                            return Ok(Type::Void);
+                        }
+                    }
+                }
+                
+                // Check if both are String (for string concatenation)
+                let is_left_string = if let Type::Struct(s) = &left_ty {
+                    s.name == "String"
+                } else {
+                    false
+                };
+                let is_right_string = if let Type::Struct(s) = &right_ty {
+                    s.name == "String"
+                } else {
+                    false
+                };
+                let is_right_rune = matches!(right_ty, Type::Rune);
+                
+                if is_left_string && (is_right_string || is_right_rune) {
+                    return Ok(Type::Void);
+                }
+                
+                // Otherwise, check normal assignment compatibility
                 if !right_ty.can_convert_to(&left_ty) {
                     return Err(TypeError::Incompatible {
                         expected: Box::new(left_ty),
@@ -713,6 +752,11 @@ impl TypeChecker {
                 }
                 
                 return Ok(Type::Int(None));
+            }
+            
+            // Handle loop builtin
+            if func_name == "loop" {
+                return self.check_loop(args);
             }
             
             if let Some(signatures) = self.functions.get(&func_name).cloned() {
@@ -1110,6 +1154,91 @@ impl TypeChecker {
         let result = self.check_block(block);
         self.symbols.pop_scope();
         result
+    }
+
+    fn check_loop(&mut self, args: &[Expr]) -> TypeResult<Type> {
+        // loop has several forms:
+        // - loop() - infinite loop, returns Void
+        // - loop(condition) where condition is Bool - conditional loop, returns Void
+        // - loop(n) where n is Int - loop n times, returns Void or collects results
+        // - loop(iterable) where iterable is a variadic tuple - iterate over elements
+        //
+        // If there's a second argument (a block), loop becomes an expression that collects results
+        
+        match args.len() {
+            0 => {
+                // loop() - infinite loop, returns Void
+                Ok(Type::Void)
+            }
+            1 => {
+                // loop(expr) - could be condition, count, or iterable
+                let arg_ty = self.check_expr(&args[0])?;
+                
+                // For now, just accept any type and return Void
+                // The actual semantics depend on the argument type:
+                // - Bool: loop while condition
+                // - Int: loop n times
+                // - Variadic tuple: iterate over elements
+                Ok(Type::Void)
+            }
+            2 => {
+                // loop(arg, block) - loop with body that produces values
+                let arg_ty = self.check_expr(&args[0])?;
+                
+                // The second argument should be a block
+                // We need to type check it in a special scope where $0 is available
+                if let Expr::Block(block) = &args[1] {
+                    // Enter new scope for loop body
+                    self.symbols.push_scope();
+                    
+                    // Add $0 binding for iteration variable
+                    // Determine the type of $0 based on arg_ty
+                    let element_ty = match &arg_ty {
+                        Type::Tuple(tuple_ty) => {
+                            if let Some((var_ty, _)) = &tuple_ty.variadic {
+                                (**var_ty).clone()
+                            } else if !tuple_ty.fields.is_empty() {
+                                // For non-variadic tuples, $0 would be each element
+                                // This is a simplification - in reality we'd need union types
+                                (*tuple_ty.fields[0].ty).clone()
+                            } else {
+                                Type::Void
+                            }
+                        }
+                        Type::Int(_) => Type::Int(None), // loop(n) gives Int iteration count
+                        _ => Type::Void,
+                    };
+                    
+                    // Add $0 to the symbol table
+                    self.symbols.add_variable("$0".to_string(), element_ty.clone());
+                    
+                    // Check the loop body
+                    let body_ty = self.check_block(block)?;
+                    
+                    self.symbols.pop_scope();
+                    
+                    // If body returns a value, loop collects into variadic tuple
+                    if !matches!(body_ty, Type::Void) {
+                        Ok(Type::Tuple(TupleType {
+                            fields: vec![],
+                            variadic: Some((Box::new(body_ty), false)),
+                        }))
+                    } else {
+                        Ok(Type::Void)
+                    }
+                } else {
+                    // Second arg is not a block - type check it normally
+                    self.check_expr(&args[1])?;
+                    Ok(Type::Void)
+                }
+            }
+            _ => {
+                Err(TypeError::Other(format!(
+                    "loop expects 0-2 arguments, got {}",
+                    args.len()
+                )))
+            }
+        }
     }
 
     fn check_match(&mut self, expr: &Expr, arms: &[MatchArm]) -> TypeResult<Type> {
