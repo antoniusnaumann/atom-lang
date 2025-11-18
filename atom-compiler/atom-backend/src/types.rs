@@ -34,9 +34,6 @@ pub enum Type {
     /// Void type - empty struct, supports all operators trivially
     Void,
 
-    /// Boolean type (implemented as enum in std, but has special support)
-    Bool,
-
     /// Signed integer with optional bit size (default 64)
     /// Int(None) = Int(64), Int(Some(32)) = 32-bit int
     Int(Option<u32>),
@@ -382,7 +379,6 @@ impl TypeEnvironment {
         // Check primitives first
         match name {
             "Void" => return Ok(Type::Void),
-            "Bool" => return Ok(Type::Bool),
             "Int" => return Ok(Type::Int(None)),
             "UInt" => return Ok(Type::UInt(None)),
             "Float" => return Ok(Type::Float(None)),
@@ -497,7 +493,6 @@ impl Type {
     pub fn structurally_equal(&self, other: &Type) -> bool {
         match (self, other) {
             (Type::Void, Type::Void) => true,
-            (Type::Bool, Type::Bool) => true,
             (Type::Int(a), Type::Int(b)) => a == b,
             (Type::UInt(a), Type::UInt(b)) => a == b,
             (Type::Float(a), Type::Float(b)) => a == b,
@@ -685,7 +680,6 @@ impl Type {
     pub fn has_zero_value(&self) -> bool {
         match self {
             Type::Void
-            | Type::Bool
             | Type::Int(_)
             | Type::UInt(_)
             | Type::Float(_)
@@ -693,7 +687,7 @@ impl Type {
             | Type::String => true,
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.has_zero_value()),
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.has_zero_value()),
-            Type::Enum(e) => !e.cases.is_empty(),
+            Type::Enum(e) => !e.cases.is_empty(), // Bool enum has zero value (first case)
             Type::Function(_) => false,
             Type::TypeMeta => false,
             Type::TypeParam(_) => false, // Depends on the actual type
@@ -709,7 +703,6 @@ impl Type {
     pub fn size_bytes(&self) -> Option<usize> {
         match self {
             Type::Void => Some(0),
-            Type::Bool => Some(1),
             Type::Int(Some(bits)) | Type::UInt(Some(bits)) | Type::Float(Some(bits)) => {
                 Some(*bits as usize / 8)
             }
@@ -770,7 +763,6 @@ impl Type {
     pub fn alignment(&self) -> Option<usize> {
         match self {
             Type::Void => Some(1),
-            Type::Bool => Some(1),
             Type::Int(Some(bits)) | Type::UInt(Some(bits)) | Type::Float(Some(bits)) => {
                 Some((*bits as usize / 8).min(8))
             }
@@ -815,7 +807,6 @@ impl Type {
         matches!(
             self,
             Type::Void
-                | Type::Bool
                 | Type::Int(_)
                 | Type::UInt(_)
                 | Type::Float(_)
@@ -839,6 +830,11 @@ impl Type {
         matches!(self, Type::Float(_))
     }
 
+    /// Check if this is the Bool enum type
+    pub fn is_bool(&self) -> bool {
+        matches!(self, Type::Enum(e) if e.name == "Bool")
+    }
+
     /// Check if this type supports a given operator
     ///
     /// Operators work on primitives and are automatically extended to structs/tuples
@@ -852,9 +848,9 @@ impl Type {
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
                 self.supports_comparison()
             }
-            BinaryOp::And | BinaryOp::Or => matches!(self, Type::Bool),
+            BinaryOp::And | BinaryOp::Or => self.is_bool(),
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::LShift | BinaryOp::RShift => {
-                self.is_integer() || matches!(self, Type::Bool)
+                self.is_integer() || self.is_bool()
             }
             BinaryOp::Concat => self.supports_concat(),
         }
@@ -873,11 +869,11 @@ impl Type {
     /// Check if this type supports equality comparison
     fn supports_equality(&self) -> bool {
         match self {
-            Type::Void | Type::Bool | Type::Int(_) | Type::UInt(_) | Type::Float(_)
+            Type::Void | Type::Int(_) | Type::UInt(_) | Type::Float(_)
             | Type::Rune | Type::String => true,
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_equality()),
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_equality()),
-            Type::Enum(_) => true, // Enums support equality
+            Type::Enum(_) => true, // Enums support equality (including Bool)
             _ => false,
         }
     }
@@ -887,6 +883,7 @@ impl Type {
         match self {
             Type::Void | Type::Int(_) | Type::UInt(_) | Type::Float(_) | Type::Rune => true,
             Type::String => true, // Lexicographic comparison
+            Type::Enum(_) => true, // Enum comparison by case order
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_comparison()),
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_comparison()),
             _ => false,
@@ -935,7 +932,6 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Void => write!(f, "Void"),
-            Type::Bool => write!(f, "Bool"),
             Type::Int(None) => write!(f, "Int"),
             Type::Int(Some(bits)) => write!(f, "Int({})", bits),
             Type::UInt(None) => write!(f, "UInt"),
@@ -1248,17 +1244,26 @@ mod tests {
     #[test]
     fn test_type_sizes() {
         assert_eq!(Type::Void.size_bytes(), Some(0));
-        assert_eq!(Type::Bool.size_bytes(), Some(1));
         assert_eq!(Type::Int(None).size_bytes(), Some(8));
         assert_eq!(Type::Int(Some(32)).size_bytes(), Some(4));
         assert_eq!(Type::String.size_bytes(), Some(16));
+        
+        // Bool is an enum now, size is tag (4 bytes) + max case (0 bytes) = 4 bytes aligned to 8
+        let env = TypeEnvironment::with_stdlib();
+        let bool_ty = env.resolve_type("Bool").unwrap();
+        assert!(bool_ty.size_bytes().is_some());
     }
 
     #[test]
     fn test_operator_support() {
         assert!(int().supports_operator(&BinaryOp::Add));
         assert!(float().supports_operator(&BinaryOp::Mul));
-        assert!(Type::Bool.supports_operator(&BinaryOp::And));
+        
+        // Bool is an enum now
+        let env = TypeEnvironment::with_stdlib();
+        let bool_ty = env.resolve_type("Bool").unwrap();
+        assert!(bool_ty.supports_operator(&BinaryOp::And));
+        
         assert!(Type::String.supports_operator(&BinaryOp::Concat));
         assert!(!Type::String.supports_operator(&BinaryOp::Add));
     }

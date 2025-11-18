@@ -577,7 +577,10 @@ impl TypeChecker {
         // Determine result type
         match type_op {
             BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt
-            | BinaryOp::Ge | BinaryOp::And | BinaryOp::Or => Ok(Type::Bool),
+            | BinaryOp::Ge | BinaryOp::And | BinaryOp::Or => {
+                // Comparison and logical operators return Bool enum
+                Ok(self.type_env.resolve_type("Bool").unwrap())
+            }
             BinaryOp::Concat => Ok(left_ty), // Concatenation returns same type
             _ => Ok(left_ty),                // Arithmetic returns same type
         }
@@ -597,16 +600,21 @@ impl TypeChecker {
                 Ok(expr_ty)
             }
             UnOp::Not => {
-                if !matches!(expr_ty, Type::Bool) {
+                // Check if expression is Bool enum
+                let bool_ty = self.type_env.resolve_type("Bool").unwrap();
+                if !expr_ty.can_convert_to(&bool_ty) {
                     return Err(TypeError::Other(format!(
                         "Logical NOT requires Bool type, found {}",
                         expr_ty
                     )));
                 }
-                Ok(Type::Bool)
+                Ok(bool_ty)
             }
             UnOp::BitNot => {
-                if !expr_ty.is_integer() && !matches!(expr_ty, Type::Bool) {
+                let bool_ty = self.type_env.resolve_type("Bool").ok();
+                let is_bool = bool_ty.as_ref().map_or(false, |b| expr_ty.can_convert_to(b));
+                
+                if !expr_ty.is_integer() && !is_bool {
                     return Err(TypeError::Other(format!(
                         "Bitwise NOT requires integer or Bool type, found {}",
                         expr_ty
@@ -984,7 +992,32 @@ impl TypeChecker {
                 Ok(())
             }
 
-            Pattern::Ident(_) => Ok(()), // Binds to any value of the expected type
+            Pattern::Ident(ident) => {
+                // Check if this is an enum case (zero-field constructor)
+                if let Some((enum_name, case, _idx)) = self.type_env.find_enum_case(&ident.name) {
+                    // It's an enum case - verify it matches the expected type
+                    if let Type::Enum(enum_ty) = expected_ty {
+                        if enum_ty.name == enum_name && case.fields.is_empty() {
+                            Ok(())
+                        } else {
+                            Err(TypeError::Incompatible {
+                                expected: Box::new(expected_ty.clone()),
+                                found: Box::new(self.type_env.resolve_type(enum_name)?),
+                                reason: format!("Pattern '{}' is an enum case", ident.name),
+                            })
+                        }
+                    } else {
+                        Err(TypeError::Incompatible {
+                            expected: Box::new(expected_ty.clone()),
+                            found: Box::new(self.type_env.resolve_type(enum_name)?),
+                            reason: format!("Pattern '{}' is an enum case, not a binding", ident.name),
+                        })
+                    }
+                } else {
+                    // It's a regular binding variable
+                    Ok(())
+                }
+            }
 
             Pattern::Tuple(patterns, _) => {
                 if let Type::Tuple(tuple_ty) = expected_ty {
@@ -1042,7 +1075,7 @@ impl TypeChecker {
                 } else {
                     Err(TypeError::Incompatible {
                         expected: Box::new(expected_ty.clone()),
-                        found: Box::new(Type::Bool), // Placeholder
+                        found: Box::new(Type::Error), // Placeholder for unknown enum type
                         reason: "Pattern expects enum".to_string(),
                     })
                 }
@@ -1228,7 +1261,11 @@ impl TypeChecker {
             Literal::Float(_) => Type::Float(None),
             Literal::String(_) => Type::String,
             Literal::Rune(_) => Type::Rune,
-            Literal::Bool(_) => Type::Bool,
+            Literal::Bool(_) => {
+                // Bool literals become the Bool enum type
+                // Safe to unwrap because stdlib should be loaded
+                self.type_env.resolve_type("Bool").unwrap()
+            }
         }
     }
 }
