@@ -2,14 +2,13 @@
 //!
 //! Usage: atom-compile [OPTIONS] <input-files>...
 //!
-//! Compiles Atom S-Expression AST files to native executables.
+//! Compiles Atom source files to native executables.
 
 use std::env;
 use std::fs;
-use std::path::Path;
 use std::process;
 
-use atom_ast::from_sexpr::{FromSExpr, SExpr};
+use atom_parser::{Lexer, Parser};
 
 mod codegen;
 mod ir;
@@ -25,13 +24,13 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     
     if args.len() < 2 {
-        eprintln!("Usage: atom-compile <input.sexpr>... [-o output]");
+        eprintln!("Usage: atom-compile <input.atom>... [-o output]");
         eprintln!();
-        eprintln!("Compiles Atom S-Expression AST files to native code.");
+        eprintln!("Compiles Atom source files to native code.");
         eprintln!();
         eprintln!("Arguments:");
-        eprintln!("  <input.sexpr>...    One or more S-Expression AST files");
-        eprintln!("  -o <output>         Output executable path (default: a.out)");
+        eprintln!("  <input.atom>...    One or more Atom source files");
+        eprintln!("  -o <output>        Output executable path (default: a.out)");
         process::exit(1);
     }
     
@@ -77,11 +76,13 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
         let content = fs::read_to_string(file_path)
             .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
         
-        let sexpr = SExpr::parse(&content)
-            .map_err(|e| format!("Failed to parse {}: {}", file_path, e))?;
+        let mut lexer = Lexer::new(&content);
+        let tokens = lexer.tokenize()
+            .map_err(|e| format!("Failed to lex {}: {}", file_path, e))?;
         
-        let items = Vec::<atom_ast::ast::TopLevel>::from_sexpr(&sexpr)
-            .map_err(|e| format!("Failed to deserialize {}: {}", file_path, e))?;
+        let mut parser = Parser::new(tokens);
+        let items = parser.parse()
+            .map_err(|e| format!("Failed to parse {}: {}", file_path, e))?;
         
         all_items.extend(items);
     }

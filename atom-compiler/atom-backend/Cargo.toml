@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 atom-ast = { path = "../atom-ast" }
+atom-parser = { path = "../atom-parser" }
 cranelift = "0.114"
 cranelift-module = "0.114"
 cranelift-jit = "0.114"

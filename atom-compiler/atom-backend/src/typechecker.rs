@@ -1565,9 +1565,9 @@ impl TypeChecker {
             Literal::Integer(_) => Type::Int(None),
             Literal::Float(_) => Type::Float(None),
             Literal::String(_) => {
-                // String literals use the String struct from stdlib
-                // Safe to unwrap because stdlib should be loaded
-                self.type_env.resolve_type("String").unwrap()
+                // String literals use the String struct from stdlib if available
+                // Otherwise fall back to a built-in String type
+                self.type_env.resolve_type("String").unwrap_or(Type::String)
             }
             Literal::Rune(_) => Type::Rune,
             Literal::Bool(_) => {
