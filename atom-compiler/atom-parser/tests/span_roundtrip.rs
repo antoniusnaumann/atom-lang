@@ -1,18 +1,42 @@
-use atom_parser::{lexer::Lexer, parser::Parser};
+use atom_parser::{Lexer, Parser};
+use atom_ast::{print_ast_with_spans, FromSExpr};
+use atom_ast::from_sexpr::SExpr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn test_file(path: &Path) -> Result<(), String> {
-    let code = fs::read_to_string(path)
+fn test_span_roundtrip(path: &Path) -> Result<(), String> {
+    let source = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
-    
-    let mut lexer = Lexer::new(&code);
+
+    // Parse the source code
+    let mut lexer = Lexer::new(&source);
     let tokens = lexer.tokenize()
-        .map_err(|e| format!("Lexer error: {}", e))?;
-    
+        .map_err(|e| format!("Lexing error: {}", e))?;
+
     let mut parser = Parser::new(tokens);
-    parser.parse()
+    let ast = parser.parse()
         .map_err(|e| format!("Parser error: {}", e))?;
+
+    // Print with spans
+    let with_spans = print_ast_with_spans(&ast);
+    
+    // Verify round-trip with spans
+    let sexpr = SExpr::parse(&with_spans)
+        .map_err(|e| format!("Error parsing S-expression: {}", e))?;
+    
+    let ast2 = Vec::from_sexpr(&sexpr)
+        .map_err(|e| format!("Error converting from S-expression: {}", e))?;
+    
+    // Convert back to S-expression with spans and compare
+    let with_spans2 = print_ast_with_spans(&ast2);
+    
+    if with_spans != with_spans2 {
+        return Err(format!(
+            "Round-trip failed! Spans not preserved.\nOriginal:\n{}\n\nAfter round-trip:\n{}", 
+            with_spans, 
+            with_spans2
+        ));
+    }
     
     Ok(())
 }
@@ -37,7 +61,8 @@ fn discover_atom_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn main() {
+#[test]
+fn test_span_roundtrip_all_files() {
     // Auto-discover .atom files from various directories
     let mut test_files = Vec::new();
     
@@ -69,37 +94,39 @@ fn main() {
         }
     }
     
-    if test_files.is_empty() {
-        eprintln!("No .atom files found!");
-        std::process::exit(1);
-    }
+    assert!(!test_files.is_empty(), "No .atom files found!");
     
-    println!("Found {} .atom files to test\n", test_files.len());
+    println!("Testing span round-trip for {} .atom files\n", test_files.len());
     
-    let mut passed = 0;
-    let mut failed = 0;
+    let mut failed_files = Vec::new();
     
     for file in &test_files {
         let display_path = file.to_string_lossy();
         print!("Testing {:<60} ... ", display_path);
-        match test_file(file) {
+        match test_span_roundtrip(file) {
             Ok(_) => {
                 println!("✓ PASSED");
-                passed += 1;
             }
             Err(e) => {
                 println!("✗ FAILED");
                 println!("  Error: {}", e);
-                failed += 1;
+                failed_files.push((file.clone(), e));
             }
         }
     }
     
     println!("\n========================================");
-    println!("Results: {} passed, {} failed out of {} total", passed, failed, test_files.len());
+    println!("Results: {} passed, {} failed out of {} total", 
+             test_files.len() - failed_files.len(), 
+             failed_files.len(), 
+             test_files.len());
     println!("========================================");
     
-    if failed > 0 {
-        std::process::exit(1);
+    if !failed_files.is_empty() {
+        let mut error_msg = format!("Span round-trip failed for {} files:\n", failed_files.len());
+        for (file, err) in &failed_files {
+            error_msg.push_str(&format!("  - {}: {}\n", file.display(), err));
+        }
+        panic!("{}", error_msg);
     }
 }

@@ -33,6 +33,44 @@ fn write_span(f: &mut impl Write, span: Span) -> fmt::Result {
     Ok(())
 }
 
+/// Escape a string for use in double-quoted S-expression strings
+/// Only escapes characters that are special within double quotes:
+/// - " (double quote) → \"
+/// - \ (backslash) → \\
+/// - newline, tab, carriage return → \n, \t, \r
+/// 
+/// Note: Single quotes do NOT need to be escaped in double-quoted strings
+fn escape_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => result.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            '\n' => result.push_str("\\n"),
+            '\t' => result.push_str("\\t"),
+            '\r' => result.push_str("\\r"),
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
+/// Escape a character for use in single-quoted rune literals
+/// Only escapes characters that are special within single quotes:
+/// - ' (single quote) → \'
+/// - \ (backslash) → \\
+/// - newline, tab, carriage return → \n, \t, \r
+fn escape_rune(c: char) -> String {
+    match c {
+        '\'' => "\\'".to_string(),
+        '\\' => "\\\\".to_string(),
+        '\n' => "\\n".to_string(),
+        '\t' => "\\t".to_string(),
+        '\r' => "\\r".to_string(),
+        _ => c.to_string(),
+    }
+}
+
 impl ToSExpr for Vec<TopLevel> {
     fn to_sexpr(&self) -> String {
         let mut s = String::new();
@@ -747,8 +785,8 @@ impl ToSExpr for Literal {
         match self {
             Literal::Integer(n) => write!(f, "{}", n),
             Literal::Float(n) => write!(f, "{}", n),
-            Literal::String(s) => write!(f, "\"{}\"", s.escape_default()),
-            Literal::Rune(c) => write!(f, "(rune '{}')", c.escape_default()),
+            Literal::String(s) => write!(f, "\"{}\"", escape_string(s)),
+            Literal::Rune(c) => write!(f, "(rune '{}')", escape_rune(*c)),
             Literal::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
         }
     }
