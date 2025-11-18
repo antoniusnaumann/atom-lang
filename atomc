@@ -7,22 +7,37 @@
 #     - A .atom source file to compile
 #     - A directory containing .atom files to compile recursively
 #
-# This script invokes the Atom compiler backend to compile .atom source files.
+# This script handles the full compilation pipeline:
+#   1. Parse .atom source files to S-Expression AST using atom-parser
+#   2. Invoke atom-compile backend to type check, lower, generate code, and link
+#
+# NOTE: The modular design (parsing → AST → backend) is intentional.
+# It allows the parser to be swapped with alternative implementations
+# while keeping the backend independent of parser specifics.
 
 set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Set up paths to the compiler binary
+# Set up paths to the binaries (they're in the root target dir, not atom-compiler/target)
+PARSER_BIN="${SCRIPT_DIR}/target/release/atom"
 COMPILER_BIN="${SCRIPT_DIR}/target/release/atom-compile"
 
-# If release binary doesn't exist, try debug
+# If release binaries don't exist, try debug
+if [[ ! -f "$PARSER_BIN" ]]; then
+    PARSER_BIN="${SCRIPT_DIR}/target/debug/atom"
+fi
 if [[ ! -f "$COMPILER_BIN" ]]; then
     COMPILER_BIN="${SCRIPT_DIR}/target/debug/atom-compile"
 fi
 
-# Check if binary exists
+# Check if binaries exist
+if [[ ! -f "$PARSER_BIN" ]]; then
+    echo "Error: atom parser not found" >&2
+    echo "Please build with: cd atom-compiler && cargo build --workspace" >&2
+    exit 1
+fi
 if [[ ! -f "$COMPILER_BIN" ]]; then
     echo "Error: atom-compile not found" >&2
     echo "Please build with: cd atom-compiler && cargo build --workspace" >&2
@@ -78,6 +93,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Create temporary directory for AST files
+TMP_DIR=$(mktemp -d -t atom-compile.XXXXXX)
+trap "rm -rf $TMP_DIR" EXIT
+
 # Find standard library files (unless --no-std is passed)
 declare -a STDLIB_FILES
 if [[ "$NO_STD" == false ]]; then
@@ -121,12 +140,34 @@ else
     exit 1
 fi
 
-# Compile all files (stdlib first, then user files)
+# Parse all .atom files to S-Expression AST (stdlib first, then user files)
 ALL_FILES=("${STDLIB_FILES[@]}" "${ATOM_FILES[@]}")
-echo "Compiling ${#ALL_FILES[@]} file(s) total..."
+echo "Parsing ${#ALL_FILES[@]} file(s) total..."
+declare -a AST_FILES
+FILE_COUNT=0
+
+for atom_file in "${ALL_FILES[@]}"; do
+    FILE_COUNT=$((FILE_COUNT + 1))
+    filename=$(basename "$atom_file" .atom)
+    ast_file="$TMP_DIR/${filename}_${FILE_COUNT}.sexpr"
+    
+    echo "  [$FILE_COUNT/${#ALL_FILES[@]}] Parsing $atom_file..."
+    
+    if ! "$PARSER_BIN" --ast "$atom_file" > "$ast_file" 2>&1; then
+        echo "Error: Failed to parse $atom_file" >&2
+        cat "$ast_file" >&2
+        exit 1
+    fi
+    
+    AST_FILES+=("$ast_file")
+done
+
+echo "Successfully parsed all files"
 echo ""
 
-if ! "$COMPILER_BIN" "${ALL_FILES[@]}" -o "$OUTPUT_FILE"; then
+# Compile all AST files
+echo "Compiling..."
+if ! "$COMPILER_BIN" "${AST_FILES[@]}" -o "$OUTPUT_FILE"; then
     echo "Compilation failed" >&2
     exit 1
 fi

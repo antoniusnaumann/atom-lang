@@ -2,13 +2,18 @@
 //!
 //! Usage: atom-compile [OPTIONS] <input-files>...
 //!
-//! Compiles Atom source files to native executables.
+//! Compiles Atom S-Expression AST files to native executables.
+//!
+//! NOTE: This backend intentionally does NOT invoke the parser directly.
+//! It only accepts pre-parsed S-Expression AST files as input.
+//! This allows the parser to be swapped out with alternative implementations.
+//! The `atomc` script handles parsing .atom source files to S-expressions.
 
 use std::env;
 use std::fs;
 use std::process::{self, Command};
 
-use atom_parser::{Lexer, Parser};
+use atom_ast::from_sexpr::{FromSExpr, SExpr};
 
 mod codegen;
 mod ir;
@@ -24,13 +29,15 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     
     if args.len() < 2 {
-        eprintln!("Usage: atom-compile <input.atom>... [-o output]");
+        eprintln!("Usage: atom-compile <input.sexpr>... [-o output]");
         eprintln!();
-        eprintln!("Compiles Atom source files to native code.");
+        eprintln!("Compiles Atom S-Expression AST files to native code.");
         eprintln!();
         eprintln!("Arguments:");
-        eprintln!("  <input.atom>...    One or more Atom source files");
-        eprintln!("  -o <output>        Output executable path (default: a.out)");
+        eprintln!("  <input.sexpr>...    One or more S-Expression AST files");
+        eprintln!("  -o <output>         Output executable path (default: a.out)");
+        eprintln!();
+        eprintln!("Note: Use the `atomc` script to compile .atom source files directly.");
         process::exit(1);
     }
     
@@ -68,21 +75,19 @@ fn main() {
 }
 
 fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
-    // Step 1: Parse all input files
-    println!("Parsing {} input file(s)...", input_files.len());
+    // Step 1: Parse all S-Expression input files
+    println!("Parsing {} S-Expression file(s)...", input_files.len());
     let mut all_items = Vec::new();
     
     for file_path in input_files {
         let content = fs::read_to_string(file_path)
             .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
         
-        let mut lexer = Lexer::new(&content);
-        let tokens = lexer.tokenize()
-            .map_err(|e| format!("Failed to lex {}: {}", file_path, e))?;
+        let sexpr = SExpr::parse(&content)
+            .map_err(|e| format!("Failed to parse S-expression in {}: {}", file_path, e))?;
         
-        let mut parser = Parser::new(tokens);
-        let items = parser.parse()
-            .map_err(|e| format!("Failed to parse {}: {}", file_path, e))?;
+        let items = Vec::<atom_ast::ast::TopLevel>::from_sexpr(&sexpr)
+            .map_err(|e| format!("Failed to deserialize AST from {}: {}", file_path, e))?;
         
         all_items.extend(items);
     }
