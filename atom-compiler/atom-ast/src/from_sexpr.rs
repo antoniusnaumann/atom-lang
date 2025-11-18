@@ -599,18 +599,60 @@ impl FromSExpr for TypeParam {
         let span = parse_span(list);
         let filtered = filter_metadata(list);
 
-        let name = if filtered.is_empty() {
-            None
-        } else {
-            Some(Ident {
-                name: filtered[0].as_symbol()?.to_string(),
+        // Determine if the first element is a name or a type
+        // Format can be:
+        // (name Type) - name is Some, ty is Some
+        // (name) - name is Some, ty is None (for const params like (32))
+        // (Type) - name is None, ty is Some (anonymous type param like in Option<Int>)
+        // () - name is None, ty is None (empty param)
+        let (name, mut idx) = if filtered.is_empty() {
+            // Empty: () -> no name, no type
+            (None, 0)
+        } else if let SExpr::Integer(n) = filtered[0] {
+            // Integer: (32) -> const parameter, name is the integer as string
+            (Some(Ident {
+                name: n.to_string(),
                 span: dummy_span(),
-            })
+            }), 1)
+        } else if let Ok(name_str) = filtered[0].as_symbol() {
+            // Symbol: could be a name or a type
+            if filtered.len() > 1 && filtered[1].as_symbol().ok() != Some(":default") {
+                // More elements after the symbol (and it's not :default), so symbol is a name
+                // Format: (name Type) or (name Type :default ...)
+                (Some(Ident {
+                    name: name_str.to_string(),
+                    span: dummy_span(),
+                }), 1)
+            } else if filtered.len() == 1 {
+                // Single symbol - need to disambiguate between name and type
+                // Heuristic: lowercase identifiers (especially single letters) are typically
+                // type parameter names, while capitalized identifiers are type names
+                let first_char = name_str.chars().next().unwrap_or('A');
+                if first_char.is_lowercase() {
+                    // Treat as a parameter name: (t) -> name="t", ty=None
+                    (Some(Ident {
+                        name: name_str.to_string(),
+                        span: dummy_span(),
+                    }), 1)
+                } else {
+                    // Treat as a type: (Int) -> name=None, ty=Type::Named("Int")
+                    (None, 0)
+                }
+            } else {
+                // Symbol with :default: (t :default ...)
+                (Some(Ident {
+                    name: name_str.to_string(),
+                    span: dummy_span(),
+                }), 1)
+            }
+        } else {
+            // List: first element is a complex type, no name
+            // Format: ((type-param t)) or ((tuple ...))
+            (None, 0)
         };
 
         let mut ty = None;
         let mut default = None;
-        let mut idx = 1;
 
         while idx < filtered.len() {
             if filtered[idx].as_symbol().ok() == Some(":default") {
@@ -789,19 +831,45 @@ impl FromSExpr for VarDecl {
         let mut init = None;
 
         // Parse remaining elements (type and/or init)
-        for i in 3..filtered.len() {
-            // Try to determine if this is a type or an expression
-            // For simplicity, we'll treat the first as type and second as init
-            if ty.is_none() {
-                // Try parsing as type first
-                if let Ok(t) = Type::from_sexpr(filtered[i]) {
-                    ty = Some(Box::new(t));
+        // Format: (var visibility name [type] [init] :span ...)
+        // If we have 1 element: it could be type OR init (ambiguous for tuples)
+        // If we have 2 elements: first is type, second is init
+        match filtered.len() - 3 {
+            0 => {
+                // No type or init
+            }
+            1 => {
+                // One element: could be type or init
+                // Try parsing as expression first since var decls usually have init
+                if let Ok(expr) = Expr::from_sexpr(filtered[3]) {
+                    // Check if it can also be parsed as a type
+                    if let Ok(t) = Type::from_sexpr(filtered[3]) {
+                        // Ambiguous: could be either
+                        // Heuristic: if it's an empty tuple, it's more likely an init
+                        // For other cases, prefer type if it's a simple type
+                        match filtered[3].as_list() {
+                            Ok(list) if !list.is_empty() && list[0].as_symbol().ok() == Some("tuple") => {
+                                // It's a tuple - treat as init
+                                init = Some(Box::new(expr));
+                            }
+                            _ => {
+                                // Prefer type for other cases
+                                ty = Some(Box::new(t));
+                            }
+                        }
+                    } else {
+                        // Can only be parsed as expression
+                        init = Some(Box::new(expr));
+                    }
                 } else {
-                    // If not a type, must be an init expression
-                    init = Some(Box::new(Expr::from_sexpr(filtered[i])?));
+                    // Can only be parsed as type
+                    ty = Some(Box::new(Type::from_sexpr(filtered[3])?));
                 }
-            } else {
-                init = Some(Box::new(Expr::from_sexpr(filtered[i])?));
+            }
+            _ => {
+                // Two or more elements: first is type, rest is init
+                ty = Some(Box::new(Type::from_sexpr(filtered[3])?));
+                init = Some(Box::new(Expr::from_sexpr(filtered[4])?));
             }
         }
 
