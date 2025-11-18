@@ -2,6 +2,7 @@
 members = [
     "atom-compiler/atom-ast",
     "atom-compiler/atom-parser",
+    "atom-compiler/atom-backend",
 ]
 resolver = "2"
 
