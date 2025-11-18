@@ -340,3 +340,23 @@ pub enum UnOp {
     Not,     // !
     BitNot,  // ~
 }
+
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Literal(_, span) => *span,
+            Expr::Ident(ident) => ident.span,
+            Expr::Binary { span, .. } => *span,
+            Expr::Unary { span, .. } => *span,
+            Expr::Call { span, .. } => *span,
+            Expr::MethodCall { span, .. } => *span,
+            Expr::FieldAccess { span, .. } => *span,
+            Expr::Tuple(_, span) => *span,
+            Expr::StructInit { span, .. } => *span,
+            Expr::Closure { span, .. } => *span,
+            Expr::Block(block) => block.span,
+            Expr::Match { span, .. } => *span,
+            Expr::Comptime { span, .. } => *span,
+        }
+    }
+}

@@ -1,10 +1,11 @@
 [package]
 name = "atom-parser"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "atom"
 path = "src/main.rs"
 
 [dependencies]
+atom-ast = { path = "../atom-ast" }

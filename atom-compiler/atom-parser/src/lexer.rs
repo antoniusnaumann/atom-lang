@@ -1,8 +1,8 @@
 use crate::{
     error::{ParseError, ParseResult},
-    span::Span,
     token::{Token, TokenKind},
 };
+use atom_ast::Span;
 
 pub struct Lexer {
     input: Vec<char>,

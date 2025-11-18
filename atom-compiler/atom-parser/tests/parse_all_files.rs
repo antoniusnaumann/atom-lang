@@ -37,37 +37,44 @@ fn discover_atom_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn main() {
+#[test]
+fn test_parse_all_atom_files() {
     // Auto-discover .atom files from various directories
     let mut test_files = Vec::new();
     
-    // Collect from examples/
-    let examples_dir = Path::new("../examples");
-    if examples_dir.exists() {
-        test_files.extend(discover_atom_files(examples_dir));
+    // Try both relative paths (when run from workspace root and from crate dir)
+    let base_paths = vec![".", "../.."];
+    
+    for base in &base_paths {
+        // Collect from examples/
+        let examples_dir = Path::new(base).join("examples");
+        if examples_dir.exists() {
+            test_files.extend(discover_atom_files(&examples_dir));
+        }
+        
+        // Collect from std/
+        let std_dir = Path::new(base).join("std");
+        if std_dir.exists() {
+            test_files.extend(discover_atom_files(&std_dir));
+        }
+        
+        // Collect from tree-sitter-atom/example/
+        let tree_sitter_dir = Path::new(base).join("tree-sitter-atom/example");
+        if tree_sitter_dir.exists() {
+            test_files.extend(discover_atom_files(&tree_sitter_dir));
+        }
+        
+        // If we found files, stop searching
+        if !test_files.is_empty() {
+            break;
+        }
     }
     
-    // Collect from std/
-    let std_dir = Path::new("../std");
-    if std_dir.exists() {
-        test_files.extend(discover_atom_files(std_dir));
-    }
-    
-    // Collect from tree-sitter-atom/example/
-    let tree_sitter_dir = Path::new("../tree-sitter-atom/example");
-    if tree_sitter_dir.exists() {
-        test_files.extend(discover_atom_files(tree_sitter_dir));
-    }
-    
-    if test_files.is_empty() {
-        eprintln!("No .atom files found!");
-        std::process::exit(1);
-    }
+    assert!(!test_files.is_empty(), "No .atom files found!");
     
     println!("Found {} .atom files to test\n", test_files.len());
     
-    let mut passed = 0;
-    let mut failed = 0;
+    let mut failed_files = Vec::new();
     
     for file in &test_files {
         let display_path = file.to_string_lossy();
@@ -75,21 +82,27 @@ fn main() {
         match test_file(file) {
             Ok(_) => {
                 println!("✓ PASSED");
-                passed += 1;
             }
             Err(e) => {
                 println!("✗ FAILED");
                 println!("  Error: {}", e);
-                failed += 1;
+                failed_files.push((file.clone(), e));
             }
         }
     }
     
     println!("\n========================================");
-    println!("Results: {} passed, {} failed out of {} total", passed, failed, test_files.len());
+    println!("Results: {} passed, {} failed out of {} total", 
+             test_files.len() - failed_files.len(), 
+             failed_files.len(), 
+             test_files.len());
     println!("========================================");
     
-    if failed > 0 {
-        std::process::exit(1);
+    if !failed_files.is_empty() {
+        let mut error_msg = format!("Failed to parse {} files:\n", failed_files.len());
+        for (file, err) in &failed_files {
+            error_msg.push_str(&format!("  - {}: {}\n", file.display(), err));
+        }
+        panic!("{}", error_msg);
     }
 }

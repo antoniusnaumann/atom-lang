@@ -1,4 +1,4 @@
-use crate::span::Span;
+use atom_ast::Span;
 use std::fmt;
 
 #[derive(Debug, Clone)]

@@ -6,3 +6,5 @@ atom-parser/target/
 atom-parser/debug_parse
 atom-parser/debug_parse.rs
 atom-parser/test_result.atom
+/target
+/Cargo.lock

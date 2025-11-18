@@ -1,9 +1,9 @@
 use crate::{
-    ast::*,
     error::{ParseError, ParseResult},
-    span::Span,
     token::{Token, TokenKind},
 };
+use atom_ast::{self, Span};
+use atom_ast::*;
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -1801,27 +1801,6 @@ impl Clone for Parser {
             tokens: self.tokens.clone(),
             pos: self.pos,
             filename: self.filename.clone(),
-        }
-    }
-}
-
-// Add span() method to Expr
-impl Expr {
-    pub fn span(&self) -> Span {
-        match self {
-            Expr::Literal(_, span) => *span,
-            Expr::Ident(ident) => ident.span,
-            Expr::Binary { span, .. } => *span,
-            Expr::Unary { span, .. } => *span,
-            Expr::Call { span, .. } => *span,
-            Expr::MethodCall { span, .. } => *span,
-            Expr::FieldAccess { span, .. } => *span,
-            Expr::Tuple(_, span) => *span,
-            Expr::StructInit { span, .. } => *span,
-            Expr::Closure { span, .. } => *span,
-            Expr::Block(block) => block.span,
-            Expr::Match { span, .. } => *span,
-            Expr::Comptime { span, .. } => *span,
         }
     }
 }

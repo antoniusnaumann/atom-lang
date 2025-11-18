@@ -4,7 +4,12 @@
 //! S-Expression format for debugging and tooling purposes.
 
 use crate::ast::*;
+use crate::span::Span;
 use std::fmt::{self, Write};
+
+thread_local! {
+    static INCLUDE_SPANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// Helper trait for converting AST nodes to S-Expressions
 pub trait ToSExpr {
@@ -18,6 +23,52 @@ fn write_indent(f: &mut impl Write, indent: usize) -> fmt::Result {
         write!(f, "  ")?;
     }
     Ok(())
+}
+
+/// Helper function to write span information if enabled
+fn write_span(f: &mut impl Write, span: Span) -> fmt::Result {
+    if INCLUDE_SPANS.with(|c| c.get()) {
+        write!(f, " :span ({} {})", span.start, span.end)?;
+    }
+    Ok(())
+}
+
+/// Escape a string for use in double-quoted S-expression strings
+/// Only escapes characters that are special within double quotes:
+/// - " (double quote) → \"
+/// - \ (backslash) → \\
+/// - newline, tab, carriage return → \n, \t, \r
+/// 
+/// Note: Single quotes do NOT need to be escaped in double-quoted strings
+fn escape_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => result.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            '\n' => result.push_str("\\n"),
+            '\t' => result.push_str("\\t"),
+            '\r' => result.push_str("\\r"),
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
+/// Escape a character for use in single-quoted rune literals
+/// Only escapes characters that are special within single quotes:
+/// - ' (single quote) → \'
+/// - \ (backslash) → \\
+/// - newline, tab, carriage return → \n, \t, \r
+fn escape_rune(c: char) -> String {
+    match c {
+        '\'' => "\\'".to_string(),
+        '\\' => "\\\\".to_string(),
+        '\n' => "\\n".to_string(),
+        '\t' => "\\t".to_string(),
+        '\r' => "\\r".to_string(),
+        _ => c.to_string(),
+    }
 }
 
 impl ToSExpr for Vec<TopLevel> {
@@ -82,6 +133,7 @@ impl ToSExpr for ImportDecl {
         write_indent(f, indent)?;
         write!(f, "(import {} ", self.namespace.name)?;
         self.items.write_sexpr(f, 0)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -137,6 +189,7 @@ impl ToSExpr for StructDef {
             field.write_sexpr(f, indent + 1)?;
         }
         write_indent(f, indent)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -156,6 +209,7 @@ impl ToSExpr for Field {
             write!(f, "{} ", name.name)?;
         }
         self.ty.write_sexpr(f, 0)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -187,6 +241,7 @@ impl ToSExpr for EnumDef {
             case.write_sexpr(f, indent + 1)?;
         }
         write_indent(f, indent)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -208,6 +263,7 @@ impl ToSExpr for EnumCase {
                 field.write_sexpr(f, 0)?;
             }
         }
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -233,6 +289,7 @@ impl ToSExpr for TypeParam {
             write!(f, " :default ")?;
             default.write_sexpr(f, 0)?;
         }
+        write_span(f, self.span)?;
         write!(f, ")")
     }
 }
@@ -273,6 +330,7 @@ impl ToSExpr for FunctionDef {
         writeln!(f)?;
         self.body.write_sexpr(f, indent + 1)?;
         write_indent(f, indent)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -295,6 +353,7 @@ impl ToSExpr for Param {
             write!(f, " :default ")?;
             default.write_sexpr(f, 0)?;
         }
+        write_span(f, self.span)?;
         write!(f, ")")
     }
 }
@@ -334,6 +393,7 @@ impl ToSExpr for VarDecl {
             init.write_sexpr(f, 0)?;
         }
         
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -355,6 +415,7 @@ impl ToSExpr for TestBlock {
         writeln!(f)?;
         self.body.write_sexpr(f, indent + 1)?;
         write_indent(f, indent)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -374,6 +435,7 @@ impl ToSExpr for Block {
             stmt.write_sexpr(f, indent + 1)?;
         }
         write_indent(f, indent)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -405,39 +467,43 @@ impl ToSExpr for Type {
         match self {
             Type::Named(name) => write!(f, "{}", name.name),
             Type::Param(name) => write!(f, "(type-param {})", name.name),
-            Type::Tuple(types, _) => {
+            Type::Tuple(types, span) => {
                 write!(f, "(tuple")?;
                 for ty in types {
                     write!(f, " ")?;
                     ty.write_sexpr(f, 0)?;
                 }
+                write_span(f, *span)?;
                 write!(f, ")")
             }
-            Type::Generic { name, params, .. } => {
+            Type::Generic { name, params, span } => {
                 write!(f, "(generic {}", name.name)?;
                 for param in params {
                     write!(f, " ")?;
                     param.write_sexpr(f, 0)?;
                 }
+                write_span(f, *span)?;
                 write!(f, ")")
             }
-            Type::Variadic { element, non_empty, .. } => {
+            Type::Variadic { element, non_empty, span } => {
                 if *non_empty {
                     write!(f, "(variadic+ ")?;
                 } else {
                     write!(f, "(variadic* ")?;
                 }
                 element.write_sexpr(f, 0)?;
+                write_span(f, *span)?;
                 write!(f, ")")
             }
-            Type::StaticArray { element, size, .. } => {
+            Type::StaticArray { element, size, span } => {
                 write!(f, "(static-array ")?;
                 element.write_sexpr(f, 0)?;
                 write!(f, " ")?;
                 size.write_sexpr(f, 0)?;
+                write_span(f, *span)?;
                 write!(f, ")")
             }
-            Type::Function { params, return_type, .. } => {
+            Type::Function { params, return_type, span } => {
                 write!(f, "(function-type (params")?;
                 for param in params {
                     write!(f, " ")?;
@@ -449,6 +515,7 @@ impl ToSExpr for Type {
                     ret.write_sexpr(f, 0)?;
                     write!(f, ")")?;
                 }
+                write_span(f, *span)?;
                 write!(f, ")")
             }
         }
@@ -464,33 +531,50 @@ impl ToSExpr for Expr {
 
     fn write_sexpr(&self, f: &mut impl Write, indent: usize) -> fmt::Result {
         match self {
-            Expr::Literal(lit, _) => {
+            Expr::Literal(lit, span) => {
                 write_indent(f, indent)?;
-                lit.write_sexpr(f, 0)?;
-                writeln!(f)?;
+                // If spans are enabled and this is not a dummy span, wrap in a list
+                if INCLUDE_SPANS.with(|c| c.get()) && (span.start != 0 || span.end != 0) {
+                    write!(f, "(literal ")?;
+                    lit.write_sexpr(f, 0)?;
+                    write_span(f, *span)?;
+                    writeln!(f, ")")?;
+                } else {
+                    lit.write_sexpr(f, 0)?;
+                    writeln!(f)?;
+                }
             }
             Expr::Ident(ident) => {
                 write_indent(f, indent)?;
-                writeln!(f, "{}", ident.name)?;
+                // If spans are enabled and this is not a dummy span, wrap in a list
+                if INCLUDE_SPANS.with(|c| c.get()) && (ident.span.start != 0 || ident.span.end != 0) {
+                    write!(f, "(ident {}", ident.name)?;
+                    write_span(f, ident.span)?;
+                    writeln!(f, ")")?;
+                } else {
+                    writeln!(f, "{}", ident.name)?;
+                }
             }
-            Expr::Binary { op, left, right, .. } => {
+            Expr::Binary { op, left, right, span } => {
                 write_indent(f, indent)?;
                 write!(f, "({}", op.to_sexpr())?;
                 writeln!(f)?;
                 left.write_sexpr(f, indent + 1)?;
                 right.write_sexpr(f, indent + 1)?;
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::Unary { op, expr, .. } => {
+            Expr::Unary { op, expr, span } => {
                 write_indent(f, indent)?;
                 write!(f, "({}", op.to_sexpr())?;
                 writeln!(f)?;
                 expr.write_sexpr(f, indent + 1)?;
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::Call { func, args, .. } => {
+            Expr::Call { func, args, span } => {
                 write_indent(f, indent)?;
                 writeln!(f, "(call")?;
                 func.write_sexpr(f, indent + 1)?;
@@ -498,9 +582,10 @@ impl ToSExpr for Expr {
                     arg.write_sexpr(f, indent + 1)?;
                 }
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::MethodCall { receiver, method, args, .. } => {
+            Expr::MethodCall { receiver, method, args, span } => {
                 write_indent(f, indent)?;
                 writeln!(f, "(method-call")?;
                 receiver.write_sexpr(f, indent + 1)?;
@@ -510,27 +595,30 @@ impl ToSExpr for Expr {
                     arg.write_sexpr(f, indent + 1)?;
                 }
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::FieldAccess { object, field, .. } => {
+            Expr::FieldAccess { object, field, span } => {
                 write_indent(f, indent)?;
                 writeln!(f, "(field-access")?;
                 object.write_sexpr(f, indent + 1)?;
                 write_indent(f, indent + 1)?;
                 writeln!(f, "{}", field.name)?;
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::Tuple(exprs, _) => {
+            Expr::Tuple(exprs, span) => {
                 write_indent(f, indent)?;
                 writeln!(f, "(tuple")?;
                 for expr in exprs {
                     expr.write_sexpr(f, indent + 1)?;
                 }
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::StructInit { ty, fields, .. } => {
+            Expr::StructInit { ty, fields, span } => {
                 write_indent(f, indent)?;
                 write!(f, "(struct-init")?;
                 if let Some(ty_name) = ty {
@@ -541,9 +629,10 @@ impl ToSExpr for Expr {
                     field.write_sexpr(f, indent + 1)?;
                 }
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::Closure { params, return_type, body, .. } => {
+            Expr::Closure { params, return_type, body, span } => {
                 write_indent(f, indent)?;
                 write!(f, "(closure (params")?;
                 for param in params {
@@ -559,12 +648,13 @@ impl ToSExpr for Expr {
                 writeln!(f)?;
                 body.write_sexpr(f, indent + 1)?;
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
             Expr::Block(block) => {
                 block.write_sexpr(f, indent)?;
             }
-            Expr::Match { expr, arms, .. } => {
+            Expr::Match { expr, arms, span } => {
                 write_indent(f, indent)?;
                 writeln!(f, "(match")?;
                 expr.write_sexpr(f, indent + 1)?;
@@ -572,13 +662,15 @@ impl ToSExpr for Expr {
                     arm.write_sexpr(f, indent + 1)?;
                 }
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Expr::Comptime { expr, .. } => {
+            Expr::Comptime { expr, span } => {
                 write_indent(f, indent)?;
                 writeln!(f, "(comptime")?;
                 expr.write_sexpr(f, indent + 1)?;
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
         }
@@ -602,6 +694,7 @@ impl ToSExpr for FieldInit {
         writeln!(f)?;
         self.value.write_sexpr(f, indent + 1)?;
         write_indent(f, indent)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -620,6 +713,7 @@ impl ToSExpr for MatchArm {
         self.pattern.write_sexpr(f, indent + 1)?;
         self.body.write_sexpr(f, indent + 1)?;
         write_indent(f, indent)?;
+        write_span(f, self.span)?;
         writeln!(f, ")")?;
         Ok(())
     }
@@ -635,27 +729,38 @@ impl ToSExpr for Pattern {
     fn write_sexpr(&self, f: &mut impl Write, indent: usize) -> fmt::Result {
         write_indent(f, indent)?;
         match self {
-            Pattern::Wildcard(_) => writeln!(f, "(pattern-wildcard)")?,
-            Pattern::Literal(lit, _) => {
-                write!(f, "(pattern-literal ")?;
-                lit.write_sexpr(f, 0)?;
+            Pattern::Wildcard(span) => {
+                write!(f, "(pattern-wildcard")?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Pattern::Ident(ident) => writeln!(f, "(pattern-ident {})", ident.name)?,
-            Pattern::Tuple(patterns, _) => {
+            Pattern::Literal(lit, span) => {
+                write!(f, "(pattern-literal ")?;
+                lit.write_sexpr(f, 0)?;
+                write_span(f, *span)?;
+                writeln!(f, ")")?;
+            }
+            Pattern::Ident(ident) => {
+                write!(f, "(pattern-ident {}", ident.name)?;
+                write_span(f, ident.span)?;
+                writeln!(f, ")")?;
+            }
+            Pattern::Tuple(patterns, span) => {
                 writeln!(f, "(pattern-tuple")?;
                 for pattern in patterns {
                     pattern.write_sexpr(f, indent + 1)?;
                 }
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
-            Pattern::Enum { name, fields, .. } => {
+            Pattern::Enum { name, fields, span } => {
                 writeln!(f, "(pattern-enum {}", name.name)?;
                 for field in fields {
                     field.write_sexpr(f, indent + 1)?;
                 }
                 write_indent(f, indent)?;
+                write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
             Pattern::Expr(expr) => {
@@ -680,8 +785,8 @@ impl ToSExpr for Literal {
         match self {
             Literal::Integer(n) => write!(f, "{}", n),
             Literal::Float(n) => write!(f, "{}", n),
-            Literal::String(s) => write!(f, "\"{}\"", s.escape_default()),
-            Literal::Rune(c) => write!(f, "'{}'", c.escape_default()),
+            Literal::String(s) => write!(f, "\"{}\"", escape_string(s)),
+            Literal::Rune(c) => write!(f, "(rune '{}')", escape_rune(*c)),
             Literal::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
         }
     }
@@ -731,12 +836,28 @@ impl UnOp {
 
 /// Print an AST as an S-Expression
 pub fn print_ast(ast: &[TopLevel]) -> String {
+    print_ast_impl(ast, false)
+}
+
+/// Print an AST as an S-Expression with span information
+pub fn print_ast_with_spans(ast: &[TopLevel]) -> String {
+    print_ast_impl(ast, true)
+}
+
+fn print_ast_impl(ast: &[TopLevel], include_spans: bool) -> String {
+    INCLUDE_SPANS.with(|c| c.set(include_spans));
     let mut s = String::new();
-    s.push_str("(program\n");
+    s.push_str("(program");
+    if include_spans {
+        // Program itself doesn't have a span, but we could add metadata
+        s.push_str(" :spans-enabled");
+    }
+    s.push('\n');
     for item in ast {
         item.write_sexpr(&mut s, 1).unwrap();
     }
     s.push(')');
+    INCLUDE_SPANS.with(|c| c.set(false)); // Reset
     s
 }
 
