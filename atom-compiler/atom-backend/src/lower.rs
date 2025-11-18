@@ -632,8 +632,14 @@ impl Lower {
             arg_values.push(value);
         }
 
-        // Determine return type (simplified - should query type environment)
-        let return_type = IrType::Int(64);
+        // Determine return type
+        // Check if this is a C library function call
+        let return_type = if func_name.starts_with('c') && func_name.contains("::") {
+            self.infer_c_function_return_type(&func_name)
+        } else {
+            // Simplified - should query type environment
+            IrType::Int(64)
+        };
 
         let value_id = self.fresh_value_id();
         ir_block.add_instruction(IrInstruction {
@@ -646,6 +652,28 @@ impl Lower {
         });
 
         Ok(value_id)
+    }
+
+    /// Infer return type for C library functions.
+    fn infer_c_function_return_type(&self, func_name: &str) -> IrType {
+        // Extract the actual function name after ::
+        let parts: Vec<&str> = func_name.split("::").collect();
+        if parts.len() != 2 {
+            return IrType::Int(64); // Default
+        }
+
+        let c_func_name = parts[1];
+
+        // Special case for known C functions
+        match c_func_name {
+            "exit" | "printf" => IrType::Void,
+            // Math functions ending with 'f' return float (32-bit)
+            name if name.ends_with('f') && parts[0] == "cmath" => IrType::Float(32),
+            // Math functions without 'f' return double (64-bit)
+            _ if parts[0] == "cmath" => IrType::Float(64),
+            // Default to int
+            _ => IrType::Int(64),
+        }
     }
 
     /// Lower a tuple expression to IR.

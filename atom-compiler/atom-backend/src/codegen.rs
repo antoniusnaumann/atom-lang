@@ -31,8 +31,9 @@ use crate::ir::{
     LocalId, ValueId,
 };
 use cranelift::prelude::*;
+use cranelift::prelude::isa::CallConv;
 use cranelift::codegen::ir::StackSlot;
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -112,6 +113,8 @@ pub struct CodeGenerator {
     struct_defs: HashMap<String, IrStructDef>,
     /// Enum definitions from the IR
     enum_defs: HashMap<String, IrEnumDef>,
+    /// String constants (maps string content to DataId)
+    string_constants: HashMap<Vec<u8>, DataId>,
 }
 
 impl CodeGenerator {
@@ -121,6 +124,7 @@ impl CodeGenerator {
             target_triple: target_lexicon::Triple::host(),
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
+            string_constants: HashMap::new(),
         }
     }
 
@@ -130,6 +134,7 @@ impl CodeGenerator {
             target_triple: target,
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
+            string_constants: HashMap::new(),
         }
     }
 
@@ -157,7 +162,8 @@ impl CodeGenerator {
         flag_builder.set("opt_level", "speed").map_err(|e| {
             CodegenError::CraneliftError(format!("Failed to set opt_level: {}", e))
         })?;
-        flag_builder.set("is_pic", "false").map_err(|e| {
+        // Enable PIC for compatibility with modern linkers (required on macOS)
+        flag_builder.set("is_pic", "true").map_err(|e| {
             CodegenError::CraneliftError(format!("Failed to set is_pic: {}", e))
         })?;
         let isa_builder = cranelift_native::builder()
@@ -176,9 +182,27 @@ impl CodeGenerator {
 
         // Declare all functions first (for forward references)
         let mut func_ids = HashMap::new();
+        let mut external_funcs = HashMap::new();
+        
         for func in &ir.functions {
             let func_id = self.declare_function(&mut module, func)?;
             func_ids.insert(func.name.clone(), func_id);
+            
+            // Scan for C library calls to declare them as external
+            self.collect_external_functions(func, &mut external_funcs);
+        }
+        
+        // Declare all external C functions
+        for (c_name, signature) in external_funcs {
+            let func_id = module
+                .declare_function(&c_name, Linkage::Import, &signature)
+                .map_err(|e| {
+                    CodegenError::ModuleError(format!(
+                        "Failed to declare external function '{}': {}",
+                        c_name, e
+                    ))
+                })?;
+            func_ids.insert(format!("c::{}", c_name), func_id);
         }
 
         // Compile each function
@@ -198,6 +222,53 @@ impl CodeGenerator {
         file.write_all(&bytes)?;
 
         Ok(())
+    }
+    
+    /// Collect all external C function references from a function
+    fn collect_external_functions(
+        &self,
+        func: &IrFunction,
+        external_funcs: &mut HashMap<String, Signature>,
+    ) {
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let IrInstructionKind::Call { function, args } = &inst.kind {
+                    // Check if this is a C function call
+                    if function.starts_with('c') && function.contains("::") {
+                        let parts: Vec<&str> = function.split("::").collect();
+                        if parts.len() == 2 {
+                            let c_func_name = parts[1].to_string();
+                            
+                            // Only add if not already declared
+                            if !external_funcs.contains_key(&c_func_name) {
+                                // Create signature for C function
+                                let mut sig = Signature::new(CallConv::SystemV);
+                                
+                                // Add variadic parameters (use actual arg count)
+                                for _ in 0..args.len() {
+                                    // For simplicity, assume all args are i64 or pointers
+                                    sig.params.push(AbiParam::new(types::I64));
+                                }
+                                
+                                // Determine return type
+                                let ret_type = match c_func_name.as_str() {
+                                    "exit" | "printf" => None,
+                                    name if name.ends_with('f') => Some(types::F32),
+                                    _ if parts[0] == "cmath" => Some(types::F64),
+                                    _ => Some(types::I64),
+                                };
+                                
+                                if let Some(rt) = ret_type {
+                                    sig.returns.push(AbiParam::new(rt));
+                                }
+                                
+                                external_funcs.insert(c_func_name, sig);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Declare a function in the module
@@ -239,7 +310,7 @@ impl CodeGenerator {
 
     /// Compile a single function
     fn compile_function(
-        &self,
+        &mut self,
         module: &mut ObjectModule,
         func: &IrFunction,
         func_id: FuncId,
@@ -355,7 +426,7 @@ impl CodeGenerator {
 
     /// Translate an IR instruction to Cranelift
     fn translate_instruction(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         inst: &IrInstruction,
         values: &HashMap<ValueId, Value>,
@@ -364,7 +435,7 @@ impl CodeGenerator {
         module: &mut ObjectModule,
     ) -> CodegenResult<Value> {
         match &inst.kind {
-            IrInstructionKind::Const { value } => self.translate_const(builder, value, &inst.ty),
+            IrInstructionKind::Const { value } => self.translate_const(builder, value, &inst.ty, module),
 
             IrInstructionKind::BinOp { op, left, right } => {
                 let left_val = values
@@ -388,9 +459,23 @@ impl CodeGenerator {
             }
 
             IrInstructionKind::Call { function, args } => {
+                // Check if this is a C function call
+                let actual_func_name = if function.starts_with('c') && function.contains("::") {
+                    // Extract C function name: "cstdlib::printf" -> "printf"
+                    let parts: Vec<&str> = function.split("::").collect();
+                    if parts.len() == 2 {
+                        // Look up the external function with the c:: prefix
+                        format!("c::{}", parts[1])
+                    } else {
+                        function.clone()
+                    }
+                } else {
+                    function.clone()
+                };
+                
                 let func_id = func_ids
-                    .get(function)
-                    .ok_or_else(|| CodegenError::FunctionNotFound(function.clone()))?;
+                    .get(&actual_func_name)
+                    .ok_or_else(|| CodegenError::FunctionNotFound(actual_func_name.clone()))?;
                 
                 let func_ref = module.declare_func_in_func(*func_id, builder.func);
                 
@@ -512,10 +597,11 @@ impl CodeGenerator {
 
     /// Translate a constant value
     fn translate_const(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         constant: &IrConstant,
         ty: &IrType,
+        module: &mut ObjectModule,
     ) -> CodegenResult<Value> {
         match constant {
             IrConstant::Int(n) => {
@@ -537,11 +623,38 @@ impl CodeGenerator {
             IrConstant::Bool(b) => Ok(builder.ins().iconst(types::I8, if *b { 1 } else { 0 })),
             IrConstant::Rune(c) => Ok(builder.ins().iconst(types::I32, *c as i64)),
             IrConstant::Void => Ok(builder.ins().iconst(types::I64, 0)),
-            IrConstant::String(_) => {
-                // String constants would require global data section
-                Err(CodegenError::UnsupportedType(
-                    "String constants not yet implemented".to_string(),
-                ))
+            IrConstant::String(bytes) => {
+                // Create or get global data for this string
+                let data_id = if let Some(existing_id) = self.string_constants.get(bytes) {
+                    *existing_id
+                } else {
+                    // Create a new data section for this string
+                    let mut data_bytes = bytes.clone();
+                    data_bytes.push(0); // Null terminator for C strings
+                    
+                    let data_id = module
+                        .declare_anonymous_data(false, false)
+                        .map_err(|e| {
+                            CodegenError::ModuleError(format!("Failed to declare string data: {}", e))
+                        })?;
+                    
+                    let mut data_desc = DataDescription::new();
+                    data_desc.define(data_bytes.into_boxed_slice());
+                    
+                    module
+                        .define_data(data_id, &data_desc)
+                        .map_err(|e| {
+                            CodegenError::ModuleError(format!("Failed to define string data: {}", e))
+                        })?;
+                    
+                    self.string_constants.insert(bytes.clone(), data_id);
+                    data_id
+                };
+                
+                // Get a pointer to the global data
+                let global_value = module.declare_data_in_func(data_id, builder.func);
+                let ptr = builder.ins().global_value(types::I64, global_value);
+                Ok(ptr)
             }
         }
     }

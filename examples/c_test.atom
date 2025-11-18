@@ -1,0 +1,4 @@
++main() Int {
+    cstdlib::printf("Hello from C!\n")
+    0
+}
