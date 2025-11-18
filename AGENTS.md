@@ -2,11 +2,14 @@
 
 ## Build & Test Commands
 - **Build**: `cd atom-compiler && cargo build --workspace`
+- **Release build**: `cd atom-compiler && cargo build --workspace --release`
 - **All tests**: `cd atom-compiler && cargo test --workspace --verbose`
 - **Single test**: `cd atom-compiler && cargo test <TESTNAME> --verbose` (e.g., `cargo test parse_all_files`)
+- **Single test in crate**: `cd atom-compiler/atom-parser && cargo test <TESTNAME> --verbose`
 - **Lint**: `cd atom-compiler && cargo clippy --workspace -- -D warnings`
+- **Compile Atom source**: `./atomc <file.atom> [--no-std] [-o output]`
 - **Tree-sitter build**: `cd tree-sitter-atom && tree-sitter generate`
-- **Tree-sitter test**: `tree-sitter parse <file.atom> --quiet --stat` (from tree-sitter-atom dir)
+- **Tree-sitter test**: `cd tree-sitter-atom && tree-sitter parse <file.atom> --quiet --stat`
 
 ## Code Style (Rust)
 - **Edition**: 2024, workspace members in `atom-compiler/`
@@ -22,3 +25,9 @@
 - **Casing**: `PascalCase` for types/enum cases, `snake_case` for functions/vars/fields/modules. No keywords—structural typing.
 - **Visibility**: `+` (public), `-` (file-private), none (package-internal). Prefix types and functions.
 - **Specification**: Always reference the README.md and the .atom files in std/src/ and examples/ when working on the compiler
+
+## Architecture
+- **Modular design**: Parser and backend are intentionally separate. Parser outputs S-Expression AST, backend consumes it.
+- **Backend independence**: atom-backend does NOT depend on atom-parser. This allows swapping parser implementations.
+- **Compilation pipeline**: `.atom source` → `atom-parser` → `S-Expression AST` → `atom-compile` → `executable`
+- **Use atomc script**: For end-to-end compilation, use `./atomc` which orchestrates the full pipeline.
