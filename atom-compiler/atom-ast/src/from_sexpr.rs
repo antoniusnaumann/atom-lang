@@ -255,26 +255,23 @@ fn dummy_span() -> Span {
 fn parse_span(list: &[SExpr]) -> Span {
     // Look for :span keyword followed by (start end)
     for i in 0..list.len().saturating_sub(1) {
-        if let Ok(symbol) = list[i].as_symbol() {
-            if symbol == ":span" || symbol == ":spans-enabled" {
+        if let Ok(symbol) = list[i].as_symbol()
+            && (symbol == ":span" || symbol == ":spans-enabled") {
                 // Skip metadata markers
                 if symbol == ":spans-enabled" {
                     continue;
                 }
                 
                 // Try to parse the next element as a span
-                if let Ok(span_list) = list[i + 1].as_list() {
-                    if span_list.len() == 2 {
-                        if let (Ok(start), Ok(end)) = (
+                if let Ok(span_list) = list[i + 1].as_list()
+                    && span_list.len() == 2
+                        && let (Ok(start), Ok(end)) = (
                             span_list[0].as_integer(),
                             span_list[1].as_integer(),
                         ) {
                             return Span::new(start as usize, end as usize);
                         }
-                    }
-                }
             }
-        }
     }
     dummy_span()
 }
@@ -284,8 +281,8 @@ fn filter_metadata(list: &[SExpr]) -> Vec<&SExpr> {
     let mut result = Vec::new();
     let mut i = 0;
     while i < list.len() {
-        if let Ok(symbol) = list[i].as_symbol() {
-            if symbol == ":span" || symbol == ":spans-enabled" {
+        if let Ok(symbol) = list[i].as_symbol()
+            && (symbol == ":span" || symbol == ":spans-enabled") {
                 // Skip :span and its argument
                 if symbol == ":span" && i + 1 < list.len() {
                     i += 2; // Skip :span and (start end)
@@ -294,7 +291,6 @@ fn filter_metadata(list: &[SExpr]) -> Vec<&SExpr> {
                 }
                 continue;
             }
-        }
         result.push(&list[i]);
         i += 1;
     }
@@ -392,11 +388,10 @@ impl FromSExpr for ImportDecl {
 
 impl FromSExpr for ImportItems {
     fn from_sexpr(sexpr: &SExpr) -> Result<Self> {
-        if let Ok(s) = sexpr.as_symbol() {
-            if s == "*" {
+        if let Ok(s) = sexpr.as_symbol()
+            && s == "*" {
                 return Ok(ImportItems::All);
             }
-        }
 
         let list = sexpr.as_list()?;
         let mut items = Vec::new();
@@ -432,16 +427,14 @@ impl FromSExpr for StructDef {
         let mut type_params = Vec::new();
 
         // Check for type-params
-        if idx < filtered.len() {
-            if let Ok(inner_list) = filtered[idx].as_list() {
-                if !inner_list.is_empty() && inner_list[0].as_symbol().ok() == Some("type-params") {
+        if idx < filtered.len()
+            && let Ok(inner_list) = filtered[idx].as_list()
+                && !inner_list.is_empty() && inner_list[0].as_symbol().ok() == Some("type-params") {
                     for param_sexpr in &inner_list[1..] {
                         type_params.push(TypeParam::from_sexpr(param_sexpr)?);
                     }
                     idx += 1;
                 }
-            }
-        }
 
         let mut fields = Vec::new();
         while idx < filtered.len() {
@@ -524,16 +517,14 @@ impl FromSExpr for EnumDef {
         let mut type_params = Vec::new();
 
         // Check for type-params
-        if idx < filtered.len() {
-            if let Ok(inner_list) = filtered[idx].as_list() {
-                if !inner_list.is_empty() && inner_list[0].as_symbol().ok() == Some("type-params") {
+        if idx < filtered.len()
+            && let Ok(inner_list) = filtered[idx].as_list()
+                && !inner_list.is_empty() && inner_list[0].as_symbol().ok() == Some("type-params") {
                     for param_sexpr in &inner_list[1..] {
                         type_params.push(TypeParam::from_sexpr(param_sexpr)?);
                     }
                     idx += 1;
                 }
-            }
-        }
 
         let mut cases = Vec::new();
         while idx < filtered.len() {
@@ -698,16 +689,14 @@ impl FromSExpr for FunctionDef {
         let mut const_params = Vec::new();
 
         // Check for const-params
-        if idx < filtered.len() {
-            if let Ok(inner_list) = filtered[idx].as_list() {
-                if !inner_list.is_empty() && inner_list[0].as_symbol().ok() == Some("const-params") {
+        if idx < filtered.len()
+            && let Ok(inner_list) = filtered[idx].as_list()
+                && !inner_list.is_empty() && inner_list[0].as_symbol().ok() == Some("const-params") {
                     for param_sexpr in &inner_list[1..] {
                         const_params.push(Param::from_sexpr(param_sexpr)?);
                     }
                     idx += 1;
                 }
-            }
-        }
 
         // Parse params
         let params_list = filtered[idx].as_list()?;
@@ -725,14 +714,12 @@ impl FromSExpr for FunctionDef {
 
         // Check for returns
         let mut return_type = None;
-        if idx < filtered.len() {
-            if let Ok(returns_list) = filtered[idx].as_list() {
-                if !returns_list.is_empty() && returns_list[0].as_symbol().ok() == Some("returns") {
+        if idx < filtered.len()
+            && let Ok(returns_list) = filtered[idx].as_list()
+                && !returns_list.is_empty() && returns_list[0].as_symbol().ok() == Some("returns") {
                     return_type = Some(Box::new(Type::from_sexpr(&returns_list[1])?));
                     idx += 1;
                 }
-            }
-        }
 
         // Parse body (block)
         let body = Block::from_sexpr(filtered[idx])?;
@@ -953,7 +940,7 @@ impl FromSExpr for Block {
 impl FromSExpr for Stmt {
     fn from_sexpr(sexpr: &SExpr) -> Result<Self> {
         // If it's not a list, it must be an expression
-        if let Err(_) = sexpr.as_list() {
+        if sexpr.as_list().is_err() {
             return Ok(Stmt::Expression(Expr::from_sexpr(sexpr)?));
         }
         
@@ -1243,16 +1230,14 @@ impl FromSExpr for Expr {
                 let mut idx = 2;
                 let mut return_type = None;
 
-                if idx < filtered.len() {
-                    if let Ok(returns_list) = filtered[idx].as_list() {
-                        if !returns_list.is_empty()
+                if idx < filtered.len()
+                    && let Ok(returns_list) = filtered[idx].as_list()
+                        && !returns_list.is_empty()
                             && returns_list[0].as_symbol().ok() == Some("returns")
                         {
                             return_type = Some(Box::new(Type::from_sexpr(&returns_list[1])?));
                             idx += 1;
                         }
-                    }
-                }
 
                 let body = Box::new(Block::from_sexpr(filtered[idx])?);
 
@@ -1428,16 +1413,14 @@ impl FromSExpr for Literal {
             }
             SExpr::List(list) => {
                 // Check for (rune 'x') form
-                if list.len() == 2 {
-                    if let Ok(symbol) = list[0].as_symbol() {
-                        if symbol == "rune" {
+                if list.len() == 2
+                    && let Ok(symbol) = list[0].as_symbol()
+                        && symbol == "rune" {
                             let rune_str = list[1].as_string()?;
                             if rune_str.len() == 1 {
                                 return Ok(Literal::Rune(rune_str.chars().next().unwrap()));
                             }
                         }
-                    }
-                }
                 Err(ParseError {
                     message: format!("Expected literal, got {:?}", sexpr),
                 })

@@ -8,7 +8,7 @@ use crate::span::Span;
 use std::fmt::{self, Write};
 
 thread_local! {
-    static INCLUDE_SPANS: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static INCLUDE_SPANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Helper trait for converting AST nodes to S-Expressions
