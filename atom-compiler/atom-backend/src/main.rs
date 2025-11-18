@@ -6,7 +6,7 @@
 
 use std::env;
 use std::fs;
-use std::process;
+use std::process::{self, Command};
 
 use atom_parser::{Lexer, Parser};
 
@@ -109,17 +109,44 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
     println!("Generating code...");
     let mut codegen = CodeGenerator::new();
     
-    // For now, generate an object file, then we'd need to link it
+    // Generate an object file
     let obj_file = format!("{}.o", output_file);
     codegen.compile(ir_program, &obj_file)
         .map_err(|e| format!("Code generation error: {}", e))?;
     
     println!("Generated object file: {}", obj_file);
     
-    // Note: In a complete implementation, we'd invoke a linker here
-    // to create the final executable from the object file
-    println!("Note: Linking step not yet implemented. Object file generated.");
-    println!("You can link manually with: cc {} -o {}", obj_file, output_file);
+    // Step 5: Link with C standard library
+    println!("Linking...");
+    link_object_file(&obj_file, output_file)?;
+    
+    // Clean up object file
+    let _ = fs::remove_file(&obj_file);
+    
+    Ok(())
+}
+
+fn link_object_file(obj_file: &str, output_file: &str) -> Result<(), String> {
+    // Invoke the system linker (cc) to create the final executable
+    let linker = env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    
+    let output = Command::new(&linker)
+        .arg(obj_file)
+        .arg("-o")
+        .arg(output_file)
+        .output()
+        .map_err(|e| format!("Failed to invoke linker '{}': {}", linker, e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Linker failed:\n{}", stderr));
+    }
+    
+    // Print linker warnings if any
+    if !output.stderr.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("{}", stderr);
+    }
     
     Ok(())
 }
