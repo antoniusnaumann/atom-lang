@@ -1,11 +1,18 @@
-*.prompt
-*.todo
+# Build artifacts
 *.o
--e 
+*.out
+a.out
+
 # Rust build artifacts
+/target
+
+# Parser-specific ignores
 atom-parser/target/
 atom-parser/debug_parse
 atom-parser/debug_parse.rs
 atom-parser/test_result.atom
-/target
-/Cargo.lock
+
+# Temporary/development files
+*.prompt
+*.todo
+-e
