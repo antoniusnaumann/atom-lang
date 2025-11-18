@@ -17,7 +17,7 @@ fn print_usage(program_name: &str) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let program_name = args.get(0).map(|s| s.as_str()).unwrap_or("atom");
+    let program_name = args.first().map(|s| s.as_str()).unwrap_or("atom");
 
     // Parse command-line arguments
     let mut filename: Option<String> = None;

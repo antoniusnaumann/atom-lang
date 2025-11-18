@@ -688,7 +688,7 @@ impl ToSExpr for Literal {
 }
 
 impl BinOp {
-    fn to_sexpr(&self) -> &str {
+    fn to_sexpr(self) -> &'static str {
         match self {
             BinOp::Add => "+",
             BinOp::Sub => "-",
@@ -720,7 +720,7 @@ impl BinOp {
 }
 
 impl UnOp {
-    fn to_sexpr(&self) -> &str {
+    fn to_sexpr(self) -> &'static str {
         match self {
             UnOp::Neg => "-",
             UnOp::Not => "!",
@@ -736,7 +736,7 @@ pub fn print_ast(ast: &[TopLevel]) -> String {
     for item in ast {
         item.write_sexpr(&mut s, 1).unwrap();
     }
-    s.push_str(")");
+    s.push(')');
     s
 }
 
