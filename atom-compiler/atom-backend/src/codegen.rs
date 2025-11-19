@@ -186,7 +186,14 @@ impl CodeGenerator {
         
         for func in &ir.functions {
             let func_id = self.declare_function(&mut module, func)?;
-            func_ids.insert(func.name.clone(), func_id);
+            let mangled_name = self.mangle_function_name(func);
+            func_ids.insert(mangled_name.clone(), func_id);
+            
+            // Also store by original name if it's the first/only overload
+            // This allows calls to work when there's no overloading
+            if !func_ids.contains_key(&func.name) {
+                func_ids.insert(func.name.clone(), func_id);
+            }
             
             // Scan for C library calls to declare them as external
             self.collect_external_functions(func, &mut external_funcs);
@@ -207,7 +214,8 @@ impl CodeGenerator {
 
         // Compile each function
         for func in &ir.functions {
-            let func_id = func_ids[&func.name];
+            let mangled_name = self.mangle_function_name(func);
+            let func_id = func_ids[&mangled_name];
             self.compile_function(&mut module, func, func_id, &func_ids)?;
         }
 
@@ -271,6 +279,50 @@ impl CodeGenerator {
         }
     }
 
+    /// Generate a mangled name for a function to support overloading
+    fn mangle_function_name(&self, func: &IrFunction) -> String {
+        // For main function, don't mangle
+        if func.name == "main" {
+            return func.name.clone();
+        }
+
+        // Simple mangling scheme: funcname_param1Type_param2Type_retType
+        let mut mangled = func.name.clone();
+        
+        // Add parameter types
+        for (_, param_ty) in &func.params {
+            mangled.push('_');
+            mangled.push_str(&self.type_to_mangle_string(param_ty));
+        }
+        
+        // Add return type
+        if let Some(ret_ty) = &func.return_type {
+            mangled.push('_');
+            mangled.push_str("ret");
+            mangled.push_str(&self.type_to_mangle_string(ret_ty));
+        }
+        
+        mangled
+    }
+
+    /// Convert a type to a string for name mangling
+    fn type_to_mangle_string(&self, ty: &IrType) -> String {
+        match ty {
+            IrType::Bool => "bool".to_string(),
+            IrType::Int(bits) => format!("i{}", bits),
+            IrType::UInt(bits) => format!("u{}", bits),
+            IrType::Float(bits) => format!("f{}", bits),
+            IrType::Rune => "rune".to_string(),
+            IrType::Pointer(inner) => format!("ptr{}", self.type_to_mangle_string(inner)),
+            IrType::Function { .. } => "fn".to_string(),
+            IrType::Closure { .. } => "closure".to_string(),
+            IrType::Tuple(elements) => format!("tuple{}", elements.len()),
+            IrType::Struct(name) => format!("s{}", name.replace("::", "_")),
+            IrType::Enum(name) => format!("e{}", name.replace("::", "_")),
+            IrType::Void => "void".to_string(),
+        }
+    }
+
     /// Declare a function in the module
     fn declare_function(
         &self,
@@ -298,12 +350,15 @@ impl CodeGenerator {
             Linkage::Local
         };
 
+        // Use mangled name to support overloading
+        let mangled_name = self.mangle_function_name(func);
+
         module
-            .declare_function(&func.name, linkage, &sig)
+            .declare_function(&mangled_name, linkage, &sig)
             .map_err(|e| {
                 CodegenError::ModuleError(format!(
                     "Failed to declare function '{}': {}",
-                    func.name, e
+                    mangled_name, e
                 ))
             })
     }

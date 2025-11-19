@@ -1,0 +1,4 @@
+main() Int {
+    cstdlib::printf("Hello Atom!\n")
+    0
+}

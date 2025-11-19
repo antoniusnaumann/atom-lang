@@ -40,8 +40,8 @@ pub struct TypedProgram {
 pub struct FunctionSignature {
     /// Const/type parameters
     pub const_params: Vec<TypeParameter>,
-    /// Regular parameters with names
-    pub params: Vec<(String, Type)>,
+    /// Regular parameters with names and whether they have defaults
+    pub params: Vec<(String, Type, bool)>, // (name, type, has_default)
     /// Return type (None for Void)
     pub return_type: Option<Type>,
 }
@@ -245,7 +245,8 @@ impl TypeChecker {
                 )));
             };
 
-            params.push((param_name, param_ty));
+            let has_default = param.default.is_some();
+            params.push((param_name, param_ty, has_default));
         }
 
         let return_type = if let Some(ret_ty_ast) = &func_def.return_type {
@@ -833,12 +834,18 @@ impl TypeChecker {
                 let arg_types = arg_types?;
 
                 for sig in &signatures {
-                    if sig.params.len() == arg_types.len() {
+                    // Count required (non-default) parameters
+                    let required_params = sig.params.iter()
+                        .take_while(|(_, _, has_default)| !has_default)
+                        .count();
+                    
+                    // Check if arg count is valid (between required and total params)
+                    if arg_types.len() >= required_params && arg_types.len() <= sig.params.len() {
                         // Try to unify type parameters
                         let mut type_bindings = std::collections::HashMap::new();
                         let mut matches = true;
                         
-                        for (i, (_, param_ty)) in sig.params.iter().enumerate() {
+                        for (i, (_, param_ty, _)) in sig.params.iter().take(arg_types.len()).enumerate() {
                             if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
                                 matches = false;
                                 break;
@@ -1083,7 +1090,7 @@ impl TypeChecker {
                     let mut type_bindings = std::collections::HashMap::new();
                     let mut matches = true;
                     
-                    for (i, (_, param_ty)) in sig.params.iter().enumerate() {
+                    for (i, (_, param_ty, _)) in sig.params.iter().enumerate() {
                         if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
                             matches = false;
                             break;
@@ -2015,14 +2022,19 @@ impl TypeChecker {
             Literal::Float(_) => Type::Float(None),
             Literal::String(_) => {
                 // String literals use the String struct from stdlib
-                // Safe to unwrap because stdlib should be loaded
-                self.type_env.resolve_type("String").unwrap()
+                // If stdlib is not loaded, fall back to a tuple type representing a byte array
+                self.type_env.resolve_type("String")
+                    .unwrap_or_else(|_| Type::Tuple(TupleType {
+                        fields: vec![],
+                        variadic: Some((Box::new(Type::Int(Some(8))), false)),
+                    }))
             }
             Literal::Rune(_) => Type::Rune,
             Literal::Bool(_) => {
                 // Bool literals become the Bool enum type
-                // Safe to unwrap because stdlib should be loaded
-                self.type_env.resolve_type("Bool").unwrap()
+                // If stdlib is not loaded, fall back to Int(1) (boolean)
+                self.type_env.resolve_type("Bool")
+                    .unwrap_or(Type::Int(Some(1)))
             }
         }
     }
