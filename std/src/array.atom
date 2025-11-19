@@ -50,7 +50,7 @@
 
 /// Reverse an array
 +reverse(arr t*) t* {
-    result: t*
+    result := ()
     i := len(arr) - 1
     loop(i >= 0) {
         result ++= arr(i)
@@ -69,7 +69,7 @@
 
 /// Take the first n elements
 +take(arr t*, n Int) t* {
-    result: t*
+    result := ()
     count := 0
     loop(arr) {
         match(count < n) {
@@ -85,7 +85,7 @@
 
 /// Skip the first n elements
 +skip(arr t*, n Int) t* {
-    result: t*
+    result := ()
     count := 0
     loop(arr) {
         match(count >= n) {
@@ -99,7 +99,7 @@
 
 /// Flatten an array of arrays
 +flatten(arr t**) t* {
-    result: t*
+    result := ()
     loop(arr) {
         inner := $0
         loop(inner) {
@@ -111,7 +111,7 @@
 
 /// Map a function over an array
 +map(arr t*, fn (t) {u}) u* {
-    result: u*
+    result := ()
     loop(arr) {
         result ++= fn($0)
     }
@@ -120,7 +120,7 @@
 
 /// Filter array elements by predicate
 +filter(arr t*, predicate (t) {Bool}) t* {
-    result: t*
+    result := ()
     loop(arr) {
         match(predicate($0)) {
             True { result ++= $0 }
@@ -146,7 +146,7 @@
 
 /// Zip two arrays together into pairs
 +zip(arr1 t*, arr2 u*) (t, u)* {
-    result: (t, u)*
+    result := ()
     len1 := len(arr1)
     len2 := len(arr2)
     min_len := match(len1 < len2) { True { len1 }, False { len2 } }
@@ -161,7 +161,7 @@
 
 /// Enumerate array elements with their indices
 +enumerate(arr t*) (Int, t)* {
-    result: (Int, t)*
+    result := ()
     i := 0
     loop(arr) {
         result ++= (i, $0)
@@ -172,19 +172,25 @@
 
 /// Find first element matching predicate
 +find(arr t*, predicate (t) {Bool}) Option(t) {
+    result := None
     loop(arr) {
         match(predicate($0)) {
-            True { Some($0) }
+            True {
+                match(result) {
+                    None { result = Some($0) }
+                    Some(_) { }
+                }
+            }
             False { }
         }
     }
-    None
+    result
 }
 
 /// Partition array into two arrays based on predicate
 +partition(arr t*, predicate (t) {Bool}) (t*, t*) {
-    true_arr: t*
-    false_arr: t*
+    true_arr := ()
+    false_arr := ()
     loop(arr) {
         match(predicate($0)) {
             True { true_arr ++= $0 }
@@ -196,8 +202,8 @@
 
 /// Split array into chunks of specified size
 +chunk(arr t*, size Int) t** {
-    result: t**
-    current: t*
+    result := ()
+    current := ()
     count := 0
     
     loop(arr) {
@@ -223,24 +229,36 @@
 
 /// Check if all elements satisfy predicate
 +all(arr t*, predicate (t) {Bool}) Bool {
+    result := True
     loop(arr) {
         match(predicate($0)) {
-            False { False }
+            False {
+                match(result) {
+                    True { result = False }
+                    False { }
+                }
+            }
             True { }
         }
     }
-    True
+    result
 }
 
 /// Check if any element satisfies predicate
 +any(arr t*, predicate (t) {Bool}) Bool {
+    result := False
     loop(arr) {
         match(predicate($0)) {
-            True { True }
+            True {
+                match(result) {
+                    False { result = True }
+                    True { }
+                }
+            }
             False { }
         }
     }
-    False
+    result
 }
 
 /// Sum all elements in a numeric array
