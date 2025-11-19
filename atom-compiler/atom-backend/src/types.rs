@@ -48,9 +48,6 @@ pub enum Type {
     /// Unicode codepoint (single character)
     Rune,
 
-    /// UTF-8 encoded string (implemented as variadic tuple of bytes)
-    String,
-
     /// Meta-type representing a type value
     /// Used for type parameters and reflection
     TypeMeta,
@@ -279,54 +276,8 @@ impl TypeEnvironment {
             visibility: Visibility::Public,
         });
 
-        // Add Option(t): Option(Some(t), None)
-        env.add_enum(EnumType {
-            name: "Option".to_string(),
-            params: vec![TypeParameter {
-                name: "t".to_string(),
-                constraint: Some(Box::new(Type::TypeMeta)),
-                default: None,
-            }],
-            cases: vec![
-                EnumCase {
-                    name: "Some".to_string(),
-                    fields: vec![Box::new(Type::TypeParam("t".to_string()))],
-                },
-                EnumCase {
-                    name: "None".to_string(),
-                    fields: vec![],
-                },
-            ],
-            visibility: Visibility::Public,
-        });
-
-        // Add Result(t, e = String): Result(Ok(t), Err(e))
-        env.add_enum(EnumType {
-            name: "Result".to_string(),
-            params: vec![
-                TypeParameter {
-                    name: "t".to_string(),
-                    constraint: Some(Box::new(Type::TypeMeta)),
-                    default: None,
-                },
-                TypeParameter {
-                    name: "e".to_string(),
-                    constraint: Some(Box::new(Type::TypeMeta)),
-                    default: Some(ConstArg::Type(Box::new(Type::String))),
-                },
-            ],
-            cases: vec![
-                EnumCase {
-                    name: "Ok".to_string(),
-                    fields: vec![Box::new(Type::TypeParam("t".to_string()))],
-                },
-                EnumCase {
-                    name: "Err".to_string(),
-                    fields: vec![Box::new(Type::TypeParam("e".to_string()))],
-                },
-            ],
-            visibility: Visibility::Public,
-        });
+        // Option and Result are now defined in the stdlib (result.atom)
+        // so we don't need to add them here
 
         env
     }
@@ -383,8 +334,7 @@ impl TypeEnvironment {
             "UInt" => return Ok(Type::UInt(None)),
             "Float" => return Ok(Type::Float(None)),
             "Rune" => return Ok(Type::Rune),
-            // "String" is defined in stdlib as a struct, not a primitive
-            // "String" => return Ok(Type::String),
+            // String is defined in stdlib as a struct, not a primitive
             "Type" => return Ok(Type::TypeMeta),
             _ => {}
         }
@@ -498,7 +448,6 @@ impl Type {
             (Type::UInt(a), Type::UInt(b)) => a == b,
             (Type::Float(a), Type::Float(b)) => a == b,
             (Type::Rune, Type::Rune) => true,
-            (Type::String, Type::String) => true,
             (Type::TypeMeta, Type::TypeMeta) => true,
 
             (Type::Tuple(a), Type::Tuple(b)) => {
@@ -689,8 +638,7 @@ impl Type {
             | Type::Int(_)
             | Type::UInt(_)
             | Type::Float(_)
-            | Type::Rune
-            | Type::String => true,
+            | Type::Rune => true,
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.has_zero_value()),
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.has_zero_value()),
             Type::Enum(e) => !e.cases.is_empty(), // Bool enum has zero value (first case)
@@ -714,7 +662,6 @@ impl Type {
             }
             Type::Int(None) | Type::UInt(None) | Type::Float(None) => Some(8),
             Type::Rune => Some(4), // UTF-32
-            Type::String => Some(16), // Pointer + length
             Type::TypeMeta => Some(8), // Size of a type ID
 
             Type::Tuple(t) => {
@@ -774,7 +721,6 @@ impl Type {
             }
             Type::Int(None) | Type::UInt(None) | Type::Float(None) => Some(8),
             Type::Rune => Some(4),
-            Type::String => Some(8),
             Type::TypeMeta => Some(8),
 
             Type::Tuple(t) => {
@@ -817,7 +763,6 @@ impl Type {
                 | Type::UInt(_)
                 | Type::Float(_)
                 | Type::Rune
-                | Type::String
         )
     }
 
@@ -876,7 +821,7 @@ impl Type {
     fn supports_equality(&self) -> bool {
         match self {
             Type::Void | Type::Int(_) | Type::UInt(_) | Type::Float(_)
-            | Type::Rune | Type::String => true,
+            | Type::Rune => true,
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_equality()),
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_equality()),
             Type::Enum(_) => true, // Enums support equality (including Bool)
@@ -888,7 +833,6 @@ impl Type {
     fn supports_comparison(&self) -> bool {
         match self {
             Type::Void | Type::Int(_) | Type::UInt(_) | Type::Float(_) | Type::Rune => true,
-            Type::String => true, // Lexicographic comparison
             Type::Enum(_) => true, // Enum comparison by case order
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_comparison()),
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_comparison()),
@@ -945,7 +889,6 @@ impl fmt::Display for Type {
             Type::Float(None) => write!(f, "Float"),
             Type::Float(Some(bits)) => write!(f, "Float({})", bits),
             Type::Rune => write!(f, "Rune"),
-            Type::String => write!(f, "String"),
             Type::TypeMeta => write!(f, "Type"),
 
             Type::Tuple(t) => {
@@ -1240,7 +1183,7 @@ mod tests {
 
     #[test]
     fn test_tuple_prefix_conversion() {
-        let t1 = tuple(vec![int(), float(), Type::String]);
+        let t1 = tuple(vec![int(), float(), int()]);
         let t2 = tuple(vec![int(), float()]);
 
         assert!(t1.can_convert_to(&t2));
@@ -1252,7 +1195,6 @@ mod tests {
         assert_eq!(Type::Void.size_bytes(), Some(0));
         assert_eq!(Type::Int(None).size_bytes(), Some(8));
         assert_eq!(Type::Int(Some(32)).size_bytes(), Some(4));
-        assert_eq!(Type::String.size_bytes(), Some(16));
         
         // Bool is an enum now, size is tag (4 bytes) + max case (0 bytes) = 4 bytes aligned to 8
         let env = TypeEnvironment::with_stdlib();
@@ -1270,8 +1212,10 @@ mod tests {
         let bool_ty = env.resolve_type("Bool").unwrap();
         assert!(bool_ty.supports_operator(&BinaryOp::And));
         
-        assert!(Type::String.supports_operator(&BinaryOp::Concat));
-        assert!(!Type::String.supports_operator(&BinaryOp::Add));
+        // String struct from stdlib should support concat
+        let string_ty = env.resolve_type("String").unwrap();
+        assert!(string_ty.supports_operator(&BinaryOp::Concat));
+        assert!(!string_ty.supports_operator(&BinaryOp::Add));
     }
 
     #[test]

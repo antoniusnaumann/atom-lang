@@ -799,6 +799,39 @@ impl TypeChecker {
         let func_ty = self.check_expr(func)?;
 
         match func_ty {
+            Type::Tuple(tuple_ty) => {
+                // Tuple indexing: arr(i) returns the element type
+                // For now, we require exactly one argument (the index)
+                if args.len() != 1 {
+                    return Err(TypeError::Other(format!(
+                        "Tuple indexing expects 1 argument, got {}",
+                        args.len()
+                    )));
+                }
+
+                let index_ty = self.check_expr(&args[0])?;
+                // Index should be Int
+                if !matches!(index_ty, Type::Int(_)) {
+                    return Err(TypeError::Incompatible {
+                        expected: Box::new(Type::Int(None)),
+                        found: Box::new(index_ty),
+                        reason: "Tuple index must be Int".to_string(),
+                    });
+                }
+
+                // Return the element type
+                // For variadic tuples, return the variadic element type
+                // For fixed tuples, we'd need compile-time index knowledge (simplified here)
+                if let Some((elem_ty, _)) = &tuple_ty.variadic {
+                    Ok((**elem_ty).clone())
+                } else if !tuple_ty.fields.is_empty() {
+                    // For non-variadic tuples, return the first field type as approximation
+                    // (ideally we'd check the index is a compile-time constant)
+                    Ok((*tuple_ty.fields[0].ty).clone())
+                } else {
+                    Err(TypeError::Other("Cannot index into empty tuple".to_string()))
+                }
+            }
             Type::Function(func_type) => {
                 let arg_types: Result<Vec<_>, _> =
                     args.iter().map(|arg| self.check_expr(arg)).collect();
@@ -825,8 +858,8 @@ impl TypeChecker {
                 Ok(func_type.return_type.map(|t| *t).unwrap_or(Type::Void))
             }
             _ => Err(TypeError::Other(format!(
-                "Cannot call non-function type {}",
-                func_ty
+                "Cannot call non-function type {} (expression: {:?})",
+                func_ty, func
             ))),
         }
     }
@@ -1021,6 +1054,40 @@ impl TypeChecker {
         fields: &[FieldInit],
     ) -> TypeResult<Type> {
         if let Some(type_ident) = ty_name {
+            // Check if this is an enum case constructor
+            if let Some((enum_name, case, _idx)) = self.type_env.find_enum_case(&type_ident.name) {
+                // This is an enum case constructor
+                // Clone the data we need before we return
+                let enum_name = enum_name.to_string();
+                let expected_fields: Vec<Box<Type>> = case.fields.clone();
+                
+                if fields.len() != expected_fields.len() {
+                    return Err(TypeError::Other(format!(
+                        "Enum case {} expects {} fields, got {}",
+                        type_ident.name,
+                        expected_fields.len(),
+                        fields.len()
+                    )));
+                }
+
+                // Type check the fields
+                for (i, field_init) in fields.iter().enumerate() {
+                    let value_ty = self.check_expr(&field_init.value)?;
+                    let expected_ty = &expected_fields[i];
+
+                    if !value_ty.can_convert_to(expected_ty) {
+                        return Err(TypeError::Incompatible {
+                            expected: expected_ty.clone(),
+                            found: Box::new(value_ty),
+                            reason: format!("Enum case {} field {} type mismatch", type_ident.name, i + 1),
+                        });
+                    }
+                }
+
+                // Return the enum type
+                return self.type_env.resolve_type(&enum_name);
+            }
+
             // Named struct initialization
             let struct_type = self
                 .type_env
@@ -1565,9 +1632,9 @@ impl TypeChecker {
             Literal::Integer(_) => Type::Int(None),
             Literal::Float(_) => Type::Float(None),
             Literal::String(_) => {
-                // String literals use the String struct from stdlib if available
-                // Otherwise fall back to a built-in String type
-                self.type_env.resolve_type("String").unwrap_or(Type::String)
+                // String literals use the String struct from stdlib
+                // Safe to unwrap because stdlib should be loaded
+                self.type_env.resolve_type("String").unwrap()
             }
             Literal::Rune(_) => Type::Rune,
             Literal::Bool(_) => {
