@@ -1,0 +1,8 @@
++main() Int {
+    found := False
+    found = True
+    match(found) {
+        True { 42 }
+        False { 0 }
+    }
+}

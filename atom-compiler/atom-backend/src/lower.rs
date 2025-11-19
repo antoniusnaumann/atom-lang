@@ -252,6 +252,7 @@ impl Lower {
 
         let name = func_def.name.name.clone();
         let is_public = matches!(func_def.visibility, Visibility::Public);
+        let is_main = name == "main";
 
         // Lower parameters
         let mut params = Vec::new();
@@ -279,9 +280,17 @@ impl Lower {
         let return_type = if let Some(ret_ty) = &func_def.return_type {
             Some(self.lower_type(ret_ty)?)
         } else {
-            None
+            // Special case: main() with no return type returns Int
+            if is_main {
+                Some(IrType::Int(64))
+            } else {
+                None
+            }
         };
 
+        // Debug output for take function (before moving name/params)
+        let is_take = name == "take";
+        
         // Create function and lower body
         let mut ir_func = IrFunction::new(name, params, return_type.clone(), is_public);
 
@@ -298,7 +307,20 @@ impl Lower {
             if let Some(value) = result_value {
                 entry_block.set_terminator(IrTerminator::Return { value: Some(value) });
             } else if return_type.is_none() || return_type.as_ref().unwrap().is_void() {
-                entry_block.set_terminator(IrTerminator::Return { value: None });
+                // For main function with no return type, automatically return 0
+                if is_main && return_type.is_some() {
+                    let zero_value = self.fresh_value_id();
+                    entry_block.add_instruction(IrInstruction {
+                        result: zero_value,
+                        ty: IrType::Int(64),
+                        kind: IrInstructionKind::Const {
+                            value: IrConstant::Int(0),
+                        },
+                    });
+                    entry_block.set_terminator(IrTerminator::Return { value: Some(zero_value) });
+                } else {
+                    entry_block.set_terminator(IrTerminator::Return { value: None });
+                }
             } else {
                 return Err(LowerError::Internal(
                     "Function must return a value".to_string(),
@@ -388,19 +410,56 @@ impl Lower {
         } else {
             // Single variable binding
             let var_name = decl.names[0].name.clone();
+            
+            // Infer the type from the initializer if no type annotation
             let var_type = if let Some(ty_ast) = &decl.ty {
                 self.lower_type(ty_ast)?
             } else {
-                // Type inference: for now, default to opaque pointer type
-                // In a full implementation, we'd thread type information from type checker
-                // or infer from the initializer expression
-                IrType::Pointer(Box::new(IrType::Void))
+                // Try to infer type from the initializer by finding the instruction
+                // that produced init_value
+                let mut inferred_type = None;
+                for inst in &ir_block.instructions {
+                    if inst.result == init_value {
+                        inferred_type = Some(inst.ty.clone());
+                        break;
+                    }
+                }
+                // If we can't find the type (e.g., for parameters), default to pointer
+                let ty = inferred_type.unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+                if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
+                    eprintln!("DEBUG lower_var_decl: var={}, init_value={}, inferred_type={:?}", var_name, init_value, ty);
+                }
+                ty
             };
 
-            // For now, all variables are immutable values in SSA form
-            // In the future, support mutable locals with Load/Store
-            self.variables
-                .insert(var_name, VarBinding::Value(init_value, var_type));
+            // Check if this is a mutable variable (declared with :=)
+            if !decl.is_const {
+                // Mutable variable - allocate a local (stack slot) and store the initial value
+                let local_id = self.fresh_local_id();
+                func.locals.push(IrLocal {
+                    id: local_id,
+                    name: var_name.clone(),
+                    ty: var_type.clone(),
+                });
+
+                // Store the initial value to the stack slot
+                ir_block.add_instruction(IrInstruction {
+                    result: self.fresh_value_id(), // Store produces a dummy value
+                    ty: IrType::Void,
+                    kind: IrInstructionKind::Store {
+                        destination: IrMemoryLocation::Local(local_id),
+                        value: init_value,
+                    },
+                });
+
+                // Bind the variable to the local
+                self.variables
+                    .insert(var_name, VarBinding::Local(local_id, var_type));
+            } else {
+                // Immutable variable - bind directly to the SSA value
+                self.variables
+                    .insert(var_name, VarBinding::Value(init_value, var_type));
+            }
         }
 
         Ok(())
@@ -507,7 +566,9 @@ impl Lower {
         let binding = self.variables.get(name).cloned();
         
         match binding {
-            Some(VarBinding::Value(value_id, _)) => Ok(value_id),
+            Some(VarBinding::Value(value_id, _)) => {
+                Ok(value_id)
+            }
             Some(VarBinding::Local(local_id, ty)) => {
                 // Need to load from local
                 let value_id = self.fresh_value_id();
@@ -726,23 +787,33 @@ impl Lower {
             result_id
         };
 
-        // Update the variable binding (shadow the old value in SSA style)
-        self.variables.insert(
-            var_name,
-            VarBinding::Value(new_value, IrType::Pointer(Box::new(IrType::Void))),
-        );
+        // Check if this is a mutable variable (local) or immutable (value)
+        let binding = self.variables.get(&var_name).cloned();
+        match binding {
+            Some(VarBinding::Local(local_id, _)) => {
+                // Mutable variable - store the new value to the stack slot
+                let store_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: store_id,
+                    ty: IrType::Void,
+                    kind: IrInstructionKind::Store {
+                        destination: IrMemoryLocation::Local(local_id),
+                        value: new_value,
+                    },
+                });
 
-        // Assignments return void
-        let void_id = self.fresh_value_id();
-        ir_block.add_instruction(IrInstruction {
-            result: void_id,
-            ty: IrType::Void,
-            kind: IrInstructionKind::Const {
-                value: IrConstant::Void,
-            },
-        });
-
-        Ok(void_id)
+                // Assignments return void
+                Ok(store_id)
+            }
+            Some(VarBinding::Value(_, _)) => {
+                // Immutable variable - error, cannot assign to immutable variable
+                Err(LowerError::Internal(format!(
+                    "Cannot assign to immutable variable '{}'",
+                    var_name
+                )))
+            }
+            None => Err(LowerError::UndefinedVariable(var_name)),
+        }
     }
 
     /// Lower a unary operation to IR.
@@ -816,10 +887,6 @@ impl Lower {
         }
 
         // Handle special builtins
-        if func_name == "loop" {
-            return self.lower_loop_builtin(args, ir_block, func);
-        }
-        
         if func_name == "as_string" {
             return self.lower_as_string_builtin(args, ir_block, func);
         }
@@ -829,6 +896,21 @@ impl Lower {
         for arg in args {
             let value = self.lower_expr(arg, ir_block, func)?;
             arg_values.push(value);
+        }
+
+        // Check if func_name is actually a function parameter (function pointer)
+        if let Some(func_value_id) = self.params.get(&func_name).copied() {
+            // This is an indirect call through a function pointer
+            let value_id = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: value_id,
+                ty: IrType::Int(64), // Simplified return type
+                kind: IrInstructionKind::CallIndirect {
+                    func_value: func_value_id,
+                    args: arg_values,
+                },
+            });
+            return Ok(value_id);
         }
 
         // Determine return type
@@ -875,6 +957,7 @@ impl Lower {
         }
     }
 
+    /*
     /// Lower the `loop` builtin function.
     /// For now, implement a simplified version that just executes the body once.
     /// A full implementation would create proper loop blocks with back edges.
@@ -911,6 +994,7 @@ impl Lower {
 
         Ok(value_id)
     }
+    */
 
     /// Lower the `as_string` builtin function.
     /// Converts any value to a string representation.
@@ -1033,17 +1117,34 @@ impl Lower {
             field_values.push(value);
         }
 
-        let value_id = self.fresh_value_id();
-        ir_block.add_instruction(IrInstruction {
-            result: value_id,
-            ty: IrType::Struct(struct_name.clone()),
-            kind: IrInstructionKind::MakeStruct {
-                struct_name,
-                fields: field_values,
-            },
-        });
-
-        Ok(value_id)
+        // Check if this is actually an enum variant constructor
+        if let Some((enum_name, _case, _idx)) = self.type_env.find_enum_case(&struct_name) {
+            // This is an enum variant with payload (e.g., Some(x))
+            // Represent it as an enum type, not a struct type
+            let enum_name_cloned = enum_name.to_string();
+            let value_id = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: value_id,
+                ty: IrType::Enum(enum_name_cloned),
+                kind: IrInstructionKind::MakeStruct {
+                    struct_name,
+                    fields: field_values,
+                },
+            });
+            Ok(value_id)
+        } else {
+            // Regular struct initialization
+            let value_id = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: value_id,
+                ty: IrType::Struct(struct_name.clone()),
+                kind: IrInstructionKind::MakeStruct {
+                    struct_name,
+                    fields: field_values,
+                },
+            });
+            Ok(value_id)
+        }
     }
 
     /// Lower a field access expression to IR.
@@ -1101,6 +1202,24 @@ impl Lower {
             case_block_ids.push(arm_block_id);
             let mut arm_block = IrBlock::new(arm_block_id);
 
+            // Determine the tag value for this pattern
+            let tag_value = match &arm.pattern {
+                atom_ast::Pattern::Enum { name, .. } => {
+                    // For enum patterns, map the variant name to its tag value
+                    // For Bool: False = 0, True = 1
+                    match name.name.as_str() {
+                        "False" => 0,
+                        "True" => 1,
+                        // For Option: None = 0, Some = 1
+                        "None" => 0,
+                        "Some" => 1,
+                        // For other enums, use arm index as fallback
+                        _ => i as u32,
+                    }
+                }
+                _ => i as u32, // For non-enum patterns, use arm index
+            };
+
             // Handle pattern bindings
             // For enum patterns like Some(inner), bind the payload to the variable
             if let atom_ast::Pattern::Enum { name: _, fields, .. } = &arm.pattern {
@@ -1135,7 +1254,7 @@ impl Lower {
                 target: merge_block_id,
             });
 
-            case_blocks.push((i as u32, arm_block_id, arm_block));
+            case_blocks.push((tag_value, arm_block_id, arm_block));
         }
 
         // Create switch terminator on current block
@@ -1152,13 +1271,18 @@ impl Lower {
             default: default_block_id,
         });
 
+        // IMPORTANT: Add the current block to the function before replacing it
+        // This preserves any instructions that were added to it before the match expression
+        let current_block_label = ir_block.label;
+        let current_block = std::mem::replace(ir_block, IrBlock::new(merge_block_id));
+        func.add_block(current_block);
+
         // Add all case blocks to function
         for (_, _, block) in case_blocks {
             func.add_block(block);
         }
 
         // Create merge block with phi node
-        let mut merge_block = IrBlock::new(merge_block_id);
         let result_value = self.fresh_value_id();
 
         let incoming: Vec<(BlockId, ValueId)> = case_block_ids
@@ -1167,14 +1291,13 @@ impl Lower {
             .map(|(i, &block_id)| (block_id, case_values[i]))
             .collect();
 
-        merge_block.add_instruction(IrInstruction {
+        ir_block.add_instruction(IrInstruction {
             result: result_value,
             ty: IrType::Int(64), // Simplified
             kind: IrInstructionKind::Phi { incoming },
         });
 
-        // This becomes the new current block
-        *ir_block = merge_block;
+        // ir_block is now the merge block (from the mem::replace above)
 
         Ok(result_value)
     }
@@ -1219,16 +1342,28 @@ impl Lower {
                 Ok(IrType::Pointer(Box::new(IrType::Void)))
             }
             atom_ast::Type::Variadic { element, .. } => {
-                // Variadic types are tuples with variable length
-                // Lower the element type and represent as a pointer to array
+                // Variadic types are arrays with runtime length
+                // Represented as a fat pointer (ptr + length)
                 let elem_type = self.lower_type(element)?;
-                Ok(IrType::Pointer(Box::new(elem_type)))
+                Ok(IrType::Array {
+                    element: Box::new(elem_type),
+                })
             }
             atom_ast::Type::StaticArray { element, .. } => {
                 // Static arrays with compile-time known size
-                // For now, treat as pointer to element type
+                // For now, treat as array (will optimize later for stack allocation)
                 let elem_type = self.lower_type(element)?;
-                Ok(IrType::Pointer(Box::new(elem_type)))
+                Ok(IrType::Array {
+                    element: Box::new(elem_type),
+                })
+            }
+            atom_ast::Type::StaticArray { element, span: _, size: _ } => {
+                // Static arrays with compile-time known size
+                // For now, treat as array (will optimize later for stack allocation)
+                let elem_type = self.lower_type(element)?;
+                Ok(IrType::Array {
+                    element: Box::new(elem_type),
+                })
             }
             _ => Err(LowerError::Unsupported(format!(
                 "Type conversion: {:?}",

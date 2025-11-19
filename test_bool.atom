@@ -1,0 +1,7 @@
++main() Int {
+    x := False
+    match(x) {
+        True { 1 }
+        False { 0 }
+    }
+}

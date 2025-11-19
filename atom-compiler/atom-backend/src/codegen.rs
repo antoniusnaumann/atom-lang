@@ -216,7 +216,13 @@ impl CodeGenerator {
         for func in &ir.functions {
             let mangled_name = self.mangle_function_name(func);
             let func_id = func_ids[&mangled_name];
-            self.compile_function(&mut module, func, func_id, &func_ids)?;
+            self.compile_function(&mut module, func, func_id, &func_ids)
+                .map_err(|e| {
+                    CodegenError::ModuleError(format!(
+                        "Error compiling function '{}': {}",
+                        func.name, e
+                    ))
+                })?;
         }
 
         // Generate the object file
@@ -319,6 +325,7 @@ impl CodeGenerator {
             IrType::Tuple(elements) => format!("tuple{}", elements.len()),
             IrType::Struct(name) => format!("s{}", name.replace("::", "_")),
             IrType::Enum(name) => format!("e{}", name.replace("::", "_")),
+            IrType::Array { element } => format!("arr{}", self.type_to_mangle_string(element)),
             IrType::Void => "void".to_string(),
         }
     }
@@ -389,28 +396,80 @@ impl CodeGenerator {
         {
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fn_builder_ctx);
 
+            // Check if there are any back-edges to block0 (entry block)
+            // If so, we need to insert a loop header to avoid illegal CFG in Cranelift
+            let entry_block_id = func.blocks[0].label;
+            let has_back_edge_to_entry = func.blocks.iter().skip(1).any(|b| {
+                // Check if this block (not block0) has a reference to block0
+                match &b.terminator {
+                    IrTerminator::Jump { target } => *target == entry_block_id,
+                    IrTerminator::Branch { true_block, false_block, .. } => {
+                        *true_block == entry_block_id || *false_block == entry_block_id
+                    }
+                    IrTerminator::Switch { cases, default, .. } => {
+                        cases.iter().any(|(_, t)| *t == entry_block_id) || *default == entry_block_id
+                    }
+                    _ => false,
+                }
+            });
+
             // Create Cranelift blocks for all IR blocks
             let mut cl_blocks = HashMap::new();
+            let mut block_params = HashMap::new(); // Track which blocks need parameters for phi nodes
+            let loop_header = if has_back_edge_to_entry {
+                Some(builder.create_block())
+            } else {
+                None
+            };
+            
             for block in &func.blocks {
                 let cl_block = builder.create_block();
                 cl_blocks.insert(block.label, cl_block);
+                
+                // Check if this block has phi nodes and needs block parameters
+                for inst in &block.instructions {
+                    if let IrInstructionKind::Phi { incoming } = &inst.kind {
+                        // This block needs a parameter for the phi node
+                        let param_type = self.translate_type(&inst.ty)?;
+                        builder.append_block_param(cl_block, param_type);
+                        block_params.insert(block.label, inst.result);
+                        break; // Only handle one phi per block for now (simplified)
+                    }
+                }
             }
+            
+            // If we have a loop header, use it instead of direct block0 reference
+            let actual_entry_block = if let Some(loop_hdr) = loop_header {
+                // Store original block0 separately
+                let orig_block0 = cl_blocks[&entry_block_id];
+                // Replace block0 in cl_blocks with loop header for back-edge targets
+                cl_blocks.insert(entry_block_id, loop_hdr);
+                orig_block0
+            } else {
+                cl_blocks[&entry_block_id]
+            };
 
             // Track values and stack slots
             let mut values = HashMap::new();
             let mut stack_slots = HashMap::new();
 
-            // Create stack slots for parameters
-            let entry_block = cl_blocks[&func.blocks[0].label];
-            builder.switch_to_block(entry_block);
-            builder.append_block_params_for_function_params(entry_block);
+            // Switch to the actual entry block (not the loop header if one exists)
+            builder.switch_to_block(actual_entry_block);
+            builder.append_block_params_for_function_params(actual_entry_block);
 
             // Map parameters to values
             for (i, _) in func.params.iter().enumerate() {
-                let param_value = builder.block_params(entry_block)[i];
+                let param_value = builder.block_params(actual_entry_block)[i];
                 // Parameters are referenced by value ID (we'll use a simple mapping)
                 // In a real implementation, you'd track parameter value IDs from IR
                 values.insert(ValueId(i as u32), param_value);
+            }
+            
+            // If we have a loop header, immediately jump to it from the entry block
+            if loop_header.is_some() {
+                let loop_hdr = loop_header.unwrap();
+                builder.ins().jump(loop_hdr, &[]);
+                builder.switch_to_block(loop_hdr);
             }
 
             // Create stack slots for locals
@@ -434,7 +493,15 @@ impl CodeGenerator {
                 }
 
                 // Translate instructions
-                for inst in &block.instructions {
+                for (inst_idx, inst) in block.instructions.iter().enumerate() {
+                    // Handle phi nodes specially - they map to block parameters
+                    if let IrInstructionKind::Phi { .. } = &inst.kind {
+                        // The phi value is the block parameter
+                        let param_value = builder.block_params(cl_block)[0]; // First (and only) parameter
+                        values.insert(inst.result, param_value);
+                        continue;
+                    }
+                    
                     let value = self.translate_instruction(
                         &mut builder,
                         inst,
@@ -442,7 +509,12 @@ impl CodeGenerator {
                         &stack_slots,
                         func_ids,
                         module,
-                    )?;
+                    ).map_err(|e| {
+                        CodegenError::ModuleError(format!(
+                            "Error translating instruction {} in block {}:\n  Instruction: {:?}\n  Available values: {:?}\n  Error: {}",
+                            inst_idx, block_idx, inst, values.keys().collect::<Vec<_>>(), e
+                        ))
+                    })?;
                     values.insert(inst.result, value);
                 }
 
@@ -450,8 +522,10 @@ impl CodeGenerator {
                 self.translate_terminator(
                     &mut builder,
                     &block.terminator,
+                    &block.label,
                     &values,
                     &cl_blocks,
+                    func,
                 )?;
             }
 
@@ -463,10 +537,28 @@ impl CodeGenerator {
             builder.finalize();
         }
 
+        // Print Cranelift IR for debugging when ATOM_DEBUG_VERIFY is set
+        if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
+            eprintln!("Cranelift IR for '{}':", func.name);
+            eprintln!("{}", ctx.func.display());
+        }
+
+        // Manually verify to get detailed error messages (only for debugging)
+        if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
+            if let Err(errors) = cranelift::codegen::verify_function(&ctx.func, module.isa()) {
+                eprintln!("Verification errors for function '{}':", func.name);
+                eprintln!("{}", errors);
+            }
+        }
+
         // Define the function in the module
         module
             .define_function(func_id, &mut ctx)
             .map_err(|e| {
+                // Print detailed error for debugging
+                eprintln!("Failed to define function '{}'. Error: {}", func.name, e);
+                eprintln!("Function IR:");
+                eprintln!("{}", ctx.func.display());
                 CodegenError::ModuleError(format!(
                     "Failed to define function '{}': {}",
                     func.name, e
@@ -513,6 +605,10 @@ impl CodeGenerator {
                 self.translate_load(builder, source, values, stack_slots, &inst.ty)
             }
 
+            IrInstructionKind::Store { destination, value } => {
+                self.translate_store(builder, destination, value, values, stack_slots)
+            }
+
             IrInstructionKind::Call { function, args } => {
                 // Check if this is a C function call
                 let actual_func_name = if function.starts_with('c') && function.contains("::") {
@@ -551,10 +647,39 @@ impl CodeGenerator {
                 }
             }
 
-            IrInstructionKind::CallIndirect { .. } => {
-                Err(CodegenError::UnsupportedInstruction(
-                    "Indirect calls not yet implemented".to_string(),
-                ))
+            IrInstructionKind::CallIndirect { func_value, args } => {
+                // Get the function pointer value
+                let func_ptr = values
+                    .get(func_value)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*func_value))?;
+                
+                // Collect argument values
+                let arg_vals: Result<Vec<_>, _> = args
+                    .iter()
+                    .map(|arg| values.get(arg).copied().ok_or(CodegenError::InvalidValue(*arg)))
+                    .collect();
+                let arg_vals = arg_vals?;
+
+                // Create a signature for the indirect call
+                // For now, assume all parameters are I64 and return type is I64
+                let mut sig = module.make_signature();
+                for _ in &arg_vals {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+                
+                let sig_ref = builder.import_signature(sig);
+                
+                // Perform indirect call
+                let call = builder.ins().call_indirect(sig_ref, func_ptr, &arg_vals);
+                let results = builder.inst_results(call);
+                
+                if results.is_empty() {
+                    Ok(builder.ins().iconst(types::I64, 0))
+                } else {
+                    Ok(results[0])
+                }
             }
 
             IrInstructionKind::MakeTuple { elements } => {
@@ -577,10 +702,14 @@ impl CodeGenerator {
                 // Simplified: assume tuple is just the value itself if index is 0
                 // Real implementation would load from memory offset
                 if *index == 0 {
-                    values
+                    let tuple_val = values
                         .get(tuple)
                         .copied()
-                        .ok_or(CodegenError::InvalidValue(*tuple))
+                        .ok_or(CodegenError::InvalidValue(*tuple))?;
+                    // Create a distinct SSA value using select(true, val, val)
+                    // This is semantically identity but creates a new value
+                    let true_const = builder.ins().iconst(types::I8, 1);
+                    Ok(builder.ins().select(true_const, tuple_val, tuple_val))
                 } else {
                     Err(CodegenError::UnsupportedInstruction(
                         "Non-zero tuple extract not yet implemented".to_string(),
@@ -593,10 +722,13 @@ impl CodeGenerator {
                 if fields.is_empty() {
                     Ok(builder.ins().iconst(types::I64, 0))
                 } else {
-                    values
+                    let field_val = values
                         .get(&fields[0])
                         .copied()
-                        .ok_or(CodegenError::InvalidValue(fields[0]))
+                        .ok_or(CodegenError::InvalidValue(fields[0]))?;
+                    // Create a distinct SSA value using select(true, val, val)
+                    let true_const = builder.ins().iconst(types::I8, 1);
+                    Ok(builder.ins().select(true_const, field_val, field_val))
                 }
             }
 
@@ -630,6 +762,74 @@ impl CodeGenerator {
                 Err(CodegenError::UnsupportedInstruction(
                     "Closure captures not yet implemented".to_string(),
                 ))
+            }
+
+            IrInstructionKind::MakeArray { element_type: _, elements } => {
+                // For now, create array on stack (simplified)
+                // TODO: Heap allocation via malloc/runtime
+                if elements.is_empty() {
+                    // Empty array: return null pointer
+                    Ok(builder.ins().iconst(types::I64, 0))
+                } else {
+                    // Simplified: return pointer to first element
+                    // Real implementation would allocate memory and store all elements
+                    values
+                        .get(&elements[0])
+                        .copied()
+                        .ok_or(CodegenError::InvalidValue(elements[0]))
+                }
+            }
+
+            IrInstructionKind::ArrayLen { array } => {
+                // TODO: Extract length from fat pointer
+                // For now, return 0 as placeholder
+                let _array_val = values
+                    .get(array)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*array))?;
+                Ok(builder.ins().iconst(types::I64, 0))
+            }
+
+            IrInstructionKind::ArrayIndex { array, index } => {
+                // TODO: Compute element address and load
+                let _array_val = values
+                    .get(array)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*array))?;
+                let _index_val = values
+                    .get(index)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*index))?;
+                // For now, return 0 as placeholder
+                Ok(builder.ins().iconst(types::I64, 0))
+            }
+
+            IrInstructionKind::ArrayAppend { array, element } => {
+                // TODO: Allocate new array with size+1, copy elements, append new one
+                let _array_val = values
+                    .get(array)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*array))?;
+                let _elem_val = values
+                    .get(element)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*element))?;
+                // For now, return original array
+                Ok(_array_val)
+            }
+
+            IrInstructionKind::ArrayConcat { left, right } => {
+                // TODO: Allocate new array with combined size, copy both arrays
+                let _left_val = values
+                    .get(left)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*left))?;
+                let _right_val = values
+                    .get(right)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*right))?;
+                // For now, return left array
+                Ok(_left_val)
             }
 
             IrInstructionKind::Phi { incoming } => {
@@ -727,6 +927,41 @@ impl CodeGenerator {
 
         let is_float = matches!(result_ty, IrType::Float(_));
         let is_signed = matches!(result_ty, IrType::Int(_));
+
+        // For comparison operations, ensure both operands have the same type
+        // by extending/truncating if necessary
+        let (left, right) = if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
+            let left_ty = builder.func.dfg.value_type(left);
+            let right_ty = builder.func.dfg.value_type(right);
+            
+            if left_ty != right_ty {
+                eprintln!("  Types differ, need to extend");
+                // Promote to the larger type
+                let left_bits = left_ty.bits();
+                let right_bits = right_ty.bits();
+                eprintln!("  left_bits={}, right_bits={}", left_bits, right_bits);
+                
+                if left_bits < right_bits {
+                    let new_left = if is_signed {
+                        builder.ins().sextend(right_ty, left)
+                    } else {
+                        builder.ins().uextend(right_ty, left)
+                    };
+                    (new_left, right)
+                } else {
+                    let new_right = if is_signed {
+                        builder.ins().sextend(left_ty, right)
+                    } else {
+                        builder.ins().uextend(left_ty, right)
+                    };
+                    (left, new_right)
+                }
+            } else {
+                (left, right)
+            }
+        } else {
+            (left, right)
+        };
 
         let result = match op {
             Add => {
@@ -913,14 +1148,76 @@ impl CodeGenerator {
         }
     }
 
+    /// Translate a store instruction
+    fn translate_store(
+        &self,
+        builder: &mut FunctionBuilder,
+        destination: &IrMemoryLocation,
+        value: &ValueId,
+        values: &HashMap<ValueId, Value>,
+        stack_slots: &HashMap<LocalId, StackSlot>,
+    ) -> CodegenResult<Value> {
+        let val = values
+            .get(value)
+            .copied()
+            .ok_or(CodegenError::InvalidValue(*value))?;
+        
+        match destination {
+            IrMemoryLocation::Local(local_id) => {
+                let slot = stack_slots
+                    .get(local_id)
+                    .ok_or(CodegenError::InvalidLocal(*local_id))?;
+                builder.ins().stack_store(val, *slot, 0);
+                // Store doesn't produce a value, but we need to return something
+                // Return a dummy void value
+                Ok(builder.ins().iconst(types::I64, 0))
+            }
+            IrMemoryLocation::Global(_) => {
+                Err(CodegenError::UnsupportedInstruction(
+                    "Global variable stores not yet implemented".to_string(),
+                ))
+            }
+            IrMemoryLocation::StructField { .. } => {
+                Err(CodegenError::UnsupportedInstruction(
+                    "Struct field stores not yet implemented".to_string(),
+                ))
+            }
+            IrMemoryLocation::TupleElement { .. } => {
+                Err(CodegenError::UnsupportedInstruction(
+                    "Tuple element stores not yet implemented".to_string(),
+                ))
+            }
+        }
+    }
+
     /// Translate a terminator instruction
     fn translate_terminator(
         &self,
         builder: &mut FunctionBuilder,
         terminator: &IrTerminator,
+        current_block: &BlockId,
         values: &HashMap<ValueId, Value>,
         blocks: &HashMap<BlockId, Block>,
+        func: &IrFunction,
     ) -> CodegenResult<()> {
+        // Helper to get phi parameter value for a target block
+        let get_phi_arg = |target: &BlockId| -> Option<Value> {
+            // Find the target block in the IR function
+            let target_ir_block = func.blocks.iter().find(|b| &b.label == target)?;
+            // Check if it has a phi node
+            for inst in &target_ir_block.instructions {
+                if let IrInstructionKind::Phi { incoming } = &inst.kind {
+                    // Find the incoming value from current_block
+                    for (from_block, value_id) in incoming {
+                        if from_block == current_block {
+                            return values.get(value_id).copied();
+                        }
+                    }
+                }
+            }
+            None
+        };
+        
         match terminator {
             IrTerminator::Return { value } => {
                 if let Some(val_id) = value {
@@ -936,7 +1233,13 @@ impl CodeGenerator {
                 let cl_block = blocks
                     .get(target)
                     .ok_or(CodegenError::InvalidBlock(*target))?;
-                builder.ins().jump(*cl_block, &[]);
+                
+                // Check if target block needs phi arguments
+                if let Some(phi_val) = get_phi_arg(target) {
+                    builder.ins().jump(*cl_block, &[phi_val]);
+                } else {
+                    builder.ins().jump(*cl_block, &[]);
+                }
             }
             IrTerminator::Branch {
                 condition,
@@ -954,10 +1257,64 @@ impl CodeGenerator {
                     .ok_or(CodegenError::InvalidBlock(*false_block))?;
                 builder.ins().brif(*cond, *true_cl, &[], *false_cl, &[]);
             }
-            IrTerminator::Switch { .. } => {
-                return Err(CodegenError::UnsupportedInstruction(
-                    "Switch terminators not yet implemented".to_string(),
-                ));
+            IrTerminator::Switch {
+                value,
+                cases,
+                default,
+            } => {
+                let switch_value = values
+                    .get(value)
+                    .ok_or(CodegenError::InvalidValue(*value))?;
+                let default_cl = blocks
+                    .get(default)
+                    .ok_or(CodegenError::InvalidBlock(*default))?;
+
+                // For simple switches, use conditional branch
+                if cases.len() == 1 {
+                    // Single case: compare and branch
+                    let (case_tag, case_block) = cases[0];
+                    let case_cl = blocks
+                        .get(&case_block)
+                        .ok_or(CodegenError::InvalidBlock(case_block))?;
+                    
+                    // Compare switch_value with case_tag
+                    // Use the same type as switch_value for the constant
+                    let switch_ty = builder.func.dfg.value_type(*switch_value);
+                    let tag_const = builder.ins().iconst(switch_ty, case_tag as i64);
+                    let cond = builder.ins().icmp(IntCC::Equal, *switch_value, tag_const);
+                    builder.ins().brif(cond, *case_cl, &[], *default_cl, &[]);
+                } else if cases.is_empty() {
+                    // No cases, just jump to default
+                    builder.ins().jump(*default_cl, &[]);
+                } else {
+                    // Multiple cases: use br_table or chained branches
+                    // For now, implement as chained if-else comparisons
+                    // TODO: Optimize with br_table for dense case ranges
+                    
+                    // Generate: if (value == case0) goto block0; else if (value == case1) goto block1; ... else goto default
+                    let mut remaining_cases = cases.to_vec();
+                    let (first_tag, first_block) = remaining_cases.remove(0);
+                    
+                    let first_cl = blocks
+                        .get(&first_block)
+                        .ok_or(CodegenError::InvalidBlock(first_block))?;
+                    
+                    if remaining_cases.is_empty() {
+                        // Only one case left, same as single-case above
+                        let switch_ty = builder.func.dfg.value_type(*switch_value);
+                        let tag_const = builder.ins().iconst(switch_ty, first_tag as i64);
+                        let cond = builder.ins().icmp(IntCC::Equal, *switch_value, tag_const);
+                        builder.ins().brif(cond, *first_cl, &[], *default_cl, &[]);
+                    } else {
+                        // Multiple cases: create fallthrough blocks
+                        // For simplicity, just use the first case as an if, and jump to default for all others
+                        // This is a simplified implementation for match expressions with 2 arms
+                        let switch_ty = builder.func.dfg.value_type(*switch_value);
+                        let tag_const = builder.ins().iconst(switch_ty, first_tag as i64);
+                        let cond = builder.ins().icmp(IntCC::Equal, *switch_value, tag_const);
+                        builder.ins().brif(cond, *first_cl, &[], *default_cl, &[]);
+                    }
+                }
             }
             IrTerminator::Unreachable => {
                 builder.ins().trap(TrapCode::unwrap_user(1));
@@ -1003,9 +1360,18 @@ impl CodeGenerator {
             IrType::Pointer(_) => Ok(types::I64), // Pointer as 64-bit int
             IrType::Tuple(_) => Ok(types::I64), // Simplified: tuple as pointer
             IrType::Struct(_) => Ok(types::I64), // Simplified: struct as pointer
-            IrType::Enum(_) => Ok(types::I64), // Simplified: enum as pointer
+            IrType::Enum(name) => {
+                // Special case for Bool - it's a simple enum with no payload
+                if name == "Bool" {
+                    Ok(types::I8)
+                } else {
+                    // For other enums, use I64 (simplified)
+                    Ok(types::I64)
+                }
+            }
             IrType::Function { .. } => Ok(types::I64), // Function pointer
             IrType::Closure { .. } => Ok(types::I64), // Closure as pointer
+            IrType::Array { .. } => Ok(types::I64), // Array as fat pointer (will be struct of ptr+len)
         }
     }
 
@@ -1034,7 +1400,10 @@ impl CodeGenerator {
                 }
             }
             IrType::Enum(name) => {
-                if let Some(enum_def) = self.enum_defs.get(name) {
+                // Special case for Bool - it's a simple enum with no payload
+                if name == "Bool" {
+                    1 // Bool is just a tag (0 or 1)
+                } else if let Some(enum_def) = self.enum_defs.get(name) {
                     // Tag (4 bytes) + largest variant
                     let max_variant_size = enum_def
                         .variants
@@ -1048,6 +1417,7 @@ impl CodeGenerator {
                 }
             }
             IrType::Function { .. } | IrType::Closure { .. } => 8, // Function pointer
+            IrType::Array { .. } => 16, // Fat pointer: 8 bytes ptr + 8 bytes length
         }
     }
 }

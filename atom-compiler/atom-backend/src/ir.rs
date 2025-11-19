@@ -129,6 +129,11 @@ pub enum IrInstructionKind {
     Load {
         source: IrMemoryLocation,
     },
+    /// Store a value to memory (local variable, struct field, etc.)
+    Store {
+        destination: IrMemoryLocation,
+        value: ValueId,
+    },
     /// Function call (direct)
     Call {
         function: String,
@@ -147,6 +152,30 @@ pub enum IrInstructionKind {
     TupleExtract {
         tuple: ValueId,
         index: u32,
+    },
+    /// Create an array/slice from elements (allocates on heap)
+    MakeArray {
+        element_type: IrType,
+        elements: Vec<ValueId>,
+    },
+    /// Get array length
+    ArrayLen {
+        array: ValueId,
+    },
+    /// Index into array (returns element value)
+    ArrayIndex {
+        array: ValueId,
+        index: ValueId,
+    },
+    /// Append element to array (creates new array)
+    ArrayAppend {
+        array: ValueId,
+        element: ValueId,
+    },
+    /// Concatenate two arrays
+    ArrayConcat {
+        left: ValueId,
+        right: ValueId,
     },
     /// Construct a struct
     MakeStruct {
@@ -264,6 +293,11 @@ pub enum IrType {
     },
     /// Pointer to a type (for references, heap allocations)
     Pointer(Box<IrType>),
+    /// Array/slice type (fat pointer: pointer + length)
+    /// Represents variadic tuples `T*` or `T+`
+    Array {
+        element: Box<IrType>,
+    },
 }
 
 /// Binary operators in IR.
@@ -494,6 +528,9 @@ impl fmt::Display for IrInstruction {
             IrInstructionKind::Load { source } => {
                 write!(f, "load {}", source)
             }
+            IrInstructionKind::Store { destination, value } => {
+                write!(f, "store {}, {}", destination, value)
+            }
             IrInstructionKind::Call { function, args } => {
                 write!(f, "call {}(", function)?;
                 for (i, arg) in args.iter().enumerate() {
@@ -526,6 +563,28 @@ impl fmt::Display for IrInstruction {
             }
             IrInstructionKind::TupleExtract { tuple, index } => {
                 write!(f, "tuple_extract {}, {}", tuple, index)
+            }
+            IrInstructionKind::MakeArray { element_type, elements } => {
+                write!(f, "array<{}>(", element_type)?;
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, ")")
+            }
+            IrInstructionKind::ArrayLen { array } => {
+                write!(f, "array_len {}", array)
+            }
+            IrInstructionKind::ArrayIndex { array, index } => {
+                write!(f, "array_index {}, {}", array, index)
+            }
+            IrInstructionKind::ArrayAppend { array, element } => {
+                write!(f, "array_append {}, {}", array, element)
+            }
+            IrInstructionKind::ArrayConcat { left, right } => {
+                write!(f, "array_concat {}, {}", left, right)
             }
             IrInstructionKind::MakeStruct { struct_name, fields } => {
                 write!(f, "struct {}(", struct_name)?;
@@ -698,6 +757,7 @@ impl fmt::Display for IrType {
                 Ok(())
             }
             IrType::Pointer(inner) => write!(f, "*{}", inner),
+            IrType::Array { element } => write!(f, "{}*", element),
         }
     }
 }
