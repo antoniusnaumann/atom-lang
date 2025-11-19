@@ -4,7 +4,7 @@
 )
 
 +exit(status ExitCode) {
-    cstdlib::exit(status.match() { Success { 0 }, Failure { 1 } })
+    cstdlib::exit(match(status) { Success { 0 }, Failure { 1 } })
 }
 
 +assert(condition Bool) {
@@ -23,6 +23,7 @@
 
 /// Prints the error message and quits
 +error(msg String) {
-    print(msg, Fatal)
+    // TODO: Fix print to support LogLevel parameter
+    // print(msg, Fatal)
     exit(Failure)
 }

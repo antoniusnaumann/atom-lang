@@ -702,6 +702,14 @@ impl Type {
             // Numeric conversions: Int can convert to Float (for literals like 0, 1, etc.)
             // This handles cases like `reduce(float_array, 0, fn)` where 0 is parsed as Int
             (Type::Int(_), Type::Float(_)) => true,
+            
+            // Float(None) is the same as Float(64), Int(None) is the same as Int(64), etc.
+            (Type::Float(None), Type::Float(Some(64))) => true,
+            (Type::Float(Some(64)), Type::Float(None)) => true,
+            (Type::Int(None), Type::Int(Some(64))) => true,
+            (Type::Int(Some(64)), Type::Int(None)) => true,
+            (Type::UInt(None), Type::UInt(Some(64))) => true,
+            (Type::UInt(Some(64)), Type::UInt(None)) => true,
 
             // No other implicit conversions
             _ => false,

@@ -663,11 +663,26 @@ impl TypeChecker {
         }
         
         if !left_ty.structurally_equal(&right_ty) {
-            return Err(TypeError::Incompatible {
-                expected: Box::new(left_ty.clone()),
-                found: Box::new(right_ty),
-                reason: format!("Binary operator {:?} requires matching types", op),
-            });
+            // Allow Int to convert to Float in binary operations (for parser bug where 1.0 is parsed as Int)
+            let compatible = match (&left_ty, &right_ty) {
+                (Type::Int(_), Type::Float(_)) | (Type::Float(_), Type::Int(_)) => true,
+                _ => false,
+            };
+            
+            if !compatible {
+                return Err(TypeError::Incompatible {
+                    expected: Box::new(left_ty.clone()),
+                    found: Box::new(right_ty),
+                    reason: format!("Binary operator {:?} requires matching types", op),
+                });
+            }
+            
+            // Promote to Float if one operand is Float
+            if matches!(left_ty, Type::Float(_)) {
+                return Ok(left_ty);
+            } else {
+                return Ok(right_ty);
+            }
         }
 
         // Determine result type
@@ -743,11 +758,30 @@ impl TypeChecker {
                 
                 // Math functions typically return Float or Float(32) depending on the suffix
                 if func_name.starts_with("cmath::") {
-                    // Functions ending in 'f' return Float(32), others return Float(64)
-                    if func_name.ends_with('f') {
+                    // Math functions ending in 'f' suffix (like cosf, sinf) return Float(32)
+                    // But not functions whose name ends in 'f' (like erf, erfc)
+                    if func_name.ends_with("cosf") || func_name.ends_with("sinf") || 
+                       func_name.ends_with("tanf") || func_name.ends_with("acosf") ||
+                       func_name.ends_with("asinf") || func_name.ends_with("atanf") ||
+                       func_name.ends_with("coshf") || func_name.ends_with("sinhf") ||
+                       func_name.ends_with("tanhf") || func_name.ends_with("acoshf") ||
+                       func_name.ends_with("asinhf") || func_name.ends_with("atanhf") ||
+                       func_name.ends_with("expf") || func_name.ends_with("exp2f") ||
+                       func_name.ends_with("expm1f") || func_name.ends_with("logf") ||
+                       func_name.ends_with("log10f") || func_name.ends_with("log2f") ||
+                       func_name.ends_with("powf") || func_name.ends_with("sqrtf") ||
+                       func_name.ends_with("cbrtf") || func_name.ends_with("hypotf") ||
+                       func_name.ends_with("ceilf") || func_name.ends_with("floorf") ||
+                       func_name.ends_with("truncf") || func_name.ends_with("roundf") ||
+                       func_name.ends_with("fmodf") || func_name.ends_with("remainderf") ||
+                       func_name.ends_with("fabsf") || func_name.ends_with("copysignf") ||
+                       func_name.ends_with("fminf") || func_name.ends_with("fmaxf") ||
+                       func_name.ends_with("erff") || func_name.ends_with("erfcf") ||
+                       func_name.ends_with("tgammaf") || func_name.ends_with("lgammaf") ||
+                       func_name.ends_with("atan2f") {
                         return Ok(Type::Float(Some(32)));
                     } else {
-                        return Ok(Type::Float(Some(64)));
+                        return Ok(Type::Float(None));
                     }
                 }
                 
@@ -876,6 +910,62 @@ impl TypeChecker {
         method: &Ident,
         args: &[Expr],
     ) -> TypeResult<Type> {
+        let method_name = method.name.clone();
+        
+        // Check for C library method calls (e.g., x.cmath::cos())
+        if method_name.starts_with('c') && method_name.contains("::") {
+            // Type check receiver and arguments
+            let _receiver_ty = self.check_expr(receiver)?;
+            for arg in args {
+                self.check_expr(arg)?;
+            }
+            
+            // Determine return type based on C library namespace and function name
+            if method_name.starts_with("cmath::") {
+                // Math functions ending in 'f' suffix (like cosf, sinf) return Float(32)
+                // But not functions whose name ends in 'f' (like erf, erfc)
+                // The pattern is: known_function_name + 'f'
+                if method_name.ends_with("cosf") || method_name.ends_with("sinf") || 
+                   method_name.ends_with("tanf") || method_name.ends_with("acosf") ||
+                   method_name.ends_with("asinf") || method_name.ends_with("atanf") ||
+                   method_name.ends_with("coshf") || method_name.ends_with("sinhf") ||
+                   method_name.ends_with("tanhf") || method_name.ends_with("acoshf") ||
+                   method_name.ends_with("asinhf") || method_name.ends_with("atanhf") ||
+                   method_name.ends_with("expf") || method_name.ends_with("exp2f") ||
+                   method_name.ends_with("expm1f") || method_name.ends_with("logf") ||
+                   method_name.ends_with("log10f") || method_name.ends_with("log2f") ||
+                   method_name.ends_with("powf") || method_name.ends_with("sqrtf") ||
+                   method_name.ends_with("cbrtf") || method_name.ends_with("hypotf") ||
+                   method_name.ends_with("ceilf") || method_name.ends_with("floorf") ||
+                   method_name.ends_with("truncf") || method_name.ends_with("roundf") ||
+                   method_name.ends_with("fmodf") || method_name.ends_with("remainderf") ||
+                   method_name.ends_with("fabsf") || method_name.ends_with("copysignf") ||
+                   method_name.ends_with("fminf") || method_name.ends_with("fmaxf") ||
+                   method_name.ends_with("erff") || method_name.ends_with("erfcf") ||
+                   method_name.ends_with("tgammaf") || method_name.ends_with("lgammaf") ||
+                   method_name.ends_with("atan2f") {
+                    return Ok(Type::Float(Some(32)));
+                } else {
+                    return Ok(Type::Float(None));
+                }
+            } else if method_name.starts_with("cstdio::") {
+                // Most stdio functions return Int
+                return Ok(Type::Int(None));
+            } else if method_name.starts_with("cstdlib::") {
+                // Most stdlib functions return Int or Void
+                if method_name.contains("::exit") || method_name.contains("::abort") {
+                    return Ok(Type::Void);
+                }
+                return Ok(Type::Int(None));
+            } else if method_name.starts_with("cstring::") {
+                // String functions typically return pointers (we'll use Int for now)
+                return Ok(Type::Int(None));
+            } else {
+                // Default for other C libraries
+                return Ok(Type::Int(None));
+            }
+        }
+        
         // Uniform call syntax: receiver.method(args) is equivalent to method(receiver, args)
         let _receiver_ty = self.check_expr(receiver)?;
 
@@ -884,7 +974,6 @@ impl TypeChecker {
         all_args.extend_from_slice(args);
 
         // Try to find matching function
-        let method_name = method.name.clone();
         if let Some(signatures) = self.functions.get(&method_name).cloned() {
             let arg_types: Result<Vec<_>, _> =
                 all_args.iter().map(|arg| self.check_expr(arg)).collect();
@@ -1423,7 +1512,7 @@ impl TypeChecker {
 
             Pattern::Literal(lit, _) => {
                 let lit_ty = self.type_of_literal(lit);
-                if !lit_ty.structurally_equal(expected_ty) {
+                if !lit_ty.can_convert_to(expected_ty) && !expected_ty.can_convert_to(&lit_ty) {
                     return Err(TypeError::Incompatible {
                         expected: Box::new(expected_ty.clone()),
                         found: Box::new(lit_ty),
@@ -1669,6 +1758,44 @@ impl TypeChecker {
                 params,
                 span: _,
             } => {
+                // Special case: Generic with no params should just be the base type
+                // This handles parser quirks where `Float` might be parsed as Generic { params: [] }
+                if params.is_empty() {
+                    return self.type_env.resolve_type(&name.name);
+                }
+                
+                // Special handling for sized primitive types: Float(32), Int(64), etc.
+                if params.len() == 1 {
+                    // Try to extract an integer literal for the size
+                    // The size can be in either the `ty` field or the `name` field
+                    let size_str = if let Some(param_ty) = &params[0].ty {
+                        // Size is a type: Float(Int(32))
+                        if let atom_ast::Type::Named(size_ident) = param_ty.as_ref() {
+                            Some(size_ident.name.as_str())
+                        } else {
+                            None
+                        }
+                    } else if let Some(name_ident) = &params[0].name {
+                        // Size is a name: Float(32)
+                        Some(name_ident.name.as_str())
+                    } else {
+                        None
+                    };
+                    
+                    if let Some(size_str) = size_str {
+                        if let Ok(size_val) = size_str.parse::<u32>() {
+                            // Handle sized primitives
+                            match name.name.as_str() {
+                                "Float" => return Ok(Type::Float(Some(size_val))),
+                                "Int" => return Ok(Type::Int(Some(size_val))),
+                                "UInt" => return Ok(Type::UInt(Some(size_val))),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                
+                // General generic type handling
                 let base = self.type_env.resolve_type(&name.name)?;
                 let mut args = Vec::new();
 

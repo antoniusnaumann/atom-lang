@@ -284,42 +284,42 @@
 // Classification functions
 
 +is_nan(x Float) Bool {
-    cmath::isnan(x).match() {
+    match(cmath::isnan(x)) {
         0 { False }
         _ { True }
     }
 }
 
 +is_nan(x Float(32)) Bool {
-    cmath::isnan(x).match() {
+    match(cmath::isnan(x)) {
         0 { False }
         _ { True }
     }
 }
 
 +is_inf(x Float) Bool {
-    cmath::isinf(x).match() {
+    match(cmath::isinf(x)) {
         0 { False }
         _ { True }
     }
 }
 
 +is_inf(x Float(32)) Bool {
-    cmath::isinf(x).match() {
+    match(cmath::isinf(x)) {
         0 { False }
         _ { True }
     }
 }
 
 +is_finite(x Float) Bool {
-    cmath::isfinite(x).match() {
+    match(cmath::isfinite(x)) {
         0 { False }
         _ { True }
     }
 }
 
 +is_finite(x Float(32)) Bool {
-    cmath::isfinite(x).match() {
+    match(cmath::isfinite(x)) {
         0 { False }
         _ { True }
     }
@@ -366,9 +366,9 @@
 }
 
 +e() Float {
-    #exp(1.0)
+    2.718281828459045
 }
 
 +tau() Float {
-    #(2.0 * pi())
+    6.283185307179586
 }
