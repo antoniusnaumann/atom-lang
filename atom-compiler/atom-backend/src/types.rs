@@ -703,6 +703,17 @@ impl Type {
             // This handles cases like `reduce(float_array, 0, fn)` where 0 is parsed as Int
             (Type::Int(_), Type::Float(_)) => true,
             
+            // Allow UInt <-> Int conversions (for binary literals in bitwise operations)
+            // This handles cases like `b & 0b10000000` where b is UInt(8) and literal is Int
+            (Type::UInt(_), Type::Int(_)) => true,
+            (Type::Int(_), Type::UInt(_)) => true,
+            
+            // Allow Rune <-> Int conversions (Rune is conceptually an Int representing a Unicode codepoint)
+            (Type::Rune, Type::Int(_)) => true,
+            (Type::Int(_), Type::Rune) => true,
+            (Type::UInt(_), Type::Rune) => true,
+            (Type::Rune, Type::UInt(_)) => true,
+            
             // Float(None) is the same as Float(64), Int(None) is the same as Int(64), etc.
             (Type::Float(None), Type::Float(Some(64))) => true,
             (Type::Float(Some(64)), Type::Float(None)) => true,
@@ -867,7 +878,7 @@ impl Type {
 
     /// Check if this is an integer type (signed or unsigned)
     pub fn is_integer(&self) -> bool {
-        matches!(self, Type::Int(_) | Type::UInt(_))
+        matches!(self, Type::Int(_) | Type::UInt(_) | Type::Rune)
     }
 
     /// Check if this is a floating-point type

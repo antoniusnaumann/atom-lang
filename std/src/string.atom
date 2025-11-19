@@ -189,14 +189,18 @@
         True { False }
         False {
             i := 0
+            result := True
             loop(i < p_len) {
                 match(s.bytes(i) == prefix.bytes(i)) {
-                    False { False }
+                    False {
+                        result = False
+                        break
+                    }
                     True { }
                 }
                 i += 1
             }
-            True
+            result
         }
     }
 }
@@ -211,14 +215,18 @@
         False {
             offset := s_len - suf_len
             i := 0
+            result := True
             loop(i < suf_len) {
                 match(s.bytes(offset + i) == suffix.bytes(i)) {
-                    False { False }
+                    False {
+                        result = False
+                        break
+                    }
                     True { }
                 }
                 i += 1
             }
-            True
+            result
         }
     }
 }
@@ -232,6 +240,7 @@
         True { False }
         False {
             i := 0
+            result := False
             loop(i <= s_len - sub_len) {
                 // Check if substring matches at position i
                 found := True
@@ -247,12 +256,15 @@
                     j += 1
                 }
                 match(found) {
-                    True { True }
+                    True { 
+                        result = True
+                        break
+                    }
                     False { }
                 }
                 i += 1
             }
-            False
+            result
         }
     }
 }

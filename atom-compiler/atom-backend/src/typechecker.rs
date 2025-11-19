@@ -455,6 +455,11 @@ impl TypeChecker {
             Expr::Literal(lit, _) => Ok(self.type_of_literal(lit)),
 
             Expr::Ident(ident) => {
+                // Special case: break and continue are loop control keywords
+                if ident.name == "break" || ident.name == "continue" {
+                    return Ok(Type::Void);
+                }
+                
                 // Check for C library function references (e.g., cstdlib::printf, cmath::sin)
                 if ident.name.starts_with('c') && ident.name.contains("::") {
                     // C library functions are treated as function types
@@ -608,9 +613,10 @@ impl TypeChecker {
                 } else {
                     false
                 };
-                let is_right_rune = matches!(right_ty, Type::Rune);
+                // Check if right is Rune or can convert to Rune (like UInt(8))
+                let is_right_rune_compatible = matches!(right_ty, Type::Rune) || right_ty.can_convert_to(&Type::Rune);
                 
-                if is_left_string && (is_right_string || is_right_rune) {
+                if is_left_string && (is_right_string || is_right_rune_compatible) {
                     return Ok(Type::Void);
                 }
                 
@@ -663,9 +669,15 @@ impl TypeChecker {
         }
         
         if !left_ty.structurally_equal(&right_ty) {
-            // Allow Int to convert to Float in binary operations (for parser bug where 1.0 is parsed as Int)
+            // Allow type conversions in binary operations:
+            // - Int to Float (for parser bug where 1.0 is parsed as Int)
+            // - Int to UInt (for binary literals in bitwise operations)
+            // - Rune with Int/UInt (for rune comparisons with literals)
             let compatible = match (&left_ty, &right_ty) {
                 (Type::Int(_), Type::Float(_)) | (Type::Float(_), Type::Int(_)) => true,
+                (Type::Int(_), Type::UInt(_)) | (Type::UInt(_), Type::Int(_)) => true,
+                (Type::Rune, Type::Int(_)) | (Type::Int(_), Type::Rune) => true,
+                (Type::Rune, Type::UInt(_)) | (Type::UInt(_), Type::Rune) => true,
                 _ => false,
             };
             
@@ -677,11 +689,27 @@ impl TypeChecker {
                 });
             }
             
-            // Promote to Float if one operand is Float
-            if matches!(left_ty, Type::Float(_)) {
-                return Ok(left_ty);
-            } else {
-                return Ok(right_ty);
+            // For comparison and logical operators, don't promote - let result type determination handle it
+            if !matches!(type_op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge | BinaryOp::And | BinaryOp::Or) {
+                // Promote to more specific type for arithmetic/bitwise operations:
+                // - Float over Int
+                // - Rune over Int/UInt
+                // - Sized type over unsized (UInt(8) over Int(None))
+                if matches!(left_ty, Type::Float(_)) {
+                    return Ok(left_ty);
+                } else if matches!(right_ty, Type::Float(_)) {
+                    return Ok(right_ty);
+                } else if matches!(left_ty, Type::Rune) {
+                    return Ok(left_ty);
+                } else if matches!(right_ty, Type::Rune) {
+                    return Ok(right_ty);
+                } else if matches!(left_ty, Type::UInt(Some(_))) {
+                    return Ok(left_ty);
+                } else if matches!(right_ty, Type::UInt(Some(_))) {
+                    return Ok(right_ty);
+                } else {
+                    return Ok(left_ty);
+                }
             }
         }
 
@@ -791,6 +819,11 @@ impl TypeChecker {
             // Handle loop builtin
             if func_name == "loop" {
                 return self.check_loop(args);
+            }
+            
+            // Handle as_string builtin
+            if func_name == "as_string" {
+                return self.check_as_string(args);
             }
             
             if let Some(signatures) = self.functions.get(&func_name).cloned() {
@@ -966,8 +999,73 @@ impl TypeChecker {
             }
         }
         
+        // Check if this is actually a field access followed by indexing
+        // In Atom, s.bytes(i) means: access field 'bytes', then index it with 'i'
+        let receiver_ty = self.check_expr(receiver)?;
+        
+        // Try to get field from receiver type
+        let field_ty = match &receiver_ty {
+            Type::Struct(struct_type) => {
+                struct_type.fields.iter()
+                    .find(|f| f.name == method_name)
+                    .map(|f| (*f.ty).clone())
+            }
+            Type::Tuple(tuple_type) => {
+                tuple_type.fields.iter()
+                    .find(|f| f.name.as_ref() == Some(&method_name))
+                    .map(|f| (*f.ty).clone())
+            }
+            _ => None
+        };
+        
+        // If we found a field and have exactly 1 argument, treat as indexing
+        if let Some(field_type) = field_ty {
+            if args.len() == 1 {
+                // This is field access followed by indexing: field(index)
+                // Check that field_type is indexable (Tuple/Array)
+                match &field_type {
+                    Type::Tuple(tuple_type) => {
+                        // Check the index
+                        let index_ty = self.check_expr(&args[0])?;
+                        if !index_ty.is_integer() {
+                            return Err(TypeError::Other(format!(
+                                "Tuple index must be integer, found {}",
+                                index_ty
+                            )));
+                        }
+                        
+                        // Return the element type
+                        if let Some((elem_ty, _)) = &tuple_type.variadic {
+                            return Ok((**elem_ty).clone());
+                        } else if !tuple_type.fields.is_empty() {
+                            // For non-variadic tuples, return first field type
+                            // (we can't determine statically which field will be accessed)
+                            return Ok((*tuple_type.fields[0].ty).clone());
+                        } else {
+                            return Err(TypeError::Other("Cannot index empty tuple".to_string()));
+                        }
+                    }
+                    _ => {
+                        // Field is not indexable, fall through to normal method call
+                    }
+                }
+            }
+        }
+        
+        // Handle as_string() method call: value.as_string()
+        if method_name == "as_string" {
+            if args.is_empty() {
+                // Method call with no args: receiver.as_string()
+                let _receiver_ty = self.check_expr(receiver)?;
+                return self.type_env.resolve_type("String");
+            } else {
+                return Err(TypeError::Other(
+                    "as_string method expects no arguments".to_string(),
+                ));
+            }
+        }
+        
         // Uniform call syntax: receiver.method(args) is equivalent to method(receiver, args)
-        let _receiver_ty = self.check_expr(receiver)?;
 
         // Build argument list with receiver as first argument
         let mut all_args = vec![receiver.clone()];
@@ -1464,6 +1562,22 @@ impl TypeChecker {
                 )))
             }
         }
+    }
+
+    fn check_as_string(&mut self, args: &[Expr]) -> TypeResult<Type> {
+        // as_string(value) - converts any value to a String
+        if args.len() != 1 {
+            return Err(TypeError::Other(format!(
+                "as_string expects exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+        
+        // Type check the argument (accept any type)
+        let _arg_ty = self.check_expr(&args[0])?;
+        
+        // Return String type from stdlib
+        self.type_env.resolve_type("String")
     }
 
     fn check_match(&mut self, expr: &Expr, arms: &[MatchArm]) -> TypeResult<Type> {

@@ -1,0 +1,12 @@
+main() {
+    // Test as_string as function call
+    s1 := as_string(42)
+    
+    // Test as_string as method call
+    n := 100
+    s2 := n.as_string()
+    
+    // Test with different types
+    s3 := as_string(3.14)
+    s4 := 'x'.as_string()
+}

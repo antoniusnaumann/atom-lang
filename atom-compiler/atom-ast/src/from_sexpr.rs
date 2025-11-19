@@ -848,9 +848,17 @@ impl FromSExpr for VarDecl {
                                     }
                                 }
                             }
-                            // Simple symbol: prefer init (handles `x := value` case)
-                            SExpr::Symbol(_) => {
-                                init = Some(Box::new(expr));
+                            // Simple symbol: use naming convention to disambiguate
+                            // PascalCase (starts with uppercase) = type name
+                            // snake_case/camelCase = variable/expression
+                            SExpr::Symbol(s) => {
+                                if s.chars().next().map_or(false, |c| c.is_uppercase()) {
+                                    // Starts with uppercase - likely a type (e.g., String, Int, Bool)
+                                    ty = Some(Box::new(Type::from_sexpr(filtered[3])?));
+                                } else {
+                                    // Starts with lowercase - likely a variable reference
+                                    init = Some(Box::new(expr));
+                                }
                             }
                             _ => {
                                 // Default to init for ambiguous cases

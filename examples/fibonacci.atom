@@ -1,5 +1,5 @@
-main(n Int) {
-    fib(n).print()
+main(n Int) Int {
+    fib(n)
 }
 
 /// Calculates the nth fibonacci number
