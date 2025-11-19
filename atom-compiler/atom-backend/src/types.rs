@@ -662,6 +662,13 @@ impl Type {
                 // The actual instantiation should have been done earlier
                 self.can_convert_to(t_base)
             }
+            
+            // TypeParam -> TypeParam: any type param can convert to any other type param
+            // This enables polymorphism: len(arr t*) can accept u*, v*, etc.
+            (Type::TypeParam(_), Type::TypeParam(_)) => true,
+            
+            // Concrete type -> TypeParam: any concrete type can be used where a type param is expected
+            (_, Type::TypeParam(_)) => true,
 
             // Numeric conversions (could be added)
             // For now, no implicit numeric conversions
