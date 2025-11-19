@@ -3,7 +3,7 @@
     None
 )
 
-+Result(t, e = String;
++Result(t, e;
     Ok(t)
     Err(e)
 )

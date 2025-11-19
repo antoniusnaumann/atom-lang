@@ -1070,12 +1070,19 @@ impl TypeChecker {
                     )));
                 }
 
-                // Type check the fields
+                // Get the full enum definition to access type parameters
+                let enum_def = self.type_env.get_enum(&enum_name).cloned();
+                
+                // Infer type parameters from constructor arguments
+                let mut type_param_bindings = std::collections::HashMap::new();
+
+                // Type check the fields and infer type parameters
                 for (i, field_init) in fields.iter().enumerate() {
                     let value_ty = self.check_expr(&field_init.value)?;
                     let expected_ty = &expected_fields[i];
 
-                    if !value_ty.can_convert_to(expected_ty) {
+                    // Try to unify to infer type parameters
+                    if !self.try_unify_type(&value_ty, expected_ty, &mut type_param_bindings) {
                         return Err(TypeError::Incompatible {
                             expected: expected_ty.clone(),
                             found: Box::new(value_ty),
@@ -1084,7 +1091,33 @@ impl TypeChecker {
                     }
                 }
 
-                // Return the enum type
+                // If the enum has type parameters, return a generic instantiation
+                if let Some(enum_def) = enum_def {
+                    if !enum_def.params.is_empty() {
+                        // Build generic type arguments
+                        let mut args = Vec::new();
+                        for param in &enum_def.params {
+                            if let Some(inferred_ty) = type_param_bindings.get(&param.name) {
+                                args.push(ConstArg::Type(Box::new(inferred_ty.clone())));
+                            } else if let Some(default) = &param.default {
+                                args.push(default.clone());
+                            } else {
+                                return Err(TypeError::Other(format!(
+                                    "Cannot infer type parameter {} for enum {} case {}",
+                                    param.name, enum_name, type_ident.name
+                                )));
+                            }
+                        }
+
+                        // Return instantiated generic type
+                        return Ok(Type::Generic {
+                            base: Box::new(Type::Enum(enum_def)),
+                            args,
+                        });
+                    }
+                }
+
+                // No type parameters, return the base enum type
                 return self.type_env.resolve_type(&enum_name);
             }
 
@@ -1368,21 +1401,27 @@ impl TypeChecker {
                 // Check if this is an enum case (zero-field constructor)
                 if let Some((enum_name, case, _idx)) = self.type_env.find_enum_case(&ident.name) {
                     // It's an enum case - verify it matches the expected type
-                    if let Type::Enum(enum_ty) = expected_ty {
-                        if enum_ty.name == enum_name && case.fields.is_empty() {
-                            Ok(())
-                        } else {
-                            Err(TypeError::Incompatible {
-                                expected: Box::new(expected_ty.clone()),
-                                found: Box::new(self.type_env.resolve_type(enum_name)?),
-                                reason: format!("Pattern '{}' is an enum case", ident.name),
-                            })
+                    let enum_matches = match expected_ty {
+                        Type::Enum(enum_ty) => {
+                            enum_ty.name == enum_name && case.fields.is_empty()
                         }
+                        Type::Generic { base, .. } => {
+                            if let Type::Enum(enum_ty) = base.as_ref() {
+                                enum_ty.name == enum_name && case.fields.is_empty()
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+
+                    if enum_matches {
+                        Ok(())
                     } else {
                         Err(TypeError::Incompatible {
                             expected: Box::new(expected_ty.clone()),
                             found: Box::new(self.type_env.resolve_type(enum_name)?),
-                            reason: format!("Pattern '{}' is an enum case, not a binding", ident.name),
+                            reason: format!("Pattern '{}' is an enum case", ident.name),
                         })
                     }
                 } else {
@@ -1419,38 +1458,64 @@ impl TypeChecker {
             }
 
             Pattern::Enum { name, fields, .. } => {
-                if let Type::Enum(enum_ty) = expected_ty {
-                    // Find matching case
-                    for case in &enum_ty.cases {
-                        if case.name == name.name {
-                            if fields.len() != case.fields.len() {
-                                return Err(TypeError::Other(format!(
-                                    "Enum case '{}' expects {} fields, pattern has {}",
-                                    case.name,
-                                    case.fields.len(),
-                                    fields.len()
-                                )));
+                // Extract the enum type and generic args if present
+                let (enum_ty, type_bindings) = match expected_ty {
+                    Type::Enum(e) => (e, std::collections::HashMap::new()),
+                    Type::Generic { base, args } => {
+                        if let Type::Enum(e) = base.as_ref() {
+                            // Build type parameter bindings from generic args
+                            let mut bindings = std::collections::HashMap::new();
+                            for (i, param) in e.params.iter().enumerate() {
+                                if i < args.len() {
+                                    if let ConstArg::Type(ty) = &args[i] {
+                                        bindings.insert(param.name.clone(), (**ty).clone());
+                                    }
+                                }
                             }
-
-                            for (i, pattern) in fields.iter().enumerate() {
-                                self.check_pattern(pattern, &case.fields[i])?;
-                            }
-
-                            return Ok(());
+                            (e, bindings)
+                        } else {
+                            return Err(TypeError::Incompatible {
+                                expected: Box::new(expected_ty.clone()),
+                                found: Box::new(Type::Error),
+                                reason: "Pattern expects enum".to_string(),
+                            });
                         }
                     }
+                    _ => {
+                        return Err(TypeError::Incompatible {
+                            expected: Box::new(expected_ty.clone()),
+                            found: Box::new(Type::Error),
+                            reason: "Pattern expects enum".to_string(),
+                        });
+                    }
+                };
 
-                    Err(TypeError::Other(format!(
-                        "Enum {} has no case '{}'",
-                        enum_ty.name, name.name
-                    )))
-                } else {
-                    Err(TypeError::Incompatible {
-                        expected: Box::new(expected_ty.clone()),
-                        found: Box::new(Type::Error), // Placeholder for unknown enum type
-                        reason: "Pattern expects enum".to_string(),
-                    })
+                // Find matching case
+                for case in &enum_ty.cases {
+                    if case.name == name.name {
+                        if fields.len() != case.fields.len() {
+                            return Err(TypeError::Other(format!(
+                                "Enum case '{}' expects {} fields, pattern has {}",
+                                case.name,
+                                case.fields.len(),
+                                fields.len()
+                            )));
+                        }
+
+                        for (i, pattern) in fields.iter().enumerate() {
+                            // Substitute type parameters in field type
+                            let field_ty = self.substitute_type_params(&case.fields[i], &type_bindings);
+                            self.check_pattern(pattern, &field_ty)?;
+                        }
+
+                        return Ok(());
+                    }
                 }
+
+                Err(TypeError::Other(format!(
+                    "Enum {} has no case '{}'",
+                    enum_ty.name, name.name
+                )))
             }
 
             Pattern::Expr(_expr) => {
@@ -1481,14 +1546,36 @@ impl TypeChecker {
             }
 
             Pattern::Enum { name, fields, .. } => {
-                if let Type::Enum(enum_ty) = ty {
-                    for case in &enum_ty.cases {
-                        if case.name == name.name {
-                            for (i, pattern) in fields.iter().enumerate() {
-                                self.add_pattern_bindings(pattern, &case.fields[i])?;
+                // Extract the enum type and generic args if present
+                let (enum_ty, type_bindings) = match ty {
+                    Type::Enum(e) => (e, std::collections::HashMap::new()),
+                    Type::Generic { base, args } => {
+                        if let Type::Enum(e) = base.as_ref() {
+                            // Build type parameter bindings from generic args
+                            let mut bindings = std::collections::HashMap::new();
+                            for (i, param) in e.params.iter().enumerate() {
+                                if i < args.len() {
+                                    if let ConstArg::Type(ty) = &args[i] {
+                                        bindings.insert(param.name.clone(), (**ty).clone());
+                                    }
+                                }
                             }
-                            break;
+                            (e, bindings)
+                        } else {
+                            return Ok(());
                         }
+                    }
+                    _ => return Ok(()),
+                };
+
+                for case in &enum_ty.cases {
+                    if case.name == name.name {
+                        for (i, pattern) in fields.iter().enumerate() {
+                            // Substitute type parameters in field type
+                            let field_ty = self.substitute_type_params(&case.fields[i], &type_bindings);
+                            self.add_pattern_bindings(pattern, &field_ty)?;
+                        }
+                        break;
                     }
                 }
                 Ok(())

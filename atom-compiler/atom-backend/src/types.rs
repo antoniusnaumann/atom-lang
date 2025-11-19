@@ -616,6 +616,36 @@ impl Type {
                 target.variadic.is_none()
             }
 
+            // Generic type conversions
+            (Type::Generic { base: s_base, args: s_args }, Type::Generic { base: t_base, args: t_args }) => {
+                // Both are generic: check base types match and args are compatible
+                if !s_base.structurally_equal(t_base) {
+                    return false;
+                }
+                
+                // For now, require exact match on args
+                // TODO: handle variance properly
+                s_args == t_args
+            }
+            
+            // Instantiated generic -> generic with type params
+            // e.g., Option(Int) -> Option(t) is allowed when checking function returns
+            (Type::Generic { base: s_base, .. }, _) => {
+                // If target has type parameters, we can instantiate to match
+                // Just check if base types are compatible
+                match target {
+                    Type::TypeParam(_) => true, // Can assign to any type parameter
+                    _ => s_base.can_convert_to(target),
+                }
+            }
+            
+            // Allow conversion from base type to its generic instantiation  
+            (_, Type::Generic { base: t_base, args: _ }) => {
+                // This handles cases where we need to compare against a generic signature
+                // The actual instantiation should have been done earlier
+                self.can_convert_to(t_base)
+            }
+
             // Numeric conversions (could be added)
             // For now, no implicit numeric conversions
             _ => false,
@@ -913,33 +943,15 @@ impl fmt::Display for Type {
             }
 
             Type::Struct(s) => {
-                write!(f, "{}", s.name)?;
-                if !s.params.is_empty() {
-                    write!(f, "(")?;
-                    for (i, param) in s.params.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", param.name)?;
-                    }
-                    write!(f, ")")?;
-                }
-                Ok(())
+                // Just show the struct name, not its parameters
+                // Parameters are shown in Type::Generic when instantiated
+                write!(f, "{}", s.name)
             }
 
             Type::Enum(e) => {
-                write!(f, "{}", e.name)?;
-                if !e.params.is_empty() {
-                    write!(f, "(")?;
-                    for (i, param) in e.params.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", param.name)?;
-                    }
-                    write!(f, ")")?;
-                }
-                Ok(())
+                // Just show the enum name, not its parameters
+                // Parameters are shown in Type::Generic when instantiated
+                write!(f, "{}", e.name)
             }
 
             Type::Function(func) => {
