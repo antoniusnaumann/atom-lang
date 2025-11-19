@@ -830,18 +830,31 @@ impl FromSExpr for VarDecl {
                 // Try parsing as expression first since var decls usually have init
                 if let Ok(expr) = Expr::from_sexpr(filtered[3]) {
                     // Check if it can also be parsed as a type
-                    if let Ok(t) = Type::from_sexpr(filtered[3]) {
-                        // Ambiguous: could be either
-                        // Heuristic: if it's an empty tuple, it's more likely an init
-                        // For other cases, prefer type if it's a simple type
-                        match filtered[3].as_list() {
-                            Ok(list) if !list.is_empty() && list[0].as_symbol().ok() == Some("tuple") => {
-                                // It's a tuple - treat as init
+                    if let Ok(_t) = Type::from_sexpr(filtered[3]) {
+                        // Ambiguous: could be either type or init
+                        // Heuristic: For variable declarations, init is more common than bare type
+                        // Prefer init unless it looks clearly like a type annotation
+                        match filtered[3] {
+                            // Check if it's a complex type expression (starts with list)
+                            SExpr::List(list) if !list.is_empty() => {
+                                match list[0].as_symbol().ok() {
+                                    Some("tuple") | Some("function-type") | Some("variadic*") | Some("variadic+") => {
+                                        // Complex type syntax - treat as type
+                                        ty = Some(Box::new(Type::from_sexpr(filtered[3])?));
+                                    }
+                                    _ => {
+                                        // Other list forms are more likely expressions
+                                        init = Some(Box::new(expr));
+                                    }
+                                }
+                            }
+                            // Simple symbol: prefer init (handles `x := value` case)
+                            SExpr::Symbol(_) => {
                                 init = Some(Box::new(expr));
                             }
                             _ => {
-                                // Prefer type for other cases
-                                ty = Some(Box::new(t));
+                                // Default to init for ambiguous cases
+                                init = Some(Box::new(expr));
                             }
                         }
                     } else {

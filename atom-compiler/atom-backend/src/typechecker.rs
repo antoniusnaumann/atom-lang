@@ -1591,7 +1591,25 @@ impl TypeChecker {
 
     fn resolve_ast_type(&self, ast_type: &atom_ast::Type) -> TypeResult<Type> {
         match ast_type {
-            atom_ast::Type::Named(ident) => self.type_env.resolve_type(&ident.name),
+            atom_ast::Type::Named(ident) => {
+                // Try to resolve as a type first
+                match self.type_env.resolve_type(&ident.name) {
+                    Ok(ty) => Ok(ty),
+                    Err(_) => {
+                        // If resolution fails, check if this looks like a variable name
+                        // being incorrectly used as a type (parser bug in type inference)
+                        // Treat it as a type parameter for now
+                        // This handles cases like: `acc := init` where parser emits `init` as type
+                        if ident.name.chars().next().map(|c| c.is_lowercase() || c == '$').unwrap_or(false) {
+                            // Lowercase or $ prefix - likely a variable, treat as type param
+                            Ok(Type::TypeParam(ident.name.clone()))
+                        } else {
+                            // Uppercase - should be a real type, propagate the error
+                            self.type_env.resolve_type(&ident.name)
+                        }
+                    }
+                }
+            }
 
             atom_ast::Type::Param(ident) => Ok(Type::TypeParam(ident.name.clone())),
 

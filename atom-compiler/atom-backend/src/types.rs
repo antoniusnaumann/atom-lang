@@ -354,6 +354,17 @@ impl TypeEnvironment {
             return Ok(Type::Enum(enum_ty.clone()));
         }
 
+        // Check if this is an enum case (e.g., True, False, Some, None)
+        // When used as a standalone value, resolve to the enum type
+        for enum_ty in self.enums.values() {
+            for case in &enum_ty.cases {
+                if case.name == name {
+                    // Found a matching enum case, return the enum type
+                    return Ok(Type::Enum(enum_ty.clone()));
+                }
+            }
+        }
+
         Err(TypeError::Undefined {
             name: name.to_string(),
         })
@@ -524,9 +535,15 @@ impl Type {
         }
 
         match (self, target) {
-            // Empty tuple () <-> Void are compatible (both represent "no value")
-            (Type::Tuple(t), Type::Void) | (Type::Void, Type::Tuple(t)) => {
+            // Void <-> empty tuple conversions
+            (Type::Tuple(t), Type::Void) => {
+                // Empty tuple (non-variadic) can convert to Void
                 t.fields.is_empty() && t.variadic.is_none()
+            }
+            (Type::Void, Type::Tuple(t)) => {
+                // Void can convert to any empty tuple (variadic or not)
+                // This allows: `current: t*` then `current = ()`
+                t.fields.is_empty()
             }
             
             // Struct -> Struct: all fields of target must be in source
@@ -843,6 +860,8 @@ impl Type {
             Type::Int(_) | Type::UInt(_) | Type::Float(_) | Type::Void => true,
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_arithmetic()),
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_arithmetic()),
+            Type::TypeParam(_) => true, // Type params are assumed to support ops (constraint checking TODO)
+            Type::Generic { base, .. } => base.supports_arithmetic(),
             _ => false,
         }
     }
@@ -855,6 +874,8 @@ impl Type {
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_equality()),
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_equality()),
             Type::Enum(_) => true, // Enums support equality (including Bool)
+            Type::TypeParam(_) => true, // Type params are assumed to support ops (constraint checking TODO)
+            Type::Generic { base, .. } => base.supports_equality(),
             _ => false,
         }
     }
@@ -866,6 +887,8 @@ impl Type {
             Type::Enum(_) => true, // Enum comparison by case order
             Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_comparison()),
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_comparison()),
+            Type::TypeParam(_) => true, // Type params are assumed to support ops (constraint checking TODO)
+            Type::Generic { base, .. } => base.supports_comparison(),
             _ => false,
         }
     }
@@ -876,6 +899,8 @@ impl Type {
             Type::Struct(s) if s.name == "String" => true, // String struct from stdlib
             Type::Tuple(t) => t.variadic.is_some(), // Only variadic tuples
             Type::Void => true,
+            Type::TypeParam(_) => true, // Type params assumed to support ops
+            Type::Generic { base, .. } => base.supports_concat(),
             _ => false,
         }
     }
