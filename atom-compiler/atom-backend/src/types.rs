@@ -558,6 +558,13 @@ impl Type {
 
             // Tuple -> Tuple: target fields must be prefix of source fields
             (Type::Tuple(source), Type::Tuple(target)) => {
+                // Special case: empty tuple can convert to empty variadic tuple
+                // This allows: `result: t* = ()`
+                if source.fields.is_empty() && source.variadic.is_none() 
+                   && target.fields.is_empty() && target.variadic.is_some() {
+                    return true;
+                }
+                
                 // Check if target fields match source prefix
                 if target.fields.len() > source.fields.len() && source.variadic.is_none() {
                     return false;
@@ -663,6 +670,28 @@ impl Type {
                 self.can_convert_to(t_base)
             }
             
+            // Function -> Function: check parameter and return type compatibility
+            (Type::Function(source), Type::Function(target)) => {
+                // Functions must have the same number of parameters
+                if source.params.len() != target.params.len() {
+                    return false;
+                }
+                
+                // For now, require exact parameter match (in the future could handle variance)
+                for (source_param, target_param) in source.params.iter().zip(target.params.iter()) {
+                    if !source_param.structurally_equal(target_param) {
+                        return false;
+                    }
+                }
+                
+                // Return type must match
+                match (&source.return_type, &target.return_type) {
+                    (Some(s_ret), Some(t_ret)) => s_ret.structurally_equal(t_ret),
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
+            
             // TypeParam -> TypeParam: any type param can convert to any other type param
             // This enables polymorphism: len(arr t*) can accept u*, v*, etc.
             (Type::TypeParam(_), Type::TypeParam(_)) => true,
@@ -670,8 +699,11 @@ impl Type {
             // Concrete type -> TypeParam: any concrete type can be used where a type param is expected
             (_, Type::TypeParam(_)) => true,
 
-            // Numeric conversions (could be added)
-            // For now, no implicit numeric conversions
+            // Numeric conversions: Int can convert to Float (for literals like 0, 1, etc.)
+            // This handles cases like `reduce(float_array, 0, fn)` where 0 is parsed as Int
+            (Type::Int(_), Type::Float(_)) => true,
+
+            // No other implicit conversions
             _ => false,
         }
     }

@@ -12,7 +12,7 @@
 }
 
 +split(s String, delim Rune) String* {
-    result := ()
+    result: String* = ()
     current := ""
     
     loop(s.runes()) {
@@ -33,7 +33,7 @@
 }
 
 +split(s String, delims Rune*) String* {
-    result := ()
+    result: String* = ()
     current := ""
     
     loop(s.runes()) {
@@ -111,7 +111,7 @@
 }
 
 +runes(s String) Rune* {
-    result: Rune*
+    result: Rune* = ()
     i := 0
     byte_len := s.bytes.len()
     

@@ -767,16 +767,22 @@ impl TypeChecker {
 
                 for sig in &signatures {
                     if sig.params.len() == arg_types.len() {
+                        // Try to unify type parameters
+                        let mut type_bindings = std::collections::HashMap::new();
                         let mut matches = true;
+                        
                         for (i, (_, param_ty)) in sig.params.iter().enumerate() {
-                            if !arg_types[i].can_convert_to(param_ty) {
+                            if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
                                 matches = false;
                                 break;
                             }
                         }
 
                         if matches {
-                            return Ok(sig.return_type.clone().unwrap_or(Type::Void));
+                            // Substitute type parameters in return type
+                            let return_ty = sig.return_type.clone().unwrap_or(Type::Void);
+                            let substituted = self.substitute_type_params(&return_ty, &type_bindings);
+                            return Ok(substituted);
                         }
                     }
                 }
@@ -925,7 +931,10 @@ impl TypeChecker {
             Type::TypeParam(name) => {
                 // If we've already bound this type parameter, check consistency
                 if let Some(bound_ty) = bindings.get(name) {
-                    actual.can_convert_to(bound_ty)
+                    // Allow bidirectional conversion for numeric types
+                    // This handles cases like: u is bound to Int, but we're trying to unify Float
+                    // where Int (from literal 0) should be able to become Float
+                    actual.can_convert_to(bound_ty) || bound_ty.can_convert_to(actual)
                 } else {
                     // Bind the type parameter
                     bindings.insert(name.clone(), actual.clone());
@@ -956,6 +965,33 @@ impl TypeChecker {
                             }
                         }
                         true
+                    }
+                } else {
+                    false
+                }
+            }
+            Type::Function(param_fn) => {
+                // Handle function types - unify parameters and return type
+                if let Type::Function(actual_fn) = actual {
+                    // Check parameter count
+                    if param_fn.params.len() != actual_fn.params.len() {
+                        return false;
+                    }
+                    
+                    // Unify each parameter
+                    for (actual_param, param_param) in actual_fn.params.iter().zip(param_fn.params.iter()) {
+                        if !self.try_unify_type(actual_param, param_param, bindings) {
+                            return false;
+                        }
+                    }
+                    
+                    // Unify return types
+                    match (&actual_fn.return_type, &param_fn.return_type) {
+                        (Some(actual_ret), Some(param_ret)) => {
+                            self.try_unify_type(actual_ret, param_ret, bindings)
+                        }
+                        (None, None) => true,
+                        _ => false,
                     }
                 } else {
                     false
@@ -1272,7 +1308,7 @@ impl TypeChecker {
             }
             1 => {
                 // loop(expr) - could be condition, count, or iterable
-                let arg_ty = self.check_expr(&args[0])?;
+                let _arg_ty = self.check_expr(&args[0])?;
                 
                 // For now, just accept any type and return Void
                 // The actual semantics depend on the argument type:

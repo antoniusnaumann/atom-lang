@@ -50,7 +50,7 @@
 
 /// Reverse an array
 +reverse(arr t*) t* {
-    result := ()
+    result: t* = ()
     i := len(arr) - 1
     loop(i >= 0) {
         result ++= arr(i)
@@ -69,7 +69,7 @@
 
 /// Take the first n elements
 +take(arr t*, n Int) t* {
-    result := ()
+    result: t* = ()
     count := 0
     loop(arr) {
         match(count < n) {
@@ -85,7 +85,7 @@
 
 /// Skip the first n elements
 +skip(arr t*, n Int) t* {
-    result := ()
+    result: t* = ()
     count := 0
     loop(arr) {
         match(count >= n) {
@@ -99,7 +99,7 @@
 
 /// Flatten an array of arrays
 +flatten(arr t**) t* {
-    result := ()
+    result: t* = ()
     loop(arr) {
         inner := $0
         loop(inner) {
@@ -111,7 +111,7 @@
 
 /// Map a function over an array
 +map(arr t*, fn (t) {u}) u* {
-    result := ()
+    result: t* = ()
     loop(arr) {
         result ++= fn($0)
     }
@@ -120,7 +120,7 @@
 
 /// Filter array elements by predicate
 +filter(arr t*, predicate (t) {Bool}) t* {
-    result := ()
+    result: t* = ()
     loop(arr) {
         match(predicate($0)) {
             True { result ++= $0 }
@@ -146,7 +146,7 @@
 
 /// Zip two arrays together into pairs
 +zip(arr1 t*, arr2 u*) (t, u)* {
-    result := ()
+    result: (t, u)* = ()
     len1 := len(arr1)
     len2 := len(arr2)
     min_len := match(len1 < len2) { True { len1 }, False { len2 } }
@@ -161,7 +161,7 @@
 
 /// Enumerate array elements with their indices
 +enumerate(arr t*) (Int, t)* {
-    result := ()
+    result: (Int, t)* = ()
     i := 0
     loop(arr) {
         result ++= (i, $0)
@@ -189,8 +189,8 @@
 
 /// Partition array into two arrays based on predicate
 +partition(arr t*, predicate (t) {Bool}) (t*, t*) {
-    true_arr := ()
-    false_arr := ()
+    true_arr: t* = ()
+    false_arr: t* = ()
     loop(arr) {
         match(predicate($0)) {
             True { true_arr ++= $0 }
@@ -202,8 +202,8 @@
 
 /// Split array into chunks of specified size
 +chunk(arr t*, size Int) t** {
-    result := ()
-    current := ()
+    result: t** = ()
+    current: t* = ()
     count := 0
     
     loop(arr) {
@@ -263,28 +263,28 @@
 
 /// Sum all elements in a numeric array
 +sum(arr Int*) Int {
-    reduce(arr, 0, (acc, x) { acc + x })
+    reduce(arr, 0, (acc Int, x Int) { acc + x })
 }
 
 +sum(arr Float*) Float {
-    reduce(arr, 0.0, (acc, x) { acc + x })
+    reduce(arr, 0.0, (acc Float, x Float) { acc + x })
 }
 
 +sum(arr Float(32)*) Float(32) {
-    reduce(arr, 0.0, (acc, x) { acc + x })
+    reduce(arr, 0.0, (acc Float(32), x Float(32)) { acc + x })
 }
 
 /// Product of all elements in a numeric array
 +product(arr Int*) Int {
-    reduce(arr, 1, (acc, x) { acc * x })
+    reduce(arr, 1, (acc Int, x Int) { acc * x })
 }
 
 +product(arr Float*) Float {
-    reduce(arr, 1.0, (acc, x) { acc * x })
+    reduce(arr, 1.0, (acc Float, x Float) { acc * x })
 }
 
 +product(arr Float(32)*) Float(32) {
-    reduce(arr, 1.0, (acc, x) { acc * x })
+    reduce(arr, 1.0, (acc Float(32), x Float(32)) { acc * x })
 }
 
 /// Get minimum value from array
