@@ -110,6 +110,11 @@ pub struct Lower {
     closure_functions: Vec<IrFunction>,
     /// Counter for generating unique closure names
     next_closure_id: u32,
+    /// Monomorphized function instances to generate
+    /// Maps: monomorphized_name -> (original_name, type_param_bindings, AST function def)
+    mono_queue: HashMap<String, (String, HashMap<String, IrType>, atom_ast::FunctionDef)>,
+    /// Already monomorphized instances (to avoid duplicates)
+    mono_done: std::collections::HashSet<String>,
 }
 
 /// Variable binding - either a value (SSA) or a mutable local variable.
@@ -136,6 +141,8 @@ impl Lower {
             params: HashMap::new(),
             closure_functions: Vec::new(),
             next_closure_id: 0,
+            mono_queue: HashMap::new(),
+            mono_done: std::collections::HashSet::new(),
         }
     }
     
@@ -155,11 +162,14 @@ impl Lower {
             params: HashMap::new(),
             closure_functions: Vec::new(),
             next_closure_id: 0,
+            mono_queue: HashMap::new(),
+            mono_done: std::collections::HashSet::new(),
         }
     }
 
     /// Lower a complete AST program to IR.
     pub fn lower_program(&mut self, ast: Vec<atom_ast::TopLevel>) -> LowerResult<IrProgram> {
+        eprintln!("[MONO-DEBUG] lower_program called with {} items", ast.len());
         let mut program = IrProgram::new();
 
         // First pass: collect all function definitions (for default parameters)
@@ -193,9 +203,21 @@ impl Lower {
             }
         }
 
-        // Fourth pass: lower functions
+        // Fourth pass: lower functions (skip generic functions - they'll be monomorphized on demand)
         for item in &ast {
             if let atom_ast::TopLevel::Function(func_def) = item {
+                eprintln!("[MONO-DEBUG] Checking function: {}, const_params: {}, params: {}", 
+                    func_def.name.name, func_def.const_params.len(), func_def.params.len());
+                for (i, param) in func_def.params.iter().enumerate() {
+                    eprintln!("[MONO-DEBUG]   param[{}]: name={}, type={:?}", 
+                        i, param.name.name, param.ty);
+                }
+                
+                // Skip generic functions (those with type parameters)
+                if self.is_generic_function(func_def) {
+                    eprintln!("[MONO] Skipping generic function: {}", func_def.name.name);
+                    continue;
+                }
                 let ir_func = self.lower_function(func_def)?;
                 program.add_function(ir_func);
             }
@@ -2191,6 +2213,105 @@ impl Lower {
                 self.collect_free_vars_block(block, captures);
             }
             _ => {}
+        }
+    }
+
+    // ========================================================================
+    // Generic Function Detection
+    // ========================================================================
+
+    /// Check if a function definition is generic (has type parameters).
+    ///
+    /// A function is considered generic if:
+    /// 1. It has const_params (compile-time parameters), OR
+    /// 2. Any of its parameters have types that contain TypeParam, OR
+    /// 3. Its return type contains TypeParam
+    fn is_generic_function(&self, func_def: &atom_ast::FunctionDef) -> bool {
+        // Check for const parameters
+        if !func_def.const_params.is_empty() {
+            eprintln!("[MONO-DEBUG] {} has const_params", func_def.name.name);
+            return true;
+        }
+
+        // Check parameter types for type parameters
+        for param in &func_def.params {
+            if let Some(ref ty) = param.ty {
+                if self.type_contains_type_param(ty) {
+                    eprintln!("[MONO-DEBUG] {} has type param in parameter: {:?}", func_def.name.name, ty);
+                    return true;
+                }
+            }
+        }
+
+        // Check return type for type parameters
+        if let Some(ref return_type) = func_def.return_type {
+            if self.type_contains_type_param(return_type) {
+                eprintln!("[MONO-DEBUG] {} has type param in return type", func_def.name.name);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if a type contains type parameters.
+    ///
+    /// Recursively checks all type constructors for the presence of TypeParam.
+    fn type_contains_type_param(&self, ty: &atom_ast::Type) -> bool {
+        match ty {
+            // Direct type parameter reference
+            atom_ast::Type::Param(_) => true,
+
+            // Named types are not generic unless they resolve to a type parameter
+            atom_ast::Type::Named(_) => false,
+
+            // Tuple types: check if any element contains TypeParam
+            atom_ast::Type::Tuple(types, _) => {
+                types.iter().any(|t| self.type_contains_type_param(t))
+            }
+
+            // Generic types: check type arguments
+            atom_ast::Type::Generic { params, .. } => {
+                params.iter().any(|param| {
+                    // Check both the type constraint and default value
+                    if let Some(ref ty) = param.ty {
+                        if self.type_contains_type_param(ty) {
+                            return true;
+                        }
+                    }
+                    if let Some(ref default) = param.default {
+                        if self.type_contains_type_param(default) {
+                            return true;
+                        }
+                    }
+                    false
+                })
+            }
+
+            // Variadic types: check element type
+            atom_ast::Type::Variadic { element, .. } => {
+                self.type_contains_type_param(element)
+            }
+
+            // Static array types: check element type
+            atom_ast::Type::StaticArray { element, .. } => {
+                self.type_contains_type_param(element)
+            }
+
+            // Function types: check parameters and return type
+            atom_ast::Type::Function { params, return_type, .. } => {
+                // Check parameter types
+                if params.iter().any(|p| self.type_contains_type_param(p)) {
+                    return true;
+                }
+                // Check return type
+                if let Some(ret) = return_type {
+                    if self.type_contains_type_param(ret) {
+                        return true;
+                    }
+                }
+                false
+            }
         }
     }
 }
