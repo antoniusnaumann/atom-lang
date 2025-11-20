@@ -299,6 +299,14 @@ impl CodeGenerator {
             return func.name.clone();
         }
 
+        // For monomorphized functions (containing '$'), don't mangle
+        // Monomorphization already creates unique names like "print$String"
+        // Double mangling would create mismatches between declaration and call sites
+        if func.name.contains('$') {
+            eprintln!("[MANGLE] Skipping mangling for monomorphized function: {}", func.name);
+            return func.name.clone();
+        }
+
         // Simple mangling scheme: funcname_param1Type_param2Type_retType
         let mut mangled = func.name.clone();
         
@@ -315,6 +323,7 @@ impl CodeGenerator {
             mangled.push_str(&self.type_to_mangle_string(ret_ty));
         }
         
+        eprintln!("[MANGLE] Mangled '{}' -> '{}'", func.name, mangled);
         mangled
     }
 

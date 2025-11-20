@@ -248,9 +248,9 @@ impl Lower {
                 let mut specialized_func = func_def.clone();
                 specialized_func.name.name = mono_name.clone();
                 
-                // TODO: Substitute type parameters in the function body
-                // For now, we rely on the type erasure approach where type params
-                // are already converted to Pointer(Int(8)) during lowering
+                // Substitute type parameters in the AST before lowering
+                specialized_func = self.substitute_type_params_in_ast(&specialized_func, &type_bindings)?;
+                eprintln!("[MONO] Type substitution complete for {}", mono_name);
                 
                 // Lower the specialized function
                 match self.lower_function(&specialized_func) {
@@ -401,9 +401,6 @@ impl Lower {
             }
         };
 
-        // Debug output for take function (before moving name/params)
-        let is_take = name == "take";
-        
         // Create function and lower body
         let mut ir_func = IrFunction::new(name, params, return_type.clone(), is_public);
 
@@ -415,11 +412,12 @@ impl Lower {
             self.lower_block_to_ir(&func_def.body, &mut entry_block, &mut ir_func)?;
 
         // Set terminator
+        eprintln!("[VOID-DEBUG] Function '{}': terminator={:?}, result_value={:?}, return_type={:?}",
+            ir_func.name, terminator, result_value.is_some(), return_type);
         if matches!(terminator, IrTerminator::Unreachable) {
             // Block ended with an expression - add return
-            if let Some(value) = result_value {
-                entry_block.set_terminator(IrTerminator::Return { value: Some(value) });
-            } else if return_type.is_none() || return_type.as_ref().unwrap().is_void() {
+            // IMPORTANT: Check void return type FIRST
+            if return_type.is_none() || return_type.as_ref().unwrap().is_void() {
                 // For main function with no return type, automatically return 0
                 if is_main && return_type.is_some() {
                     let zero_value = self.fresh_value_id();
@@ -432,8 +430,16 @@ impl Lower {
                     });
                     entry_block.set_terminator(IrTerminator::Return { value: Some(zero_value) });
                 } else {
+                    if ir_func.name.contains("print") {
+                        eprintln!("[VOID-FIX] Setting void return for function '{}'", ir_func.name);
+                    }
                     entry_block.set_terminator(IrTerminator::Return { value: None });
                 }
+            } else if let Some(value) = result_value {
+                if ir_func.name.contains("print") {
+                    eprintln!("[VOID-FIX] Function '{}' returning value {:?}", ir_func.name, value);
+                }
+                entry_block.set_terminator(IrTerminator::Return { value: Some(value) });
             } else {
                 return Err(LowerError::Internal(
                     "Function must return a value".to_string(),
@@ -444,29 +450,6 @@ impl Lower {
         }
 
         ir_func.add_block(entry_block);
-
-        eprintln!("[DEBUG-TEST] Lowered function: {}", ir_func.name);
-        eprintln!("[DEBUG-TEST] About to check debug for function: {}", ir_func.name);
-        
-        // Debug: Print complete IR structure for functions we're interested in
-        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-            if debug == "1" {
-                eprintln!("[DEBUG] Lowered function '{}' successfully", ir_func.name);
-                if ir_func.name == "main" || ir_func.name == "print" {
-                    eprintln!("[DEBUG] Complete IR for function '{}':", ir_func.name);
-                    eprintln!("[DEBUG]   Params: {:?}", ir_func.params);
-                    eprintln!("[DEBUG]   Return type: {:?}", ir_func.return_type);
-                    eprintln!("[DEBUG]   Locals: {:?}", ir_func.locals);
-                    for block in &ir_func.blocks {
-                        eprintln!("[DEBUG]   Block {}:", block.label);
-                        for (idx, inst) in block.instructions.iter().enumerate() {
-                            eprintln!("[DEBUG]     [{}] {:?}", idx, inst);
-                        }
-                        eprintln!("[DEBUG]     Terminator: {:?}", block.terminator);
-                    }
-                }
-            }
-        }
 
         Ok(ir_func)
     }
@@ -979,6 +962,40 @@ impl Lower {
         ir_block: &mut IrBlock,
         func: &mut IrFunction,
     ) -> LowerResult<ValueId> {
+        // Handle field access followed by call (e.g., s.bytes(i))
+        // This is typically array/pointer indexing, not a function call
+        if let atom_ast::Expr::FieldAccess { object, field, .. } = func_expr {
+            if args.len() == 1 && field.name == "bytes" {
+                // This is s.bytes(i) - field access followed by array indexing
+                let object_value = self.lower_expr(object, ir_block, func)?;
+                
+                // Extract the bytes field (field 0 of String tuple)
+                let field_value = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: field_value,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::TupleExtract {
+                        tuple: object_value,
+                        index: 0,
+                    },
+                });
+                
+                // Index into the array
+                let index_value = self.lower_expr(&args[0], ir_block, func)?;
+                
+                let value_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: value_id,
+                    ty: IrType::Int(8),
+                    kind: IrInstructionKind::ArrayIndex {
+                        array: field_value,
+                        index: index_value,
+                    },
+                });
+                return Ok(value_id);
+            }
+        }
+        
         // Get function name
         let func_name = match func_expr {
             atom_ast::Expr::Ident(ident) => ident.name.clone(),
@@ -1143,11 +1160,13 @@ impl Lower {
                     eprintln!("[MONO-DEBUG] Call to generic function: {}", func_name);
                     
                     // Extract concrete types from arguments
-                    let concrete_types = self.extract_concrete_types(&arg_values, func);
+                    let concrete_types = self.extract_concrete_types(&arg_values, ir_block, func, func_def);
                     eprintln!("[MONO-DEBUG] Extracted concrete types: {:?}", concrete_types);
                     
                     // Generate monomorphized function name
+                    eprintln!("[MONO-DEBUG] BEFORE generate_mono_name, concrete_types.len()={}", concrete_types.len());
                     let mono_name = self.generate_mono_name(&func_name, &concrete_types, func_def);
+                    eprintln!("[MONO-DEBUG] AFTER generate_mono_name");
                     eprintln!("[MONO-DEBUG] Monomorphized name: {}", mono_name);
                     
                     // Queue this instance for generation if not already done
@@ -2401,32 +2420,146 @@ impl Lower {
 
     /// Extract concrete types from call arguments for monomorphization.
     ///
-    /// For now, we use a simplified approach: extract the IR type from each argument ValueId.
-    /// In a full implementation, we'd need to track type information through the lowering process.
+    /// Maps type parameter names (like "t") to their concrete types based on
+    /// the argument types provided at the call site.
     fn extract_concrete_types(
         &self,
         arg_values: &[ValueId],
+        ir_block: &IrBlock,
         func: &IrFunction,
+        func_def: &atom_ast::FunctionDef,
     ) -> HashMap<String, IrType> {
-        let mut concrete_types = HashMap::new();
+        let mut bindings = HashMap::new();
         
-        // Simple heuristic: use the first argument's type as the generic type parameter
-        // This works for simple cases like print(msg t) where t is inferred from msg
-        if let Some(&first_arg) = arg_values.first() {
-            // Find the instruction that produced this value to get its type
-            if let Some(inst) = func.blocks.iter()
-                .flat_map(|block| &block.instructions)
-                .find(|inst| inst.result == first_arg)
-            {
-                concrete_types.insert("t".to_string(), inst.ty.clone());
-            } else {
-                // Fallback: assume string pointer for now
-                eprintln!("[MONO-DEBUG] Could not find instruction for arg {}, using string pointer", first_arg.0);
-                concrete_types.insert("t".to_string(), IrType::Pointer(Box::new(IrType::Int(8))));
+        eprintln!("[MONO-DEBUG] extract_concrete_types: {} args, {} params",
+            arg_values.len(), func_def.params.len());
+        
+        // Match each argument with its corresponding parameter
+        for (i, param) in func_def.params.iter().enumerate() {
+            if i >= arg_values.len() {
+                eprintln!("[MONO-DEBUG] Warning: fewer args than params at position {}", i);
+                break;
+            }
+            
+            let arg_value = arg_values[i];
+            
+            // Get the concrete type of this argument
+            let arg_type = match self.get_value_type(arg_value, ir_block, func) {
+                Some(ty) => {
+                    eprintln!("[MONO-DEBUG] Arg {}: ValueId({}) has type {:?}",
+                        i, arg_value.0, ty);
+                    ty
+                }
+                None => {
+                    eprintln!("[MONO-DEBUG] Warning: could not determine type for arg {} (ValueId({}))",
+                        i, arg_value.0);
+                    continue;
+                }
+            };
+            
+            // Check if this parameter's type contains type parameters
+            if let Some(param_ty) = &param.ty {
+                eprintln!("[MONO-DEBUG] Matching param {} type {:?} with arg type {:?}",
+                    param.name.name, param_ty, arg_type);
+                self.collect_type_bindings(param_ty, &arg_type, &mut bindings);
             }
         }
         
-        concrete_types
+        eprintln!("[MONO-DEBUG] Final type bindings: {:?}", bindings);
+        bindings
+    }
+
+    /// Get the IrType of a ValueId by searching through the IR.
+    fn get_value_type(
+        &self,
+        value_id: ValueId,
+        ir_block: &IrBlock,
+        func: &IrFunction,
+    ) -> Option<IrType> {
+        // Case 1: Value is a function parameter
+        // Parameters are ValueId(0), ValueId(1), etc. matching their position
+        if let Some((_, param_type)) = func.params.get(value_id.0 as usize) {
+            eprintln!("[MONO-DEBUG] ValueId({}) is parameter with type {:?}",
+                value_id.0, param_type);
+            return Some(param_type.clone());
+        }
+        
+        // Case 2: Value was created in the current block
+        for inst in &ir_block.instructions {
+            if inst.result == value_id {
+                eprintln!("[MONO-DEBUG] ValueId({}) found in current block: {:?}",
+                    value_id.0, inst.ty);
+                return Some(inst.ty.clone());
+            }
+        }
+        
+        // Case 3: Value was created in a previous block
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if inst.result == value_id {
+                    eprintln!("[MONO-DEBUG] ValueId({}) found in block {}: {:?}",
+                        value_id.0, block.label.0, inst.ty);
+                    return Some(inst.ty.clone());
+                }
+            }
+        }
+        
+        eprintln!("[MONO-DEBUG] ValueId({}) not found in parameters or blocks", value_id.0);
+        None
+    }
+
+    /// Recursively collect type parameter bindings by matching AST type with concrete IR type.
+    fn collect_type_bindings(
+        &self,
+        param_type: &atom_ast::Type,
+        concrete_type: &IrType,
+        bindings: &mut HashMap<String, IrType>,
+    ) {
+        match param_type {
+            // Direct type parameter reference - this is what we're looking for!
+            atom_ast::Type::Param(ident) => {
+                eprintln!("[MONO-DEBUG] Binding type param '{}' to {:?}",
+                    ident.name, concrete_type);
+                bindings.insert(ident.name.clone(), concrete_type.clone());
+            }
+            
+            // Named type - no type parameters to extract
+            atom_ast::Type::Named(_) => {}
+            
+            // Tuple type - recursively match elements
+            atom_ast::Type::Tuple(param_types, _) => {
+                if let IrType::Tuple(concrete_types) = concrete_type {
+                    for (param_elem, concrete_elem) in param_types.iter().zip(concrete_types.iter()) {
+                        self.collect_type_bindings(param_elem, concrete_elem, bindings);
+                    }
+                }
+            }
+            
+            // Variadic/Array types
+            atom_ast::Type::Variadic { element, .. } |
+            atom_ast::Type::StaticArray { element, .. } => {
+                if let IrType::Array { element: concrete_elem } = concrete_type {
+                    self.collect_type_bindings(element, concrete_elem, bindings);
+                }
+            }
+            
+            // Function types
+            atom_ast::Type::Function { params, return_type, .. } => {
+                if let IrType::Function { params: concrete_params, return_type: concrete_ret } = concrete_type {
+                    // Match parameter types
+                    for (param, concrete) in params.iter().zip(concrete_params.iter()) {
+                        self.collect_type_bindings(param, concrete, bindings);
+                    }
+                    // Match return type
+                    if let (Some(param_ret), Some(concrete_ret)) = (return_type.as_ref(), concrete_ret.as_ref()) {
+                        self.collect_type_bindings(param_ret, concrete_ret, bindings);
+                    }
+                }
+            }
+            
+            // Generic types - complex, skip for now
+            _ => {}
+        }
     }
 
     /// Generate a monomorphized function name based on concrete type parameters.
@@ -2437,29 +2570,222 @@ impl Lower {
         &self,
         func_name: &str,
         concrete_types: &HashMap<String, IrType>,
-        func_def: &atom_ast::FunctionDef,
+        _func_def: &atom_ast::FunctionDef,
     ) -> String {
-        let mut name = func_name.to_string();
+        eprintln!("[MONO] generate_mono_name: func_name={}, concrete_types={:?}", func_name, concrete_types);
         
-        // Append type parameter names in order they appear in const_params
-        for param in &func_def.const_params {
-            if let Some(concrete_type) = concrete_types.get(&param.name.name) {
-                let type_suffix = match concrete_type {
-                    IrType::Int(bits) => format!("Int{}", bits),
-                    IrType::Float(bits) => format!("Float{}", bits),
-                    IrType::Pointer(inner) => match **inner {
-                        IrType::Int(8) => "String".to_string(),
-                        _ => "Ptr".to_string(),
-                    },
-                    IrType::Void => "Void".to_string(),
-                    _ => "Generic".to_string(),
-                };
-                name.push('$');
-                name.push_str(&type_suffix);
-            }
+        if concrete_types.is_empty() {
+            eprintln!("[MONO] Empty concrete_types, returning original name: {}", func_name);
+            return func_name.to_string();
         }
         
+        let mut name = func_name.to_string();
+        
+        // Append type parameter bindings in sorted order for consistency
+        let mut sorted_bindings: Vec<_> = concrete_types.iter().collect();
+        sorted_bindings.sort_by_key(|(k, _)| k.as_str());
+        
+        for (_param_name, concrete_type) in sorted_bindings {
+            let type_suffix = match concrete_type {
+                IrType::Int(bits) => format!("Int{}", bits),
+                IrType::Float(bits) => format!("Float{}", bits),
+                IrType::Pointer(inner) => match **inner {
+                    IrType::Int(8) => "String".to_string(),
+                    _ => "Ptr".to_string(),
+                },
+                IrType::Void => "Void".to_string(),
+                IrType::Struct(name) => name.clone(),
+                IrType::Enum(name) => name.clone(),
+                _ => "Generic".to_string(),
+            };
+            name.push('$');
+            name.push_str(&type_suffix);
+        }
+        
+        eprintln!("[MONO] Final monomorphized name: {}", name);
         name
+    }
+
+    /// Substitute type parameters in a function definition with concrete types.
+    ///
+    /// This creates a specialized version of the function where all type parameters
+    /// are replaced with their concrete instantiations.
+    fn substitute_type_params_in_ast(
+        &self,
+        func_def: &atom_ast::FunctionDef,
+        type_bindings: &HashMap<String, IrType>,
+    ) -> LowerResult<atom_ast::FunctionDef> {
+        let mut result = func_def.clone();
+        
+        // Substitute in parameter types
+        result.params = result.params.iter()
+            .map(|param| {
+                let substituted_ty = param.ty.as_ref()
+                    .map(|t| self.substitute_ast_type(t, type_bindings))
+                    .transpose()?;
+                Ok(atom_ast::Param {
+                    name: param.name.clone(),
+                    ty: substituted_ty.map(Box::new),
+                    default: param.default.clone(), // Don't traverse defaults for now
+                    span: param.span,
+                })
+            })
+            .collect::<LowerResult<Vec<_>>>()?;
+        
+        // Substitute in return type
+        result.return_type = result.return_type.as_ref()
+            .map(|rt| self.substitute_ast_type(rt, type_bindings).map(Box::new))
+            .transpose()?;
+        
+        // Note: We don't substitute in the body because expressions don't
+        // contain type annotations in Atom (type inference handles that)
+        // Only function signatures need substitution
+        
+        Ok(result)
+    }
+
+    /// Recursively substitute type parameters in an AST type.
+    fn substitute_ast_type(
+        &self,
+        ast_type: &atom_ast::Type,
+        type_bindings: &HashMap<String, IrType>,
+    ) -> LowerResult<atom_ast::Type> {
+        match ast_type {
+            // BASE CASE: Direct substitution of type parameter
+            atom_ast::Type::Param(ident) => {
+                if let Some(concrete_type) = type_bindings.get(&ident.name) {
+                    eprintln!("[MONO-DEBUG] Substituting type param '{}' with {:?}",
+                        ident.name, concrete_type);
+                    self.ir_type_to_ast_type(concrete_type)
+                } else {
+                    // Unbound type parameter - leave as is (or error?)
+                    eprintln!("[MONO-DEBUG] Warning: unbound type param '{}'", ident.name);
+                    Ok(ast_type.clone())
+                }
+            }
+            
+            // PASS-THROUGH: No type params to substitute
+            atom_ast::Type::Named(_) => Ok(ast_type.clone()),
+            
+            // RECURSIVE CASES: Traverse and substitute
+            atom_ast::Type::Tuple(types, span) => {
+                let substituted_types = types.iter()
+                    .map(|t| self.substitute_ast_type(t, type_bindings).map(Box::new))
+                    .collect::<LowerResult<Vec<_>>>()?;
+                Ok(atom_ast::Type::Tuple(substituted_types, *span))
+            }
+            
+            atom_ast::Type::Variadic { element, non_empty, span } => {
+                let substituted_element = self.substitute_ast_type(element, type_bindings)?;
+                Ok(atom_ast::Type::Variadic {
+                    element: Box::new(substituted_element),
+                    non_empty: *non_empty,
+                    span: *span,
+                })
+            }
+            
+            atom_ast::Type::StaticArray { element, size, span } => {
+                let substituted_element = self.substitute_ast_type(element, type_bindings)?;
+                Ok(atom_ast::Type::StaticArray {
+                    element: Box::new(substituted_element),
+                    size: size.clone(),
+                    span: *span,
+                })
+            }
+            
+            atom_ast::Type::Function { params, return_type, span } => {
+                let substituted_params = params.iter()
+                    .map(|p| self.substitute_ast_type(p, type_bindings).map(Box::new))
+                    .collect::<LowerResult<Vec<_>>>()?;
+                let substituted_return = return_type.as_ref()
+                    .map(|rt| self.substitute_ast_type(rt, type_bindings).map(Box::new))
+                    .transpose()?;
+                Ok(atom_ast::Type::Function {
+                    params: substituted_params,
+                    return_type: substituted_return,
+                    span: *span,
+                })
+            }
+            
+            // Generic types: substitute in type arguments
+            atom_ast::Type::Generic { name, params, span } => {
+                let substituted_params = params.iter()
+                    .map(|tp| {
+                        let substituted_ty = tp.ty.as_ref()
+                            .map(|t| self.substitute_ast_type(t, type_bindings).map(Box::new))
+                            .transpose()?;
+                        let substituted_default = tp.default.as_ref()
+                            .map(|d| self.substitute_ast_type(d, type_bindings).map(Box::new))
+                            .transpose()?;
+                        Ok(Box::new(atom_ast::TypeParam {
+                            name: tp.name.clone(),
+                            ty: substituted_ty,
+                            default: substituted_default,
+                            span: tp.span,
+                        }))
+                    })
+                    .collect::<LowerResult<Vec<_>>>()?;
+                Ok(atom_ast::Type::Generic {
+                    name: name.clone(),
+                    params: substituted_params,
+                    span: *span,
+                })
+            }
+        }
+    }
+
+    /// Convert IrType back to AST Type for type substitution.
+    fn ir_type_to_ast_type(&self, ir_type: &IrType) -> LowerResult<atom_ast::Type> {
+        let span = atom_ast::Span::new(0, 0); // Synthetic span for generated types
+        
+        match ir_type {
+            IrType::Void => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Void".to_string(),
+                span,
+            })),
+            IrType::Int(64) => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Int".to_string(),
+                span,
+            })),
+            IrType::Int(32) => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Int32".to_string(),
+                span,
+            })),
+            IrType::Int(8) => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Int8".to_string(),
+                span,
+            })),
+            IrType::Float(64) => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Float".to_string(),
+                span,
+            })),
+            IrType::Float(32) => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Float32".to_string(),
+                span,
+            })),
+            IrType::Pointer(inner) if matches!(**inner, IrType::Int(8)) => {
+                Ok(atom_ast::Type::Named(atom_ast::Ident {
+                    name: "String".to_string(),
+                    span,
+                }))
+            }
+            IrType::Struct(name) | IrType::Enum(name) => {
+                Ok(atom_ast::Type::Named(atom_ast::Ident {
+                    name: name.clone(),
+                    span,
+                }))
+            }
+            IrType::Tuple(elements) => {
+                let ast_elements = elements.iter()
+                    .map(|e| self.ir_type_to_ast_type(e).map(Box::new))
+                    .collect::<LowerResult<Vec<_>>>()?;
+                Ok(atom_ast::Type::Tuple(ast_elements, span))
+            }
+            _ => Err(LowerError::Unsupported(format!(
+                "Cannot convert IrType to AST Type: {:?}",
+                ir_type
+            ))),
+        }
     }
 }
 
