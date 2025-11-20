@@ -310,6 +310,8 @@ pub enum IrBinOp {
     Mul,
     Div,
     Mod,
+    // Concatenation (for ++ operator)
+    Concat,
     // Comparison
     Eq,
     Ne,
@@ -775,6 +777,7 @@ impl fmt::Display for IrBinOp {
             IrBinOp::Mul => "*",
             IrBinOp::Div => "/",
             IrBinOp::Mod => "%",
+            IrBinOp::Concat => "++",
             IrBinOp::Eq => "==",
             IrBinOp::Ne => "!=",
             IrBinOp::Lt => "<",

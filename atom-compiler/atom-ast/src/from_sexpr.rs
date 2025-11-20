@@ -852,7 +852,7 @@ impl FromSExpr for VarDecl {
                             // PascalCase (starts with uppercase) = type name
                             // snake_case/camelCase = variable/expression
                             SExpr::Symbol(s) => {
-                                if s.chars().next().map_or(false, |c| c.is_uppercase()) {
+                                if s.chars().next().is_some_and(|c| c.is_uppercase()) {
                                     // Starts with uppercase - likely a type (e.g., String, Int, Bool)
                                     ty = Some(Box::new(Type::from_sexpr(filtered[3])?));
                                 } else {

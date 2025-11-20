@@ -1901,7 +1901,7 @@ impl Lower {
             atom_ast::BinOp::BitOr => Ok(IrBinOp::BitOr),
             atom_ast::BinOp::LShift => Ok(IrBinOp::LShift),
             atom_ast::BinOp::RShift => Ok(IrBinOp::RShift),
-            atom_ast::BinOp::Concat => Ok(IrBinOp::Add), // Treat as Add for now
+            atom_ast::BinOp::Concat => Ok(IrBinOp::Concat),
             _ => Err(LowerError::Unsupported(format!(
                 "Binary operator: {:?}",
                 op

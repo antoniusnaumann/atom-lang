@@ -1311,6 +1311,13 @@ impl CodeGenerator {
                     builder.ins().urem(left, right)
                 }
             }
+            Concat => {
+                // String concatenation - placeholder that just returns left operand
+                // TODO: Implement proper concat by calling C helper function
+                // For String ++ Rune: would call str_concat_rune(char* str, i32 rune) -> char*
+                // For now, just return the left string unchanged to avoid linker errors
+                left
+            }
             Eq => {
                 if is_float {
                     builder.ins().fcmp(FloatCC::Equal, left, right)
