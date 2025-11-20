@@ -592,7 +592,18 @@ impl Type {
                 match (&source.variadic, &target.variadic) {
                     (Some((s_ty, _)), Some((t_ty, _))) => s_ty.can_convert_to(t_ty),
                     (Some(_), None) => true, // Can drop variadic
-                    (None, Some(_)) => false, // Cannot add variadic
+                    (None, Some((t_var_ty, _))) => {
+                        // Fixed tuple -> variadic tuple: all source fields must be convertible to target variadic type
+                        // Example: (Int, Int, Int) can convert to Int*
+                        if target.fields.is_empty() {
+                            // Target has no fixed fields, so all source fields must match variadic type
+                            source.fields.iter().all(|f| f.ty.can_convert_to(t_var_ty))
+                        } else {
+                            // Target has fixed fields + variadic
+                            // Remaining source fields (beyond target.fields) must match variadic type
+                            source.fields.iter().skip(target.fields.len()).all(|f| f.ty.can_convert_to(t_var_ty))
+                        }
+                    }
                     (None, None) => true,
                 }
             }
@@ -714,9 +725,12 @@ impl Type {
             (Type::UInt(_), Type::Rune) => true,
             (Type::Rune, Type::UInt(_)) => true,
             
-            // Float(None) is the same as Float(64), Int(None) is the same as Int(64), etc.
-            (Type::Float(None), Type::Float(Some(64))) => true,
-            (Type::Float(Some(64)), Type::Float(None)) => true,
+            // Float(None) coerces to any Float bit width (for literals like 0.0, 1.5, etc.)
+            // This allows: reduce(float32_array, 0.0, fn) where 0.0 is Float(None) but should be Float(32)
+            (Type::Float(None), Type::Float(_)) => true,
+            (Type::Float(_), Type::Float(None)) => true,
+            
+            // Int(None) is the same as Int(64), UInt(None) is the same as UInt(64)
             (Type::Int(None), Type::Int(Some(64))) => true,
             (Type::Int(Some(64)), Type::Int(None)) => true,
             (Type::UInt(None), Type::UInt(Some(64))) => true,

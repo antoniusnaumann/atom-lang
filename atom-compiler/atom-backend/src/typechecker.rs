@@ -257,14 +257,27 @@ impl TypeChecker {
 
         let signature = FunctionSignature {
             const_params,
-            params,
-            return_type,
+            params: params.clone(),
+            return_type: return_type.clone(),
         };
 
+        if func_name == "reduce" {
+            eprintln!("\n=== Collecting reduce signature ===");
+            eprintln!("  Params: {} params", params.len());
+            for (i, (name, ty, has_default)) in params.iter().enumerate() {
+                eprintln!("    [{}] {}: {:?} (default: {})", i, name, ty, has_default);
+            }
+            eprintln!("  Return type: {:?}", return_type);
+        }
+
         self.functions
-            .entry(func_name)
+            .entry(func_name.clone())
             .or_default()
             .push(signature);
+
+        if func_name == "reduce" {
+            eprintln!("  Total reduce signatures: {}", self.functions.get(&func_name).unwrap().len());
+        }
 
         Ok(())
     }
@@ -833,7 +846,23 @@ impl TypeChecker {
                     args.iter().map(|arg| self.check_expr(arg)).collect();
                 let arg_types = arg_types?;
 
-                for sig in &signatures {
+                if func_name == "reduce" {
+                    eprintln!("\n=== Checking reduce call with {} args ===", args.len());
+                    eprintln!("  Argument types:");
+                    for (i, arg_ty) in arg_types.iter().enumerate() {
+                        eprintln!("    [{}]: {:?}", i, arg_ty);
+                    }
+                    eprintln!("  Available signatures: {}", signatures.len());
+                    for (sig_idx, sig) in signatures.iter().enumerate() {
+                        eprintln!("  Signature {}:", sig_idx);
+                        eprintln!("    Params: {}", sig.params.len());
+                        for (i, (name, ty, has_def)) in sig.params.iter().enumerate() {
+                            eprintln!("      [{}] {}: {:?} (default={})", i, name, ty, has_def);
+                        }
+                    }
+                }
+
+                for (sig_idx, sig) in signatures.iter().enumerate() {
                     // Count required (non-default) parameters
                     let required_params = sig.params.iter()
                         .take_while(|(_, _, has_default)| !has_default)
@@ -861,6 +890,22 @@ impl TypeChecker {
                     }
                 }
 
+                // Debug: print details if this is reduce
+                if func_name == "reduce" {
+                    eprintln!("ERROR: No matching overload for 'reduce' with {} args", args.len());
+                    eprintln!("  Argument types:");
+                    for (i, arg_ty) in arg_types.iter().enumerate() {
+                        eprintln!("    [{}]: {:?}", i, arg_ty);
+                    }
+                    eprintln!("  Available signatures:");
+                    for (i, sig) in signatures.iter().enumerate() {
+                        eprintln!("    Signature {}:", i);
+                        for (j, (name, param_ty, has_default)) in sig.params.iter().enumerate() {
+                            eprintln!("      param[{}] {}: {:?} (default: {})", j, name, param_ty, has_default);
+                        }
+                    }
+                }
+                
                 return Err(TypeError::Other(format!(
                     "No matching overload for function '{}' with {} arguments",
                     func_name,
@@ -1144,7 +1189,22 @@ impl TypeChecker {
                         if let Some((actual_var_ty, _)) = &actual_tuple.variadic {
                             self.try_unify_type(actual_var_ty, var_ty, bindings)
                         } else {
-                            false
+                            // Fixed tuple -> variadic tuple
+                            // All fixed fields (beyond param's fixed fields) must unify with variadic type
+                            // Example: (Int, Int, Int) unifies with t* where t=Int
+                            let fixed_to_check = if param_tuple.fields.is_empty() {
+                                // Param is pure variadic (t*), check all actual fields
+                                &actual_tuple.fields[..]
+                            } else {
+                                // Param has fixed fields + variadic, check remaining actual fields
+                                if actual_tuple.fields.len() < param_tuple.fields.len() {
+                                    return false;
+                                }
+                                &actual_tuple.fields[param_tuple.fields.len()..]
+                            };
+                            
+                            // All fields must unify with the variadic element type
+                            fixed_to_check.iter().all(|f| self.try_unify_type(&f.ty, var_ty, bindings))
                         }
                     } else {
                         // Non-variadic tuple: check each field

@@ -54,6 +54,7 @@ if [[ $# -lt 1 ]]; then
     echo "Options:" >&2
     echo "  -o <output>   Output executable path (default: a.out)" >&2
     echo "  --no-std      Don't include standard library" >&2
+    echo "  --debug       Enable debug output during compilation" >&2
     echo "" >&2
     echo "Environment:" >&2
     echo "  ATOM_STD      Path to standard library (default: ./std/src)" >&2
@@ -63,12 +64,14 @@ if [[ $# -lt 1 ]]; then
     echo "  atomc examples/                 # Compile all .atom files in directory" >&2
     echo "  atomc src/ -o myprogram         # Compile directory with custom output" >&2
     echo "  atomc main.atom --no-std        # Compile without standard library" >&2
+    echo "  atomc main.atom --debug         # Compile with debug output" >&2
     exit 1
 fi
 
 INPUT_PATH="$1"
 OUTPUT_FILE="a.out"
 NO_STD=false
+DEBUG_FLAG=""
 
 # Parse output argument
 shift
@@ -84,6 +87,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-std)
             NO_STD=true
+            shift
+            ;;
+        --debug)
+            DEBUG_FLAG="--debug"
             shift
             ;;
         *)
@@ -167,7 +174,7 @@ echo ""
 
 # Compile all AST files
 echo "Compiling..."
-if ! "$COMPILER_BIN" "${AST_FILES[@]}" -o "$OUTPUT_FILE"; then
+if ! "$COMPILER_BIN" "${AST_FILES[@]}" -o "$OUTPUT_FILE" $DEBUG_FLAG; then
     echo "Compilation failed" >&2
     exit 1
 fi

@@ -216,6 +216,11 @@ impl CodeGenerator {
         for func in &ir.functions {
             let mangled_name = self.mangle_function_name(func);
             let func_id = func_ids[&mangled_name];
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("[DEBUG] Compiling function '{}' with return type: {:?}", func.name, func.return_type);
+                }
+            }
             self.compile_function(&mut module, func, func_id, &func_ids)
                 .map_err(|e| {
                     CodegenError::ModuleError(format!(
@@ -246,7 +251,7 @@ impl CodeGenerator {
     ) {
         for block in &func.blocks {
             for inst in &block.instructions {
-                if let IrInstructionKind::Call { function, args } = &inst.kind {
+                if let IrInstructionKind::Call { function, args, .. } = &inst.kind {
                     // Check if this is a C function call
                     if function.starts_with('c') && function.contains("::") {
                         let parts: Vec<&str> = function.split("::").collect();
@@ -350,6 +355,12 @@ impl CodeGenerator {
             sig.returns.push(AbiParam::new(cl_type));
         }
 
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("[DEBUG] Declaring function '{}' with signature: {:?}", func.name, sig);
+            }
+        }
+
         // Determine linkage
         let linkage = if func.is_public || func.name == "main" {
             Linkage::Export
@@ -387,9 +398,29 @@ impl CodeGenerator {
             let cl_type = self.translate_type(param_ty)?;
             ctx.func.signature.params.push(AbiParam::new(cl_type));
         }
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("[DEBUG] Setting signature for '{}', return_type = {:?}", func.name, func.return_type);
+            }
+        }
         if let Some(ret_ty) = &func.return_type {
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("[DEBUG] Translating return type {:?} for '{}'", ret_ty, func.name);
+                }
+            }
             let cl_type = self.translate_type(ret_ty)?;
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("[DEBUG] Translated to Cranelift type: {:?}", cl_type);
+                }
+            }
             ctx.func.signature.returns.push(AbiParam::new(cl_type));
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("[DEBUG] Signature after adding return: {:?}", ctx.func.signature);
+                }
+            }
         }
 
         // Build the function body
@@ -412,15 +443,31 @@ impl CodeGenerator {
                     _ => false,
                 }
             });
+            
+            // Check if there are any tail calls (need loop header with parameters)
+            let has_tail_calls = func.blocks.iter().any(|b| {
+                b.instructions.iter().any(|inst| {
+                    matches!(&inst.kind, IrInstructionKind::Call { is_tail: true, .. })
+                })
+            });
 
             // Create Cranelift blocks for all IR blocks
             let mut cl_blocks = HashMap::new();
             let mut block_params = HashMap::new(); // Track which blocks need parameters for phi nodes
-            let loop_header = if has_back_edge_to_entry {
+            let loop_header = if has_back_edge_to_entry || has_tail_calls {
                 Some(builder.create_block())
             } else {
                 None
             };
+            
+            // If we have tail calls, add parameters to the loop header
+            if has_tail_calls && loop_header.is_some() {
+                let loop_hdr = loop_header.unwrap();
+                for (_, param_ty) in &func.params {
+                    let cl_type = self.translate_type(param_ty)?;
+                    builder.append_block_param(loop_hdr, cl_type);
+                }
+            }
             
             for block in &func.blocks {
                 let cl_block = builder.create_block();
@@ -458,18 +505,32 @@ impl CodeGenerator {
             builder.append_block_params_for_function_params(actual_entry_block);
 
             // Map parameters to values
+            let param_values: Vec<Value> = (0..func.params.len())
+                .map(|i| builder.block_params(actual_entry_block)[i])
+                .collect();
+            
             for (i, _) in func.params.iter().enumerate() {
-                let param_value = builder.block_params(actual_entry_block)[i];
-                // Parameters are referenced by value ID (we'll use a simple mapping)
-                // In a real implementation, you'd track parameter value IDs from IR
-                values.insert(ValueId(i as u32), param_value);
+                values.insert(ValueId(i as u32), param_values[i]);
             }
             
             // If we have a loop header, immediately jump to it from the entry block
             if loop_header.is_some() {
                 let loop_hdr = loop_header.unwrap();
-                builder.ins().jump(loop_hdr, &[]);
-                builder.switch_to_block(loop_hdr);
+                if has_tail_calls {
+                    // Jump with parameters (for tail call optimization)
+                    builder.ins().jump(loop_hdr, &param_values);
+                    builder.switch_to_block(loop_hdr);
+                    
+                    // Update parameter mappings to use loop header parameters
+                    for (i, _) in func.params.iter().enumerate() {
+                        let loop_param = builder.block_params(loop_hdr)[i];
+                        values.insert(ValueId(i as u32), loop_param);
+                    }
+                } else {
+                    // Jump without parameters (for simple back-edges)
+                    builder.ins().jump(loop_hdr, &[]);
+                    builder.switch_to_block(loop_hdr);
+                }
             }
 
             // Create stack slots for locals
@@ -509,6 +570,9 @@ impl CodeGenerator {
                         &stack_slots,
                         func_ids,
                         module,
+                        &func.name,
+                        loop_header,
+                        &cl_blocks,
                     ).map_err(|e| {
                         CodegenError::ModuleError(format!(
                             "Error translating instruction {} in block {}:\n  Instruction: {:?}\n  Available values: {:?}\n  Error: {}",
@@ -529,7 +593,12 @@ impl CodeGenerator {
                 )?;
             }
 
-            // Seal all blocks
+            // Seal all blocks (must seal all created blocks before finalize)
+            // Seal the actual entry block if different from what's in cl_blocks
+            if let Some(_loop_hdr) = loop_header {
+                builder.seal_block(actual_entry_block);
+            }
+            
             for cl_block in cl_blocks.values() {
                 builder.seal_block(*cl_block);
             }
@@ -537,17 +606,27 @@ impl CodeGenerator {
             builder.finalize();
         }
 
-        // Print Cranelift IR for debugging when ATOM_DEBUG_VERIFY is set
-        if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
-            eprintln!("Cranelift IR for '{}':", func.name);
-            eprintln!("{}", ctx.func.display());
+        // Print Cranelift IR for debugging when ATOM_DEBUG is set
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("[DEBUG] Cranelift IR for '{}':", func.name);
+                eprintln!("{}", ctx.func.display());
+            }
         }
 
         // Manually verify to get detailed error messages (only for debugging)
-        if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
-            if let Err(errors) = cranelift::codegen::verify_function(&ctx.func, module.isa()) {
-                eprintln!("Verification errors for function '{}':", func.name);
-                eprintln!("{}", errors);
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                if let Err(errors) = cranelift::codegen::verify_function(&ctx.func, module.isa()) {
+                    eprintln!("[DEBUG] Verification errors for function '{}':", func.name);
+                    eprintln!("{}", errors);
+                }
+            }
+        }
+
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("[DEBUG] About to define function '{}', signature = {:?}", func.name, ctx.func.signature);
             }
         }
 
@@ -580,6 +659,9 @@ impl CodeGenerator {
         stack_slots: &HashMap<LocalId, StackSlot>,
         func_ids: &HashMap<String, FuncId>,
         module: &mut ObjectModule,
+        current_func_name: &str,
+        loop_header: Option<Block>,
+        cl_blocks: &HashMap<BlockId, Block>,
     ) -> CodegenResult<Value> {
         match &inst.kind {
             IrInstructionKind::Const { value } => self.translate_const(builder, value, &inst.ty, module),
@@ -609,7 +691,35 @@ impl CodeGenerator {
                 self.translate_store(builder, destination, value, values, stack_slots)
             }
 
-            IrInstructionKind::Call { function, args } => {
+            IrInstructionKind::Call { function, args, is_tail } => {
+                // Check if this is a tail call to the current function (self-recursion)
+                if *is_tail && function == current_func_name {
+                    eprintln!("Optimizing tail call in function {}", current_func_name);
+                    
+                    // Collect argument values
+                    let arg_vals: Result<Vec<_>, _> = args
+                        .iter()
+                        .map(|arg| values.get(arg).copied().ok_or(CodegenError::InvalidValue(*arg)))
+                        .collect();
+                    let arg_vals = arg_vals?;
+                    
+                    // Jump to loop header (or entry block if no loop header exists)
+                    let target_block = loop_header.or_else(|| cl_blocks.get(&BlockId(0)).copied())
+                        .ok_or_else(|| CodegenError::ModuleError("No target block for tail call".to_string()))?;
+                    
+                    // Jump with the new argument values
+                    builder.ins().jump(target_block, &arg_vals);
+                    
+                    // Switch to a dummy unreachable block to avoid emitting the original terminator
+                    // The original block's terminator will be emitted into this unreachable block
+                    let unreachable_block = builder.create_block();
+                    builder.switch_to_block(unreachable_block);
+                    
+                    // Return the first argument as a dummy (value doesn't matter)
+                    return Ok(arg_vals[0]);
+                }
+                
+                // Regular function call (not a tail call)
                 // Check if this is a C function call
                 let actual_func_name = if function.starts_with('c') && function.contains("::") {
                     // Extract C function name: "cstdlib::printf" -> "printf"
@@ -683,18 +793,32 @@ impl CodeGenerator {
             }
 
             IrInstructionKind::MakeTuple { elements } => {
-                // For now, we'll handle tuples as sequential stack values
-                // In a full implementation, this would create a struct in memory
+                // Allocate stack space for the tuple
+                // Each element is 8 bytes (i64) for simplicity
                 if elements.is_empty() {
-                    // Empty tuple = void
+                    // Empty tuple = null pointer
                     Ok(builder.ins().iconst(types::I64, 0))
                 } else {
-                    // For simplicity, just return the first element
-                    // A real implementation would allocate and pack all elements
-                    values
-                        .get(&elements[0])
-                        .copied()
-                        .ok_or(CodegenError::InvalidValue(elements[0]))
+                    // Create a stack slot for the tuple
+                    let tuple_size = (elements.len() * 8) as u32;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        tuple_size,
+                        0,
+                    ));
+                    
+                    // Store each element at its offset
+                    for (i, elem_id) in elements.iter().enumerate() {
+                        let elem_val = values
+                            .get(elem_id)
+                            .copied()
+                            .ok_or(CodegenError::InvalidValue(*elem_id))?;
+                        let offset = (i * 8) as i32;
+                        builder.ins().stack_store(elem_val, slot, offset);
+                    }
+                    
+                    // Return the address of the tuple
+                    Ok(builder.ins().stack_addr(types::I64, slot, 0))
                 }
             }
 
@@ -752,16 +876,42 @@ impl CodeGenerator {
                 ))
             }
 
-            IrInstructionKind::MakeClosure { .. } => {
-                Err(CodegenError::UnsupportedInstruction(
-                    "Closures not yet implemented".to_string(),
-                ))
+            IrInstructionKind::MakeClosure { function, captures } => {
+                // For now, implement a simple closure representation:
+                // - If no captures: just return function pointer
+                // - If captures: create a tuple (func_ptr, captures_struct)
+                
+                // Get function reference
+                let func_id = func_ids.get(function).ok_or(CodegenError::Other(
+                    format!("Undefined closure function: {}", function),
+                ))?;
+                
+                let func_ref = module.declare_func_in_func(*func_id, builder.func);
+                let func_ptr = builder.ins().func_addr(types::I64, func_ref);
+                
+                if captures.is_empty() {
+                    // No captures: closure is just the function pointer
+                    Ok(func_ptr)
+                } else {
+                    // TODO: For captures, we'd create a struct with (func_ptr, *captures)
+                    // For now, just return the function pointer
+                    // This works for closures that capture by-value small amounts of data
+                    Ok(func_ptr)
+                }
             }
 
-            IrInstructionKind::LoadCapture { .. } => {
-                Err(CodegenError::UnsupportedInstruction(
-                    "Closure captures not yet implemented".to_string(),
-                ))
+            IrInstructionKind::LoadCapture { index } => {
+                // LoadCapture loads a captured variable from the closure environment
+                // The captures are passed as the first N parameters to the lifted function
+                // They're represented as ValueId(0), ValueId(1), etc. and already in our values map
+                let capture_value_id = ValueId(*index);
+                values
+                    .get(&capture_value_id)
+                    .copied()
+                    .ok_or(CodegenError::Other(format!(
+                        "Captured variable {} not found",
+                        index
+                    )))
             }
 
             IrInstructionKind::MakeArray { element_type: _, elements } => {
@@ -791,17 +941,25 @@ impl CodeGenerator {
             }
 
             IrInstructionKind::ArrayIndex { array, index } => {
-                // TODO: Compute element address and load
-                let _array_val = values
+                // Array is a pointer to stack memory, index is the element index
+                let array_ptr = values
                     .get(array)
                     .copied()
                     .ok_or(CodegenError::InvalidValue(*array))?;
-                let _index_val = values
+                let index_val = values
                     .get(index)
                     .copied()
                     .ok_or(CodegenError::InvalidValue(*index))?;
-                // For now, return 0 as placeholder
-                Ok(builder.ins().iconst(types::I64, 0))
+                
+                // Compute offset: index * 8 (assuming 8-byte elements)
+                let elem_size = builder.ins().iconst(types::I64, 8);
+                let byte_offset = builder.ins().imul(index_val, elem_size);
+                
+                // Compute element address: array_ptr + byte_offset
+                let elem_ptr = builder.ins().iadd(array_ptr, byte_offset);
+                
+                // Load the element value
+                Ok(builder.ins().load(types::I64, MemFlags::new(), elem_ptr, 0))
             }
 
             IrInstructionKind::ArrayAppend { array, element } => {

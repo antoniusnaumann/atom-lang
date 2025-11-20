@@ -12,6 +12,14 @@ atom-parser/debug_parse
 atom-parser/debug_parse.rs
 atom-parser/test_result.atom
 
+# Test files
+test_*.atom
+test_*out
+test_debug.sh
+
+# macOS
+.DS_Store
+
 # Temporary/development files
 *.prompt
 *.todo

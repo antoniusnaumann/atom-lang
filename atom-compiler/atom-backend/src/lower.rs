@@ -101,6 +101,10 @@ pub struct Lower {
     variables: HashMap<String, VarBinding>,
     /// Current function parameters (name -> value_id)
     params: HashMap<String, ValueId>,
+    /// Generated closure functions to be added to the program
+    closure_functions: Vec<IrFunction>,
+    /// Counter for generating unique closure names
+    next_closure_id: u32,
 }
 
 /// Variable binding - either a value (SSA) or a mutable local variable.
@@ -123,6 +127,8 @@ impl Lower {
             next_local_id: 0,
             variables: HashMap::new(),
             params: HashMap::new(),
+            closure_functions: Vec::new(),
+            next_closure_id: 0,
         }
     }
 
@@ -159,6 +165,11 @@ impl Lower {
                 let ir_func = self.lower_function(func_def)?;
                 program.add_function(ir_func);
             }
+        }
+
+        // Fourth pass: add any closure functions that were generated
+        for closure_func in self.closure_functions.drain(..) {
+            program.add_function(closure_func);
         }
 
         Ok(program)
@@ -505,18 +516,8 @@ impl Lower {
             atom_ast::Expr::Match { expr: match_expr, arms, .. } => {
                 self.lower_match(match_expr, arms, ir_block, func)
             }
-            atom_ast::Expr::Closure { .. } => {
-                // For now, treat closures as unsupported but return a dummy function pointer
-                // instead of erroring out
-                let value_id = self.fresh_value_id();
-                ir_block.add_instruction(IrInstruction {
-                    result: value_id,
-                    ty: IrType::Pointer(Box::new(IrType::Void)),
-                    kind: IrInstructionKind::Const {
-                        value: IrConstant::Int(0),
-                    },
-                });
-                Ok(value_id)
+            atom_ast::Expr::Closure { params, return_type, body, .. } => {
+                self.lower_closure(params, return_type, body, ir_block, func)
             }
             atom_ast::Expr::MethodCall { receiver, method, args, .. } => {
                 self.lower_method_call(receiver, method, args, ir_block, func)
@@ -866,23 +867,29 @@ impl Lower {
         // Check if this is actually array indexing (variable call with one argument)
         // In Atom, arr(i) is array indexing if arr is a variable
         if self.variables.contains_key(&func_name) && args.len() == 1 {
-            // This is array indexing, not a function call
-            let array_value = self.variables.get(&func_name).cloned();
-            if let Some(VarBinding::Value(arr_id, _)) = array_value {
-                let index_value = self.lower_expr(&args[0], ir_block, func)?;
-                
-                // Generate a tuple extract instruction (simplified)
-                // In a real implementation, this would be a proper array index operation
-                let value_id = self.fresh_value_id();
-                ir_block.add_instruction(IrInstruction {
-                    result: value_id,
-                    ty: IrType::Pointer(Box::new(IrType::Void)), // Simplified
-                    kind: IrInstructionKind::TupleExtract {
-                        tuple: arr_id,
-                        index: 0, // Simplified - should use index_value
-                    },
-                });
-                return Ok(value_id);
+            // Check if this is a closure or an array
+            let var_binding = self.variables.get(&func_name).cloned();
+            if let Some(VarBinding::Value(val_id, ty)) = var_binding {
+                // Check if it's a closure type
+                if matches!(ty, IrType::Closure { .. }) {
+                    // This is a closure call, not array indexing
+                    // Fall through to handle it as a closure call below
+                } else {
+                    // This is array indexing
+                    let index_value = self.lower_expr(&args[0], ir_block, func)?;
+                    
+                    // Generate array index instruction
+                    let value_id = self.fresh_value_id();
+                    ir_block.add_instruction(IrInstruction {
+                        result: value_id,
+                        ty: IrType::Int(64), // TODO: Use actual element type
+                        kind: IrInstructionKind::ArrayIndex {
+                            array: val_id,
+                            index: index_value,
+                        },
+                    });
+                    return Ok(value_id);
+                }
             }
         }
 
@@ -890,7 +897,22 @@ impl Lower {
         if func_name == "as_string" {
             return self.lower_as_string_builtin(args, ir_block, func);
         }
-
+        
+        // Handle loop() builtin: loop(cond) { body } or loop(arr) { body }
+        if func_name == "loop" {
+            // Distinguish between loop(condition) vs loop(array):
+            // - loop(condition) { body } has 2 args: condition and block
+            // - But actually both have 2 args in the AST
+            // We need to check if it's array iteration (todo) or condition loop
+            if args.len() == 2 {
+                return self.lower_loop_builtin(args, ir_block, func);
+            } else {
+                return Err(LowerError::Unsupported(
+                    "loop() requires exactly 2 arguments".to_string(),
+                ));
+            }
+        }
+        
         // Lower arguments
         let mut arg_values = Vec::new();
         for arg in args {
@@ -913,6 +935,45 @@ impl Lower {
             return Ok(value_id);
         }
 
+        // Check if func_name is a variable bound to a closure
+        if let Some(binding) = self.variables.get(&func_name).cloned() {
+            let (closure_value_id, closure_ty) = match binding {
+                VarBinding::Value(value_id, ty) => (value_id, ty),
+                VarBinding::Local(local_id, ty) => {
+                    // Need to load from local first
+                    let loaded_id = self.fresh_value_id();
+                    ir_block.add_instruction(IrInstruction {
+                        result: loaded_id,
+                        ty: ty.clone(),
+                        kind: IrInstructionKind::Load {
+                            source: IrMemoryLocation::Local(local_id),
+                        },
+                    });
+                    (loaded_id, ty)
+                }
+            };
+            
+            if matches!(closure_ty, IrType::Closure { .. }) {
+                // This is a closure stored in a variable - use CallIndirect
+                let return_ty = if let IrType::Closure { return_type, .. } = closure_ty {
+                    (*return_type).clone().unwrap_or(IrType::Int(64))
+                } else {
+                    IrType::Int(64)
+                };
+                
+                let value_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: value_id,
+                    ty: return_ty,
+                    kind: IrInstructionKind::CallIndirect {
+                        func_value: closure_value_id,
+                        args: arg_values,
+                    },
+                });
+                return Ok(value_id);
+            }
+        }
+
         // Determine return type
         // Check if this is a C library function call
         let return_type = if func_name.starts_with('c') && func_name.contains("::") {
@@ -929,6 +990,7 @@ impl Lower {
             kind: IrInstructionKind::Call {
                 function: func_name,
                 args: arg_values,
+                is_tail: false,
             },
         });
 
@@ -1022,10 +1084,299 @@ impl Lower {
             kind: IrInstructionKind::Call {
                 function: "__builtin_as_string".to_string(),
                 args: vec![value],
+                is_tail: false,
             },
         });
 
         Ok(value_id)
+    }
+    
+    /// Lower loop() builtin: loop(condition) { body } or loop(array) { body }
+    /// Generates a while-loop or array iteration control flow structure
+    fn lower_loop_builtin(
+        &mut self,
+        args: &[atom_ast::Expr],
+        current_block: &mut IrBlock,
+        func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        use atom_ast::Expr;
+        
+        // args[0] is the condition/array expression
+        // args[1] should be a Block (the loop body)
+        
+        let first_arg = &args[0];
+        let body_block = match &args[1] {
+            Expr::Block(block) => block,
+            _ => {
+                return Err(LowerError::Internal(
+                    "loop() expects a block as second argument".to_string(),
+                ));
+            }
+        };
+        
+        // Check if this is array iteration or condition loop
+        // Array iteration: loop(arr) where arr is an identifier bound to array
+        // Condition loop: loop(expr) where expr is a boolean expression
+        let is_array_iter = matches!(first_arg, Expr::Ident(_));
+        
+        if is_array_iter {
+            // Array iteration: loop(arr) { body with $0 }
+            // Implement as: for i in 0..len(arr) { $0 = arr[i]; body }
+            
+            // Get the array value
+            let array_value = self.lower_expr(first_arg, current_block, func)?;
+            
+            // Get array length
+            // First, try to find the type of the array value
+            let array_ty = current_block
+                .instructions
+                .iter()
+                .find(|inst| inst.result == array_value)
+                .map(|inst| &inst.ty);
+            
+            // Create a local to store the array length (needed for dominance in loop header)
+            let len_local = func.add_local("$array_len".to_string(), IrType::Int(64));
+            let len_value = self.fresh_value_id();
+            
+            // Check if this is a fixed-size tuple - if so, use compile-time length
+            if let Some(IrType::Tuple(element_types)) = array_ty {
+                // Fixed-size tuple: use compile-time known length
+                current_block.add_instruction(IrInstruction {
+                    result: len_value,
+                    ty: IrType::Int(64),
+                    kind: IrInstructionKind::Const {
+                        value: IrConstant::Int(element_types.len() as i64),
+                    },
+                });
+            } else {
+                // Runtime length via ArrayLen
+                current_block.add_instruction(IrInstruction {
+                    result: len_value,
+                    ty: IrType::Int(64),
+                    kind: IrInstructionKind::ArrayLen {
+                        array: array_value,
+                    },
+                });
+            }
+            
+            // Store length in local so it can be loaded in loop header
+            current_block.add_instruction(IrInstruction {
+                result: self.fresh_value_id(),
+                ty: IrType::Void,
+                kind: IrInstructionKind::Store {
+                    destination: IrMemoryLocation::Local(len_local),
+                    value: len_value,
+                },
+            });
+            
+            // Create index variable initialized to 0
+            let index_local = func.add_local("$loop_index".to_string(), IrType::Int(64));
+            
+            let zero_value = self.fresh_value_id();
+            current_block.add_instruction(IrInstruction {
+                result: zero_value,
+                ty: IrType::Int(64),
+                kind: IrInstructionKind::Const {
+                    value: IrConstant::Int(0),
+                },
+            });
+            
+            current_block.add_instruction(IrInstruction {
+                result: self.fresh_value_id(),
+                ty: IrType::Void,
+                kind: IrInstructionKind::Store {
+                    destination: IrMemoryLocation::Local(index_local),
+                    value: zero_value,
+                },
+            });
+            
+            // Create loop blocks: header (condition check), body, exit
+            let header_id = self.fresh_block_id();
+            let body_id = self.fresh_block_id();
+            let exit_id = self.fresh_block_id();
+            
+            // Jump to header
+            current_block.set_terminator(IrTerminator::Jump { target: header_id });
+            
+            // Header block: check if index < len
+            let mut header = IrBlock::new(header_id);
+            
+            let index_value = self.fresh_value_id();
+            header.add_instruction(IrInstruction {
+                result: index_value,
+                ty: IrType::Int(64),
+                kind: IrInstructionKind::Load {
+                    source: IrMemoryLocation::Local(index_local),
+                },
+            });
+            
+            // Load array length from local
+            let len_loaded = self.fresh_value_id();
+            header.add_instruction(IrInstruction {
+                result: len_loaded,
+                ty: IrType::Int(64),
+                kind: IrInstructionKind::Load {
+                    source: IrMemoryLocation::Local(len_local),
+                },
+            });
+            
+            let cond_value = self.fresh_value_id();
+            header.add_instruction(IrInstruction {
+                result: cond_value,
+                ty: IrType::Bool,
+                kind: IrInstructionKind::BinOp {
+                    op: IrBinOp::Lt,
+                    left: index_value,
+                    right: len_loaded,
+                },
+            });
+            
+            header.set_terminator(IrTerminator::Branch {
+                condition: cond_value,
+                true_block: body_id,
+                false_block: exit_id,
+            });
+            
+            // Body block: get array element, bind to $0, execute body, increment index
+            let mut loop_body_ir = IrBlock::new(body_id);
+            
+            // Load current index
+            let body_index = self.fresh_value_id();
+            loop_body_ir.add_instruction(IrInstruction {
+                result: body_index,
+                ty: IrType::Int(64),
+                kind: IrInstructionKind::Load {
+                    source: IrMemoryLocation::Local(index_local),
+                },
+            });
+            
+            // Get array element: arr[index]
+            let element_value = self.fresh_value_id();
+            loop_body_ir.add_instruction(IrInstruction {
+                result: element_value,
+                ty: IrType::Int(64), // TODO: Use actual element type
+                kind: IrInstructionKind::ArrayIndex {
+                    array: array_value,
+                    index: body_index,
+                },
+            });
+            
+            // Bind $0 to the array element
+            let old_dollar0 = self.variables.get("$0").cloned();
+            self.variables.insert("$0".to_string(), VarBinding::Value(element_value, IrType::Int(64)));
+            
+            // Execute loop body
+            let (_body_result, _) = self.lower_block_to_ir(body_block, &mut loop_body_ir, func)?;
+            
+            // Restore $0
+            if let Some(old) = old_dollar0 {
+                self.variables.insert("$0".to_string(), old);
+            } else {
+                self.variables.remove("$0");
+            }
+            
+            // Increment index
+            let one_value = self.fresh_value_id();
+            loop_body_ir.add_instruction(IrInstruction {
+                result: one_value,
+                ty: IrType::Int(64),
+                kind: IrInstructionKind::Const {
+                    value: IrConstant::Int(1),
+                },
+            });
+            
+            let next_index = self.fresh_value_id();
+            loop_body_ir.add_instruction(IrInstruction {
+                result: next_index,
+                ty: IrType::Int(64),
+                kind: IrInstructionKind::BinOp {
+                    op: IrBinOp::Add,
+                    left: body_index,
+                    right: one_value,
+                },
+            });
+            
+            loop_body_ir.add_instruction(IrInstruction {
+                result: self.fresh_value_id(),
+                ty: IrType::Void,
+                kind: IrInstructionKind::Store {
+                    destination: IrMemoryLocation::Local(index_local),
+                    value: next_index,
+                },
+            });
+            
+            // Jump back to header
+            loop_body_ir.set_terminator(IrTerminator::Jump { target: header_id });
+            
+            // Add blocks to function
+            let old_block = std::mem::replace(current_block, IrBlock::new(exit_id));
+            func.add_block(old_block);
+            func.add_block(header);
+            func.add_block(loop_body_ir);
+            
+            // Return void from exit block
+            let void_value = self.fresh_value_id();
+            current_block.add_instruction(IrInstruction {
+                result: void_value,
+                ty: IrType::Void,
+                kind: IrInstructionKind::Const {
+                    value: IrConstant::Void,
+                },
+            });
+            
+            return Ok(void_value);
+        }
+        
+        // Condition loop: generate while-loop control flow
+        
+        // Create three blocks: header (condition check), body, exit
+        let header_id = self.fresh_block_id();
+        let body_id = self.fresh_block_id();
+        let exit_id = self.fresh_block_id();
+        
+        // Current block jumps to header
+        current_block.set_terminator(IrTerminator::Jump { target: header_id });
+        
+        // Header block: evaluate condition and branch
+        let mut header = IrBlock::new(header_id);
+        let cond_value = self.lower_expr(first_arg, &mut header, func)?;
+        header.set_terminator(IrTerminator::Branch {
+            condition: cond_value,
+            true_block: body_id,
+            false_block: exit_id,
+        });
+        
+        // Body block: execute block statements and jump back to header
+        let mut body = IrBlock::new(body_id);
+        self.lower_block_to_ir(body_block, &mut body, func)?;
+        body.set_terminator(IrTerminator::Jump { target: header_id });
+        
+        // Set current block's terminator to jump to header
+        current_block.set_terminator(IrTerminator::Jump { target: header_id });
+        
+        // Add the current block to function before replacing it
+        // This preserves any instructions added before the loop expression
+        let old_current_block = std::mem::replace(current_block, IrBlock::new(exit_id));
+        func.add_block(old_current_block);
+        
+        // Add header and body blocks to function
+        func.add_block(header);
+        func.add_block(body);
+        
+        // current_block is now the exit block (from mem::replace above)
+        // Further lowering will continue in this exit block
+        
+        // loop returns void
+        let void_value = self.fresh_value_id();
+        current_block.add_instruction(IrInstruction {
+            result: void_value,
+            ty: IrType::Void,
+            kind: IrInstructionKind::Const {
+                value: IrConstant::Void,
+            },
+        });
+        
+        Ok(void_value)
     }
 
     /// Lower a method call expression.
@@ -1063,6 +1414,7 @@ impl Lower {
             kind: IrInstructionKind::Call {
                 function: method_name.clone(),
                 args: arg_values,
+                is_tail: false,
             },
         });
 
@@ -1455,6 +1807,269 @@ impl Lower {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;
         id
+    }
+
+    /// Lower a closure to IR by lambda lifting.
+    ///
+    /// This function:
+    /// 1. Analyzes which variables from outer scope are captured
+    /// 2. Generates a new top-level function that takes captures as parameters
+    /// 3. Creates a MakeClosure instruction that bundles the function with captures
+    fn lower_closure(
+        &mut self,
+        params: &[atom_ast::Param],
+        return_type: &Option<Box<atom_ast::Type>>,
+        body: &atom_ast::Block,
+        ir_block: &mut IrBlock,
+        _current_func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        // Generate unique name for the lifted closure function
+        let closure_name = format!("$closure${}", self.next_closure_id);
+        self.next_closure_id += 1;
+
+        // Analyze captures: find all free variables in the closure body
+        let captures = self.analyze_captures(body);
+
+        // Build parameter list for lifted function: captures first, then closure params
+        let mut lifted_params = Vec::new();
+
+        // Add capture parameters
+        for (capture_name, capture_binding) in &captures {
+            let capture_ty = match capture_binding {
+                VarBinding::Value(_, ty) => ty.clone(),
+                VarBinding::Local(_, ty) => ty.clone(),
+            };
+            lifted_params.push((capture_name.clone(), capture_ty));
+        }
+
+        // Add closure parameters
+        for param in params {
+            let param_ty = if let Some(ty) = &param.ty {
+                self.lower_type(ty)?
+            } else {
+                // Default to Int if no type specified
+                IrType::Int(64)
+            };
+            lifted_params.push((param.name.name.clone(), param_ty));
+        }
+
+        // Determine return type
+        let ret_ty = if let Some(ty) = return_type {
+            Some(self.lower_type(ty)?)
+        } else {
+            None
+        };
+
+        // Save current state
+        let old_vars = self.variables.clone();
+        let old_params = self.params.clone();
+
+        // Create the lifted function with all parameters
+        let mut lifted_func = IrFunction::new(
+            closure_name.clone(),
+            lifted_params.clone(),
+            ret_ty.clone(),
+            false, // not public
+        );
+
+        // Clear parameter state for new function
+        self.params.clear();
+        self.variables.clear();
+
+        // Set up parameter bindings for the lifted function
+        for (i, (param_name, param_ty)) in lifted_params.iter().enumerate() {
+            let param_id = ValueId(i as u32);
+            self.params.insert(param_name.clone(), param_id);
+            self.variables.insert(param_name.clone(), VarBinding::Value(param_id, param_ty.clone()));
+        }
+
+        // Create entry block for lifted function
+        let entry_block_id = self.fresh_block_id();
+        let mut entry_block = IrBlock::new(entry_block_id);
+
+        // Lower the closure body
+        let (body_value, _) = self.lower_block_to_ir(body, &mut entry_block, &mut lifted_func)?;
+
+        // If body produces a value but no return type was specified, infer it
+        let final_ret_ty = if ret_ty.is_none() && body_value.is_some() {
+            // Get the type of the returned value
+            let value_id = body_value.unwrap();
+            
+            // First try to get the type from the last instruction
+            if let Some(last_inst) = entry_block.instructions.last() {
+                if last_inst.result == value_id {
+                    Some(last_inst.ty.clone())
+                } else {
+                    // The value is from an earlier instruction, search for it
+                    entry_block.instructions.iter()
+                        .find(|inst| inst.result == value_id)
+                        .map(|inst| inst.ty.clone())
+                        .or_else(|| {
+                            // The value might be a parameter, look up in parameter list
+                            lifted_params.iter()
+                                .enumerate()
+                                .find(|(i, _)| ValueId(*i as u32) == value_id)
+                                .map(|(_, (_, ty))| ty.clone())
+                        })
+                }
+            } else {
+                // No instructions in block, value must be a parameter
+                lifted_params.iter()
+                    .enumerate()
+                    .find(|(i, _)| ValueId(*i as u32) == value_id)
+                    .map(|(_, (_, ty))| ty.clone())
+            }
+        } else {
+            ret_ty.clone()
+        };
+
+        // Update the function's return type if we inferred it
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("[DEBUG] Closure '{}': inferred return type = {:?}", closure_name, final_ret_ty);
+                eprintln!("[DEBUG] Closure '{}': current return type = {:?}", closure_name, lifted_func.return_type);
+            }
+        }
+        if final_ret_ty != lifted_func.return_type {
+            lifted_func.return_type = final_ret_ty.clone();
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("[DEBUG] Closure '{}': updated return type to {:?}", closure_name, final_ret_ty);
+                }
+            }
+        }
+
+        // Set return terminator
+        entry_block.set_terminator(IrTerminator::Return {
+            value: body_value,
+        });
+
+        lifted_func.add_block(entry_block);
+
+        // Restore variable state
+        self.variables = old_vars;
+        self.params = old_params;
+
+        // Store the generated closure function
+        self.closure_functions.push(lifted_func);
+
+        // Now create the MakeClosure instruction in the current function
+        // Lower capture values
+        let mut capture_values = Vec::new();
+        for (capture_name, _) in &captures {
+            // Look up the capture in current scope - clone to avoid borrow issues
+            if let Some(binding) = self.variables.get(capture_name).cloned() {
+                match binding {
+                    VarBinding::Value(value_id, _) => {
+                        capture_values.push(value_id);
+                    }
+                    VarBinding::Local(local_id, ty) => {
+                        // Load from local
+                        let value_id = self.fresh_value_id();
+                        ir_block.add_instruction(IrInstruction {
+                            result: value_id,
+                            ty: ty.clone(),
+                            kind: IrInstructionKind::Load {
+                                source: IrMemoryLocation::Local(local_id),
+                            },
+                        });
+                        capture_values.push(value_id);
+                    }
+                }
+            }
+        }
+
+        // Create the closure value
+        let closure_value_id = self.fresh_value_id();
+        
+        // Build closure parameter types (not including captures)
+        let closure_param_types: Vec<IrType> = params.iter().map(|p| {
+            if let Some(ty) = &p.ty {
+                self.lower_type(ty).unwrap_or(IrType::Int(64))
+            } else {
+                IrType::Int(64)
+            }
+        }).collect();
+
+        let closure_ty = IrType::Closure {
+            params: closure_param_types,
+            return_type: Box::new(ret_ty),
+        };
+
+        ir_block.add_instruction(IrInstruction {
+            result: closure_value_id,
+            ty: closure_ty,
+            kind: IrInstructionKind::MakeClosure {
+                function: closure_name,
+                captures: capture_values,
+            },
+        });
+
+        Ok(closure_value_id)
+    }
+
+    /// Analyze a block to find captured variables (free variables).
+    fn analyze_captures(&self, block: &atom_ast::Block) -> Vec<(String, VarBinding)> {
+        let mut captures = Vec::new();
+        
+        // For now, implement a simple capture analysis
+        // We'll look for all identifiers and check if they're in current scope
+        self.collect_free_vars_block(block, &mut captures);
+        
+        captures
+    }
+
+    /// Recursively collect free variables from a block.
+    fn collect_free_vars_block(&self, block: &atom_ast::Block, captures: &mut Vec<(String, VarBinding)>) {
+        for stmt in &block.stmts {
+            self.collect_free_vars_stmt(stmt, captures);
+        }
+    }
+
+    /// Collect free variables from a statement.
+    fn collect_free_vars_stmt(&self, stmt: &atom_ast::Stmt, captures: &mut Vec<(String, VarBinding)>) {
+        match stmt {
+            atom_ast::Stmt::Expression(expr) => {
+                self.collect_free_vars_expr(expr, captures);
+            }
+            atom_ast::Stmt::VarDecl(decl) => {
+                if let Some(init) = &decl.init {
+                    self.collect_free_vars_expr(init, captures);
+                }
+            }
+        }
+    }
+
+    /// Collect free variables from an expression.
+    fn collect_free_vars_expr(&self, expr: &atom_ast::Expr, captures: &mut Vec<(String, VarBinding)>) {
+        match expr {
+            atom_ast::Expr::Ident(ident) => {
+                // Check if this identifier is in the current scope
+                if let Some(binding) = self.variables.get(&ident.name) {
+                    // Only capture if not already in the list
+                    if !captures.iter().any(|(name, _)| name == &ident.name) {
+                        captures.push((ident.name.clone(), binding.clone()));
+                    }
+                }
+            }
+            atom_ast::Expr::Binary { left, right, .. } => {
+                self.collect_free_vars_expr(left, captures);
+                self.collect_free_vars_expr(right, captures);
+            }
+            atom_ast::Expr::Unary { expr, .. } => {
+                self.collect_free_vars_expr(expr, captures);
+            }
+            atom_ast::Expr::Call { func, args, .. } => {
+                self.collect_free_vars_expr(func, captures);
+                for arg in args {
+                    self.collect_free_vars_expr(arg, captures);
+                }
+            }
+            atom_ast::Expr::Block(block) => {
+                self.collect_free_vars_block(block, captures);
+            }
+            _ => {}
+        }
     }
 }
 

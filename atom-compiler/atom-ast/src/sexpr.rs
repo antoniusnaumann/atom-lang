@@ -784,7 +784,15 @@ impl ToSExpr for Literal {
     fn write_sexpr(&self, f: &mut impl Write, _indent: usize) -> fmt::Result {
         match self {
             Literal::Integer(n) => write!(f, "{}", n),
-            Literal::Float(n) => write!(f, "{}", n),
+            Literal::Float(n) => {
+                // Always include decimal point for floats, even for whole numbers like 0.0
+                let s = n.to_string();
+                if s.contains('.') || s.contains('e') || s.contains('E') {
+                    write!(f, "{}", s)
+                } else {
+                    write!(f, "{}.0", s)
+                }
+            }
             Literal::String(s) => write!(f, "\"{}\"", escape_string(s)),
             Literal::Rune(c) => write!(f, "(rune '{}')", escape_rune(*c)),
             Literal::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),

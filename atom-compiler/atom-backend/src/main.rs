@@ -29,13 +29,14 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     
     if args.len() < 2 {
-        eprintln!("Usage: atom-compile <input.sexpr>... [-o output]");
+        eprintln!("Usage: atom-compile <input.sexpr>... [-o output] [--debug]");
         eprintln!();
         eprintln!("Compiles Atom S-Expression AST files to native code.");
         eprintln!();
         eprintln!("Arguments:");
         eprintln!("  <input.sexpr>...    One or more S-Expression AST files");
         eprintln!("  -o <output>         Output executable path (default: a.out)");
+        eprintln!("  --debug             Enable debug output during compilation");
         eprintln!();
         eprintln!("Note: Use the `atomc` script to compile .atom source files directly.");
         process::exit(1);
@@ -44,6 +45,7 @@ fn main() {
     // Parse arguments
     let mut input_files = Vec::new();
     let mut output_file = "a.out".to_string();
+    let mut debug = false;
     let mut i = 1;
     
     while i < args.len() {
@@ -54,6 +56,9 @@ fn main() {
             }
             output_file = args[i + 1].clone();
             i += 2;
+        } else if args[i] == "--debug" {
+            debug = true;
+            i += 1;
         } else {
             input_files.push(args[i].clone());
             i += 1;
@@ -63,6 +68,13 @@ fn main() {
     if input_files.is_empty() {
         eprintln!("Error: No input files specified");
         process::exit(1);
+    }
+    
+    // Set debug environment variable for the backend
+    if debug {
+        unsafe {
+            env::set_var("ATOM_DEBUG", "1");
+        }
     }
     
     // Compile

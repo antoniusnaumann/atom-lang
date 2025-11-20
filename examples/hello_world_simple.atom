@@ -1,0 +1,7 @@
++print(msg String) {
+    cstdlib::printf(as_cstring(msg))
+}
+
++main() {
+    print("Hello World!\n")
+}

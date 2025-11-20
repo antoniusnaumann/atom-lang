@@ -138,6 +138,7 @@ pub enum IrInstructionKind {
     Call {
         function: String,
         args: Vec<ValueId>,
+        is_tail: bool,  // True if this is a tail call
     },
     /// Indirect function call (via closure/function pointer)
     CallIndirect {
@@ -531,8 +532,12 @@ impl fmt::Display for IrInstruction {
             IrInstructionKind::Store { destination, value } => {
                 write!(f, "store {}, {}", destination, value)
             }
-            IrInstructionKind::Call { function, args } => {
-                write!(f, "call {}(", function)?;
+            IrInstructionKind::Call { function, args, is_tail } => {
+                if *is_tail {
+                    write!(f, "tail_call {}(", function)?;
+                } else {
+                    write!(f, "call {}(", function)?;
+                }
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
