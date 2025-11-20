@@ -778,13 +778,19 @@ impl Lower {
 
         let ir_op = self.convert_binop(op)?;
         
-        // Determine result type (simplified - should use type checker)
+        // Determine result type
         let result_type = match op {
+            // Comparison operators always return Bool
             atom_ast::BinOp::Eq | atom_ast::BinOp::Ne | atom_ast::BinOp::Lt 
             | atom_ast::BinOp::Le | atom_ast::BinOp::Gt | atom_ast::BinOp::Ge => {
                 IrType::Bool
             }
-            _ => IrType::Int(64), // Simplified
+            // Arithmetic operators - infer from left operand type
+            _ => {
+                // Get the type of the left value
+                self.get_value_type(left_value, ir_block, func)
+                    .unwrap_or(IrType::Int(64)) // Fallback to Int(64) if type cannot be determined
+            }
         };
 
         let value_id = self.fresh_value_id();
@@ -1007,26 +1013,83 @@ impl Lower {
         };
 
         // Check if this is actually array indexing (variable call with one argument)
-        // In Atom, arr(i) is array indexing if arr is a variable
-        if self.variables.contains_key(&func_name) && args.len() == 1 {
-            // Check if this is a closure or an array
-            let var_binding = self.variables.get(&func_name).cloned();
-            if let Some(VarBinding::Value(val_id, ty)) = var_binding {
-                // Check if it's a closure type
-                if matches!(ty, IrType::Closure { .. }) {
-                    // This is a closure call, not array indexing
-                    // Fall through to handle it as a closure call below
-                } else {
-                    // This is array indexing
+        // In Atom, arr(i) is array indexing if arr is a variable/parameter holding an array
+        if args.len() == 1 {
+            // Try to find the identifier as a variable or parameter
+            let mut is_indexable = false;
+            let mut array_value = None;
+            let mut element_type = IrType::Int(64); // Default
+            
+            // Check in variables
+            if let Some(VarBinding::Value(val_id, ty)) = self.variables.get(&func_name).cloned() {
+                // Check if it's an indexable type (not a closure, not a function)
+                match &ty {
+                    IrType::Closure { .. } | IrType::Function { .. } => {
+                        // This is a function/closure call, not array indexing
+                        // Fall through to handle it normally
+                    }
+                    IrType::Array { element } => {
+                        is_indexable = true;
+                        array_value = Some(val_id);
+                        element_type = (**element).clone();
+                    }
+                    IrType::Pointer(inner) => {
+                        // Pointers can be indexed
+                        is_indexable = true;
+                        array_value = Some(val_id);
+                        element_type = (**inner).clone();
+                    }
+                    _ => {
+                        // Other types might be indexable, try it
+                        is_indexable = true;
+                        array_value = Some(val_id);
+                    }
+                }
+            } else {
+                // Check if it's a function parameter
+                for (param_idx, (param_name, param_ty)) in func.params.iter().enumerate() {
+                    if param_name == &func_name {
+                        // Found it as a parameter
+                        match param_ty {
+                            IrType::Closure { .. } | IrType::Function { .. } => {
+                                // Function/closure parameter, not array indexing
+                            }
+                            IrType::Array { element } => {
+                                is_indexable = true;
+                                // Parameters are the first ValueIds
+                                let param_value = ValueId(param_idx as u32);
+                                array_value = Some(param_value);
+                                element_type = (**element).clone();
+                            }
+                            IrType::Pointer(inner) => {
+                                is_indexable = true;
+                                let param_value = ValueId(param_idx as u32);
+                                array_value = Some(param_value);
+                                element_type = (**inner).clone();
+                            }
+                            _ => {
+                                // Try indexing anyway
+                                is_indexable = true;
+                                let param_value = ValueId(param_idx as u32);
+                                array_value = Some(param_value);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // If we found an indexable array/pointer, emit ArrayIndex
+            if is_indexable {
+                if let Some(arr_val) = array_value {
                     let index_value = self.lower_expr(&args[0], ir_block, func)?;
                     
-                    // Generate array index instruction
                     let value_id = self.fresh_value_id();
                     ir_block.add_instruction(IrInstruction {
                         result: value_id,
-                        ty: IrType::Int(64), // TODO: Use actual element type
+                        ty: element_type,
                         kind: IrInstructionKind::ArrayIndex {
-                            array: val_id,
+                            array: arr_val,
                             index: index_value,
                         },
                     });
@@ -1970,6 +2033,70 @@ impl Lower {
             return self.lower_as_string_builtin(&[receiver.clone()], ir_block, func);
         }
 
+        // Check if this is field access followed by indexing (e.g., s.bytes(i))
+        // This pattern occurs when:
+        // 1. Method call has exactly one argument (the index)
+        // 2. The "method" name corresponds to a field of the receiver's struct type
+        if args.len() == 1 {
+            let receiver_value = self.lower_expr(receiver, ir_block, func)?;
+            
+            // Try to get the receiver's type and check if method_name is a field
+            if let Some(receiver_type) = self.get_value_type(receiver_value, ir_block, func) {
+                match receiver_type {
+                    IrType::Struct(struct_name) => {
+                        // Check if method_name is a field of this struct
+                        if let Some(struct_def) = self.type_env.get_struct(&struct_name) {
+                            if let Some((field_index, field)) = struct_def.fields.iter().enumerate()
+                                .find(|(_, f)| f.name == *method_name) 
+                            {
+                                // It's field access + indexing!
+                                // First, extract the field (which should be an array/pointer)
+                                let field_value = self.fresh_value_id();
+                                
+                                // Get field type - for now use pointer as simplified
+                                let field_type = IrType::Pointer(Box::new(IrType::Int(8)));
+                                
+                                ir_block.add_instruction(IrInstruction {
+                                    result: field_value,
+                                    ty: field_type.clone(),
+                                    kind: IrInstructionKind::TupleExtract {
+                                        tuple: receiver_value,
+                                        index: field_index as u32,
+                                    },
+                                });
+                                
+                                // Now index into the field
+                                let index_value = self.lower_expr(&args[0], ir_block, func)?;
+                                let result_value = self.fresh_value_id();
+                                
+                                // Determine element type based on field type
+                                let element_type = match field_type {
+                                    IrType::Pointer(inner) => *inner,
+                                    IrType::Array { element } => *element,
+                                    _ => IrType::Int(8), // Fallback
+                                };
+                                
+                                ir_block.add_instruction(IrInstruction {
+                                    result: result_value,
+                                    ty: element_type,
+                                    kind: IrInstructionKind::ArrayIndex {
+                                        array: field_value,
+                                        index: index_value,
+                                    },
+                                });
+                                
+                                return Ok(result_value);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Not a struct, fall through to regular method call
+                    }
+                }
+            }
+            // If we couldn't detect field+indexing pattern, fall through to regular method call
+        }
+
         // General method call: convert to function call with receiver as first arg
         let receiver_value = self.lower_expr(receiver, ir_block, func)?;
         
@@ -2573,7 +2700,7 @@ impl Lower {
 
         let closure_ty = IrType::Closure {
             params: closure_param_types,
-            return_type: Box::new(ret_ty),
+            return_type: Box::new(final_ret_ty),
         };
 
         ir_block.add_instruction(IrInstruction {
