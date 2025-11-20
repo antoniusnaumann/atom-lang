@@ -228,6 +228,52 @@ impl Lower {
             program.add_function(closure_func);
         }
 
+        // Sixth pass: process monomorphization queue
+        // Keep processing until queue is empty (new instantiations may trigger more)
+        let mut iterations = 0;
+        const MAX_MONO_ITERATIONS: usize = 100; // Prevent infinite loops
+        
+        while !self.mono_queue.is_empty() && iterations < MAX_MONO_ITERATIONS {
+            iterations += 1;
+            eprintln!("[MONO] Processing monomorphization queue (iteration {})", iterations);
+            
+            // Drain the current queue (clone to avoid borrow issues)
+            let current_queue: Vec<_> = self.mono_queue.drain().collect();
+            
+            for (mono_name, (original_name, type_bindings, func_def)) in current_queue {
+                eprintln!("[MONO] Generating monomorphized instance: {} <- {}", mono_name, original_name);
+                eprintln!("[MONO]   Type bindings: {:?}", type_bindings);
+                
+                // Create a modified function definition with the monomorphized name
+                let mut specialized_func = func_def.clone();
+                specialized_func.name.name = mono_name.clone();
+                
+                // TODO: Substitute type parameters in the function body
+                // For now, we rely on the type erasure approach where type params
+                // are already converted to Pointer(Int(8)) during lowering
+                
+                // Lower the specialized function
+                match self.lower_function(&specialized_func) {
+                    Ok(ir_func) => {
+                        eprintln!("[MONO] Successfully generated: {}", mono_name);
+                        program.add_function(ir_func);
+                    }
+                    Err(e) => {
+                        eprintln!("[MONO] Error generating {}: {:?}", mono_name, e);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        
+        if iterations >= MAX_MONO_ITERATIONS {
+            return Err(LowerError::Internal(
+                "Monomorphization exceeded maximum iterations - possible infinite recursion".to_string()
+            ));
+        }
+        
+        eprintln!("[MONO] Monomorphization complete after {} iterations", iterations);
+
         Ok(program)
     }
 
@@ -1089,10 +1135,46 @@ impl Lower {
             }
         }
 
+        // Check if this is a call to a generic function that needs monomorphization
+        let actual_func_name = if let Some(func_defs) = self.function_defs.get(&func_name) {
+            if let Some(func_def) = func_defs.first() {
+                if self.is_generic_function(func_def) {
+                    // This is a generic function call - we need to monomorphize it
+                    eprintln!("[MONO-DEBUG] Call to generic function: {}", func_name);
+                    
+                    // Extract concrete types from arguments
+                    let concrete_types = self.extract_concrete_types(&arg_values, func);
+                    eprintln!("[MONO-DEBUG] Extracted concrete types: {:?}", concrete_types);
+                    
+                    // Generate monomorphized function name
+                    let mono_name = self.generate_mono_name(&func_name, &concrete_types, func_def);
+                    eprintln!("[MONO-DEBUG] Monomorphized name: {}", mono_name);
+                    
+                    // Queue this instance for generation if not already done
+                    if !self.mono_done.contains(&mono_name) {
+                        eprintln!("[MONO-DEBUG] Queueing monomorphization: {}", mono_name);
+                        self.mono_queue.insert(
+                            mono_name.clone(),
+                            (func_name.clone(), concrete_types, func_def.clone()),
+                        );
+                        self.mono_done.insert(mono_name.clone());
+                    }
+                    
+                    mono_name
+                } else {
+                    func_name.clone()
+                }
+            } else {
+                func_name.clone()
+            }
+        } else {
+            func_name.clone()
+        };
+
         // Determine return type
         // Check if this is a C library function call
-        let return_type = if func_name.starts_with('c') && func_name.contains("::") {
-            self.infer_c_function_return_type(&func_name)
+        let return_type = if actual_func_name.starts_with('c') && actual_func_name.contains("::") {
+            self.infer_c_function_return_type(&actual_func_name)
         } else {
             // Simplified - should query type environment
             IrType::Int(64)
@@ -1103,7 +1185,7 @@ impl Lower {
             result: value_id,
             ty: return_type,
             kind: IrInstructionKind::Call {
-                function: func_name,
+                function: actual_func_name,
                 args: arg_values,
                 is_tail: false,
             },
@@ -1833,9 +1915,11 @@ impl Lower {
                 self.lower_named_type(&name.name)
             }
             atom_ast::Type::Param(_) => {
-                // Type parameters are generic/polymorphic - treat as opaque pointer for now
-                // In a real implementation, we'd use monomorphization or runtime type info
-                Ok(IrType::Pointer(Box::new(IrType::Void)))
+                // Type parameters are generic/polymorphic
+                // For type erasure, treat them as string pointers (char*)
+                // This works for print() since it calls as_string() which returns a string
+                // TODO: Full monomorphization for generic functions that need actual types
+                Ok(IrType::Pointer(Box::new(IrType::Int(8))))
             }
             atom_ast::Type::Variadic { element, .. } => {
                 // Variadic types are arrays with runtime length
@@ -2313,6 +2397,69 @@ impl Lower {
                 false
             }
         }
+    }
+
+    /// Extract concrete types from call arguments for monomorphization.
+    ///
+    /// For now, we use a simplified approach: extract the IR type from each argument ValueId.
+    /// In a full implementation, we'd need to track type information through the lowering process.
+    fn extract_concrete_types(
+        &self,
+        arg_values: &[ValueId],
+        func: &IrFunction,
+    ) -> HashMap<String, IrType> {
+        let mut concrete_types = HashMap::new();
+        
+        // Simple heuristic: use the first argument's type as the generic type parameter
+        // This works for simple cases like print(msg t) where t is inferred from msg
+        if let Some(&first_arg) = arg_values.first() {
+            // Find the instruction that produced this value to get its type
+            if let Some(inst) = func.blocks.iter()
+                .flat_map(|block| &block.instructions)
+                .find(|inst| inst.result == first_arg)
+            {
+                concrete_types.insert("t".to_string(), inst.ty.clone());
+            } else {
+                // Fallback: assume string pointer for now
+                eprintln!("[MONO-DEBUG] Could not find instruction for arg {}, using string pointer", first_arg.0);
+                concrete_types.insert("t".to_string(), IrType::Pointer(Box::new(IrType::Int(8))));
+            }
+        }
+        
+        concrete_types
+    }
+
+    /// Generate a monomorphized function name based on concrete type parameters.
+    ///
+    /// Format: original_name$TypeName1$TypeName2
+    /// Example: print$String, print$Int
+    fn generate_mono_name(
+        &self,
+        func_name: &str,
+        concrete_types: &HashMap<String, IrType>,
+        func_def: &atom_ast::FunctionDef,
+    ) -> String {
+        let mut name = func_name.to_string();
+        
+        // Append type parameter names in order they appear in const_params
+        for param in &func_def.const_params {
+            if let Some(concrete_type) = concrete_types.get(&param.name.name) {
+                let type_suffix = match concrete_type {
+                    IrType::Int(bits) => format!("Int{}", bits),
+                    IrType::Float(bits) => format!("Float{}", bits),
+                    IrType::Pointer(inner) => match **inner {
+                        IrType::Int(8) => "String".to_string(),
+                        _ => "Ptr".to_string(),
+                    },
+                    IrType::Void => "Void".to_string(),
+                    _ => "Generic".to_string(),
+                };
+                name.push('$');
+                name.push_str(&type_suffix);
+            }
+        }
+        
+        name
     }
 }
 
