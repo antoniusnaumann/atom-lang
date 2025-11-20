@@ -116,7 +116,7 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
     
     // Step 3: Lower to IR
     println!("Lowering to IR...");
-    let mut lower = Lower::new(typed_program.type_env.clone());
+    let mut lower = Lower::new_with_sigs(typed_program.type_env.clone(), typed_program.functions.clone());
     let ir_program = lower.lower_program(typed_program.ast)
         .map_err(|e| format!("Lowering error: {}", e))?;
     

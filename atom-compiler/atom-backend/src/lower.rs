@@ -85,12 +85,17 @@ pub type LowerResult<T> = Result<T, LowerError>;
 ///
 /// This struct maintains the state needed during lowering, including:
 /// - The type environment for resolving user-defined types
+/// - Function signatures for handling default parameters
 /// - Value ID counter for SSA form
 /// - Block ID counter for basic blocks
 /// - Current function being lowered
 pub struct Lower {
     /// Type environment for type resolution
     type_env: TypeEnvironment,
+    /// Function signatures for all functions (for default parameters)
+    function_sigs: HashMap<String, Vec<crate::typechecker::FunctionSignature>>,
+    /// Function definitions by name (for accessing default parameter values)
+    function_defs: HashMap<String, Vec<atom_ast::FunctionDef>>,
     /// Next value ID to allocate
     next_value_id: u32,
     /// Next block ID to allocate
@@ -122,6 +127,27 @@ impl Lower {
     pub fn new(type_env: TypeEnvironment) -> Self {
         Self {
             type_env,
+            function_sigs: HashMap::new(),
+            function_defs: HashMap::new(),
+            next_value_id: 0,
+            next_block_id: 0,
+            next_local_id: 0,
+            variables: HashMap::new(),
+            params: HashMap::new(),
+            closure_functions: Vec::new(),
+            next_closure_id: 0,
+        }
+    }
+    
+    /// Create a new lowering context with type environment and function signatures.
+    pub fn new_with_sigs(
+        type_env: TypeEnvironment,
+        function_sigs: HashMap<String, Vec<crate::typechecker::FunctionSignature>>,
+    ) -> Self {
+        Self {
+            type_env,
+            function_sigs,
+            function_defs: HashMap::new(),
             next_value_id: 0,
             next_block_id: 0,
             next_local_id: 0,
@@ -136,7 +162,15 @@ impl Lower {
     pub fn lower_program(&mut self, ast: Vec<atom_ast::TopLevel>) -> LowerResult<IrProgram> {
         let mut program = IrProgram::new();
 
-        // First pass: collect all type definitions
+        // First pass: collect all function definitions (for default parameters)
+        for item in &ast {
+            if let atom_ast::TopLevel::Function(func_def) = item {
+                let name = func_def.name.name.clone();
+                self.function_defs.entry(name).or_insert_with(Vec::new).push(func_def.clone());
+            }
+        }
+
+        // Second pass: collect all type definitions
         for item in &ast {
             match item {
                 atom_ast::TopLevel::Struct(def) => {
@@ -151,7 +185,7 @@ impl Lower {
             }
         }
 
-        // Second pass: lower global variables
+        // Third pass: lower global variables
         for item in &ast {
             if let atom_ast::TopLevel::Variable(decl) = item {
                 let ir_global = self.lower_global_var(decl)?;
@@ -159,7 +193,7 @@ impl Lower {
             }
         }
 
-        // Third pass: lower functions
+        // Fourth pass: lower functions
         for item in &ast {
             if let atom_ast::TopLevel::Function(func_def) = item {
                 let ir_func = self.lower_function(func_def)?;
@@ -167,7 +201,7 @@ impl Lower {
             }
         }
 
-        // Fourth pass: add any closure functions that were generated
+        // Fifth pass: add any closure functions that were generated
         for closure_func in self.closure_functions.drain(..) {
             program.add_function(closure_func);
         }
@@ -342,6 +376,29 @@ impl Lower {
         }
 
         ir_func.add_block(entry_block);
+
+        eprintln!("[DEBUG-TEST] Lowered function: {}", ir_func.name);
+        eprintln!("[DEBUG-TEST] About to check debug for function: {}", ir_func.name);
+        
+        // Debug: Print complete IR structure for functions we're interested in
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("[DEBUG] Lowered function '{}' successfully", ir_func.name);
+                if ir_func.name == "main" || ir_func.name == "print" {
+                    eprintln!("[DEBUG] Complete IR for function '{}':", ir_func.name);
+                    eprintln!("[DEBUG]   Params: {:?}", ir_func.params);
+                    eprintln!("[DEBUG]   Return type: {:?}", ir_func.return_type);
+                    eprintln!("[DEBUG]   Locals: {:?}", ir_func.locals);
+                    for block in &ir_func.blocks {
+                        eprintln!("[DEBUG]   Block {}:", block.label);
+                        for (idx, inst) in block.instructions.iter().enumerate() {
+                            eprintln!("[DEBUG]     [{}] {:?}", idx, inst);
+                        }
+                        eprintln!("[DEBUG]     Terminator: {:?}", block.terminator);
+                    }
+                }
+            }
+        }
 
         Ok(ir_func)
     }
@@ -919,6 +976,42 @@ impl Lower {
             let value = self.lower_expr(arg, ir_block, func)?;
             arg_values.push(value);
         }
+        
+        // Fill in default parameters if needed
+        // Look up the function definition to get default values
+        // We need to collect the default expressions first to avoid borrow issues
+        let mut default_exprs = Vec::new();
+        if let Some(func_defs) = self.function_defs.get(&func_name) {
+            // For now, just use the first overload (TODO: handle overloading properly)
+            if let Some(func_def) = func_defs.first() {
+                // Check if we need to add default parameters
+                let num_provided = arg_values.len();
+                let num_params = func_def.params.len();
+                
+                if num_provided < num_params {
+                    // Collect default expressions for missing parameters
+                    for i in num_provided..num_params {
+                        if let Some(param) = func_def.params.get(i) {
+                            if let Some(default_expr) = &param.default {
+                                default_exprs.push((**default_expr).clone());
+                            } else {
+                                // Parameter has no default but wasn't provided - this is an error
+                                return Err(LowerError::UndefinedFunction(format!(
+                                    "Missing required parameter '{}' for function '{}'",
+                                    param.name.name, func_name
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Now lower the default expressions
+        for default_expr in &default_exprs {
+            let default_value = self.lower_expr(default_expr, ir_block, func)?;
+            arg_values.push(default_value);
+        }
 
         // Check if func_name is actually a function parameter (function pointer)
         if let Some(func_value_id) = self.params.get(&func_name).copied() {
@@ -1261,9 +1354,20 @@ impl Lower {
                 },
             });
             
-            // Bind $0 to the array element
+            // Store $0 in a local variable so it's accessible in nested blocks
+            let dollar0_local = func.add_local("$0".to_string(), IrType::Int(64));
+            loop_body_ir.add_instruction(IrInstruction {
+                result: self.fresh_value_id(),
+                ty: IrType::Void,
+                kind: IrInstructionKind::Store {
+                    destination: IrMemoryLocation::Local(dollar0_local),
+                    value: element_value,
+                },
+            });
+            
+            // Bind $0 to the local variable (not the SSA value)
             let old_dollar0 = self.variables.get("$0").cloned();
-            self.variables.insert("$0".to_string(), VarBinding::Value(element_value, IrType::Int(64)));
+            self.variables.insert("$0".to_string(), VarBinding::Local(dollar0_local, IrType::Int(64)));
             
             // Execute loop body
             let (_body_result, _) = self.lower_block_to_ir(body_block, &mut loop_body_ir, func)?;
@@ -1276,6 +1380,19 @@ impl Lower {
             }
             
             // Increment index
+            // NOTE: We need to load the index fresh here because the loop body might contain
+            // match expressions that create new blocks. After lower_block_to_ir, loop_body_ir
+            // might be a merge block, not the original body block where body_index was defined.
+            // To ensure dominance, we load from the local variable.
+            let increment_index = self.fresh_value_id();
+            loop_body_ir.add_instruction(IrInstruction {
+                result: increment_index,
+                ty: IrType::Int(64),
+                kind: IrInstructionKind::Load {
+                    source: IrMemoryLocation::Local(index_local),
+                },
+            });
+            
             let one_value = self.fresh_value_id();
             loop_body_ir.add_instruction(IrInstruction {
                 result: one_value,
@@ -1291,7 +1408,7 @@ impl Lower {
                 ty: IrType::Int(64),
                 kind: IrInstructionKind::BinOp {
                     op: IrBinOp::Add,
-                    left: body_index,
+                    left: increment_index,  // Use the freshly loaded value
                     right: one_value,
                 },
             });
@@ -1606,7 +1723,11 @@ impl Lower {
                 target: merge_block_id,
             });
 
-            case_blocks.push((tag_value, arm_block_id, arm_block));
+            // NOTE: After lowering the arm body, arm_block might have been replaced with a
+            // nested merge block (if the body contained match expressions). We need to use
+            // arm_block.label (the actual current label) for the phi node, not arm_block_id.
+            let actual_predecessor_id = arm_block.label;
+            case_blocks.push((tag_value, arm_block_id, arm_block, actual_predecessor_id));
         }
 
         // Create switch terminator on current block
@@ -1614,7 +1735,7 @@ impl Lower {
         let cases: Vec<(u32, BlockId)> = case_blocks
             .iter()
             .take(case_blocks.len() - 1)
-            .map(|(tag, block_id, _)| (*tag, *block_id))
+            .map(|(tag, block_id, _, _)| (*tag, *block_id))
             .collect();
 
         ir_block.set_terminator(IrTerminator::Switch {
@@ -1630,17 +1751,18 @@ impl Lower {
         func.add_block(current_block);
 
         // Add all case blocks to function
-        for (_, _, block) in case_blocks {
-            func.add_block(block);
+        for (_, _, block, _) in &case_blocks {
+            func.add_block(block.clone());
         }
 
         // Create merge block with phi node
         let result_value = self.fresh_value_id();
 
-        let incoming: Vec<(BlockId, ValueId)> = case_block_ids
+        // Use the actual predecessor block IDs (which might be nested merge blocks)
+        let incoming: Vec<(BlockId, ValueId)> = case_blocks
             .iter()
             .enumerate()
-            .map(|(i, &block_id)| (block_id, case_values[i]))
+            .map(|(i, (_, _, _, actual_pred_id))| (*actual_pred_id, case_values[i]))
             .collect();
 
         ir_block.add_instruction(IrInstruction {
