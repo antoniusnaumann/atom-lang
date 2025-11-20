@@ -147,11 +147,49 @@ fn link_object_file(obj_file: &str, output_file: &str) -> Result<(), String> {
     // Invoke the system linker (cc) to create the final executable
     let linker = env::var("CC").unwrap_or_else(|_| "cc".to_string());
     
-    let output = Command::new(&linker)
-        .arg(obj_file)
-        .arg("-o")
-        .arg(output_file)
-        .output()
+    // Get the path to runtime.o (in the root directory)
+    let exe_path = env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    let exe_dir = exe_path.parent()
+        .ok_or_else(|| "Failed to get executable directory".to_string())?;
+    
+    // Go up from target/release or target/debug to the project root
+    let project_root = exe_dir.parent()
+        .and_then(|p| p.parent())
+        .ok_or_else(|| "Failed to find project root".to_string())?;
+    
+    let runtime_obj = project_root.join("runtime.o");
+    
+    // Check if runtime.o exists, compile it if not
+    if !runtime_obj.exists() {
+        eprintln!("Compiling runtime.c...");
+        let runtime_c = project_root.join("atom-compiler").join("runtime.c");
+        let compile_output = Command::new("gcc")
+            .arg("-c")
+            .arg(&runtime_c)
+            .arg("-o")
+            .arg(&runtime_obj)
+            .current_dir(project_root)
+            .output()
+            .map_err(|e| format!("Failed to compile runtime.c: {}", e))?;
+        
+        if !compile_output.status.success() {
+            let stderr = String::from_utf8_lossy(&compile_output.stderr);
+            return Err(format!("Failed to compile runtime.c:\n{}", stderr));
+        }
+    }
+    
+    let mut cmd = Command::new(&linker);
+    cmd.arg(obj_file);
+    
+    // Add runtime.o if it exists
+    if runtime_obj.exists() {
+        cmd.arg(&runtime_obj);
+    }
+    
+    cmd.arg("-o").arg(output_file);
+    
+    let output = cmd.output()
         .map_err(|e| format!("Failed to invoke linker '{}': {}", linker, e))?;
     
     if !output.status.success() {

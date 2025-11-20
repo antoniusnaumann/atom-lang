@@ -1,12 +1,10 @@
-main() {
-    // Test as_string as function call
-    s1 := as_string(42)
-    
-    // Test as_string as method call
-    n := 100
-    s2 := n.as_string()
-    
-    // Test with different types
-    s3 := as_string(3.14)
-    s4 := 'x'.as_string()
+// Test the as_string() builtin with primitive types
+
+main() Int {
+    cstdlib::printf("Integer: %s\n", as_string(42))
+    cstdlib::printf("Float: %s\n", as_string(3.14))
+    cstdlib::printf("Boolean: %s\n", as_string(True))
+    cstdlib::printf("Rune: %s\n", as_string('A'))
+    cstdlib::printf("String: %s\n", as_string("Hello"))
+    0
 }

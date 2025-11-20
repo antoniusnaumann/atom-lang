@@ -1291,20 +1291,353 @@ impl Lower {
         // Lower the argument
         let value = self.lower_expr(&args[0], ir_block, func)?;
 
-        // For now, just create a call to a hypothetical runtime function
-        // In a real implementation, this would dispatch to type-specific converters
-        let value_id = self.fresh_value_id();
+        // Get the type of the value being converted
+        let value_type = self.get_value_type(value, ir_block, func)
+            .ok_or_else(|| LowerError::Internal(
+                format!("Could not determine type for as_string argument (ValueId({}))", value.0)
+            ))?;
+
+        // Dispatch to appropriate conversion function based on type
+        match &value_type {
+            // All integer types -> call __builtin_int_to_string
+            // The C function accepts int64_t and Cranelift will handle the type widening
+            IrType::Int(_) | IrType::UInt(_) => {
+                // Call __builtin_int_to_string
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_int_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            // Floating point -> call __builtin_float_to_string
+            // The C function accepts double and Cranelift will handle the type widening
+            IrType::Float(_) => {
+                // Call __builtin_float_to_string
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_float_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            // Boolean -> call __builtin_bool_to_string
+            IrType::Bool => {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_bool_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            // Rune -> call __builtin_rune_to_string
+            IrType::Rune => {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_rune_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            // String (already a string - no conversion needed, just return it)
+            IrType::Pointer(inner) if matches!(**inner, IrType::Int(8)) => {
+                // It's already a char*, just return the value
+                Ok(value)
+            }
+            
+            // Arrays of i8 (also strings)
+            IrType::Array { element } if matches!(**element, IrType::Int(8)) => {
+                // Array of char - already a string
+                Ok(value)
+            }
+            
+            // Tuples: (elem1, elem2, ...)
+            IrType::Tuple(element_types) => {
+                self.lower_as_string_tuple(value, element_types, ir_block, func)
+            }
+            
+            // Structs: StructName(field1: value1, field2: value2, ...)
+            IrType::Struct(struct_name) => {
+                self.lower_as_string_struct(value, struct_name, ir_block, func)
+            }
+            
+            // Enums: CaseName or CaseName(field1, field2, ...)
+            IrType::Enum(enum_name) => {
+                self.lower_as_string_enum(value, enum_name, ir_block, func)
+            }
+            
+            // TODO: Implement composite types (struct, enum, tuple)
+            _ => {
+                Err(LowerError::Unsupported(
+                    format!("as_string not yet implemented for type: {}", value_type)
+                ))
+            }
+        }
+    }
+
+    /// Helper: Create a string literal as a ValueId
+    fn make_string_literal(&mut self, s: &str, ir_block: &mut IrBlock) -> ValueId {
+        let const_id = self.fresh_value_id();
         ir_block.add_instruction(IrInstruction {
-            result: value_id,
-            ty: IrType::Pointer(Box::new(IrType::Int(8))), // String is char*
+            result: const_id,
+            ty: IrType::Pointer(Box::new(IrType::Int(8))),
+            kind: IrInstructionKind::Const {
+                value: IrConstant::String(s.as_bytes().to_vec()),
+            },
+        });
+        const_id
+    }
+    
+    /// Helper: Concatenate two string ValueIds
+    fn concat_strings(&mut self, left: ValueId, right: ValueId, ir_block: &mut IrBlock) -> ValueId {
+        let result_id = self.fresh_value_id();
+        ir_block.add_instruction(IrInstruction {
+            result: result_id,
+            ty: IrType::Pointer(Box::new(IrType::Int(8))),
             kind: IrInstructionKind::Call {
-                function: "__builtin_as_string".to_string(),
-                args: vec![value],
+                function: "__builtin_string_concat".to_string(),
+                args: vec![left, right],
                 is_tail: false,
             },
         });
-
-        Ok(value_id)
+        result_id
+    }
+    
+    /// Lower as_string for tuple types: (elem1, elem2, ...)
+    fn lower_as_string_tuple(
+        &mut self,
+        tuple_value: ValueId,
+        element_types: &[IrType],
+        ir_block: &mut IrBlock,
+        func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        // Start with "("
+        let mut result = self.make_string_literal("(", ir_block);
+        
+        for (index, elem_type) in element_types.iter().enumerate() {
+            // Add ", " separator for elements after the first
+            if index > 0 {
+                let separator = self.make_string_literal(", ", ir_block);
+                result = self.concat_strings(result, separator, ir_block);
+            }
+            
+            // Extract the element
+            let elem_value = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: elem_value,
+                ty: elem_type.clone(),
+                kind: IrInstructionKind::TupleExtract {
+                    tuple: tuple_value,
+                    index: index as u32,
+                },
+            });
+            
+            // Recursively convert element to string
+            let elem_str = self.lower_as_string_value(elem_value, elem_type, ir_block, func)?;
+            
+            // Concatenate to result
+            result = self.concat_strings(result, elem_str, ir_block);
+        }
+        
+        // Close with ")"
+        let close_paren = self.make_string_literal(")", ir_block);
+        result = self.concat_strings(result, close_paren, ir_block);
+        
+        Ok(result)
+    }
+    
+    /// Lower as_string for struct types: StructName(field1: value1, field2: value2, ...)
+    fn lower_as_string_struct(
+        &mut self,
+        struct_value: ValueId,
+        struct_name: &str,
+        ir_block: &mut IrBlock,
+        func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        // Look up the struct definition
+        let struct_def = self.type_env.get_struct(struct_name)
+            .ok_or_else(|| LowerError::UndefinedStruct(struct_name.to_string()))?
+            .clone();
+        
+        // Start with "StructName("
+        let open_str = format!("{}(", struct_name);
+        let mut result = self.make_string_literal(&open_str, ir_block);
+        
+        for (index, field) in struct_def.fields.iter().enumerate() {
+            // Add ", " separator for fields after the first
+            if index > 0 {
+                let separator = self.make_string_literal(", ", ir_block);
+                result = self.concat_strings(result, separator, ir_block);
+            }
+            
+            // Add "fieldname: "
+            let field_label = format!("{}: ", field.name);
+            let field_label_str = self.make_string_literal(&field_label, ir_block);
+            result = self.concat_strings(result, field_label_str, ir_block);
+            
+            // Extract the field value
+            // TODO: Convert backend Type to IrType properly - for now use Pointer as fallback
+            let field_value = self.fresh_value_id();
+            let field_ir_type = IrType::Pointer(Box::new(IrType::Int(8)));
+            ir_block.add_instruction(IrInstruction {
+                result: field_value,
+                ty: field_ir_type.clone(),
+                kind: IrInstructionKind::StructExtract {
+                    struct_value,
+                    field_index: index as u32,
+                },
+            });
+            
+            // Recursively convert field to string
+            let field_str = self.lower_as_string_value(field_value, &field_ir_type, ir_block, func)?;
+            
+            // Concatenate to result
+            result = self.concat_strings(result, field_str, ir_block);
+        }
+        
+        // Close with ")"
+        let close_paren = self.make_string_literal(")", ir_block);
+        result = self.concat_strings(result, close_paren, ir_block);
+        
+        Ok(result)
+    }
+    
+    /// Lower as_string for enum types: CaseName or CaseName(field1, field2, ...)
+    fn lower_as_string_enum(
+        &mut self,
+        enum_value: ValueId,
+        enum_name: &str,
+        ir_block: &mut IrBlock,
+        func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        // Look up the enum definition
+        let enum_def = self.type_env.get_enum(enum_name)
+            .ok_or_else(|| LowerError::UndefinedEnum(enum_name.to_string()))?
+            .clone();
+        
+        // Enums are complex because we need to switch on the variant tag
+        // For now, implement a simplified version that assumes we know the variant
+        // A full implementation would require creating multiple basic blocks with a switch
+        
+        // For simplicity, we'll just return the enum name for now
+        // TODO: Implement proper variant switching and field extraction
+        let simple_result = self.make_string_literal(enum_name, ir_block);
+        
+        eprintln!("[AS_STRING] Warning: Enum as_string() only shows enum name, not variant details");
+        
+        Ok(simple_result)
+    }
+    
+    /// Helper: Convert a value of known type to string (used for recursive calls)
+    fn lower_as_string_value(
+        &mut self,
+        value: ValueId,
+        value_type: &IrType,
+        ir_block: &mut IrBlock,
+        func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        // Similar to lower_as_string_builtin but takes a ValueId and IrType directly
+        match value_type {
+            IrType::Int(_) | IrType::UInt(_) => {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_int_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            IrType::Float(_) => {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_float_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            IrType::Bool => {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_bool_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            IrType::Rune => {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_rune_to_string".to_string(),
+                        args: vec![value],
+                        is_tail: false,
+                    },
+                });
+                Ok(result_id)
+            }
+            
+            IrType::Pointer(inner) if matches!(**inner, IrType::Int(8)) => {
+                Ok(value)
+            }
+            
+            IrType::Tuple(element_types) => {
+                self.lower_as_string_tuple(value, element_types, ir_block, func)
+            }
+            
+            IrType::Struct(struct_name) => {
+                self.lower_as_string_struct(value, struct_name, ir_block, func)
+            }
+            
+            IrType::Enum(enum_name) => {
+                self.lower_as_string_enum(value, enum_name, ir_block, func)
+            }
+            
+            _ => Err(LowerError::Unsupported(
+                format!("as_string not yet implemented for nested type: {}", value_type)
+            ))
+        }
     }
     
     /// Lower loop() builtin: loop(condition) { body } or loop(array) { body }

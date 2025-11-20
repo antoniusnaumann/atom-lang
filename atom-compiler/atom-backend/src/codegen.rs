@@ -209,7 +209,13 @@ impl CodeGenerator {
                         c_name, e
                     ))
                 })?;
-            func_ids.insert(format!("c::{}", c_name), func_id);
+            // For __builtin_* functions, use the name as-is
+            // For C library functions, add the c:: prefix
+            if c_name.starts_with("__builtin_") {
+                func_ids.insert(c_name.clone(), func_id);
+            } else {
+                func_ids.insert(format!("c::{}", c_name), func_id);
+            }
         }
 
         // Compile each function
@@ -254,8 +260,55 @@ impl CodeGenerator {
         for block in &func.blocks {
             for inst in &block.instructions {
                 if let IrInstructionKind::Call { function, args, .. } = &inst.kind {
+                    // Check if this is a builtin runtime function
+                    if function.starts_with("__builtin_") {
+                        if !external_funcs.contains_key(function) {
+                            let mut sig = Signature::new(CallConv::SystemV);
+                            
+                            // Define signatures for builtin runtime functions
+                            match function.as_str() {
+                                "__builtin_int_to_string" => {
+                                    // char* __builtin_int_to_string(int64_t)
+                                    sig.params.push(AbiParam::new(types::I64));
+                                    sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
+                                "__builtin_float_to_string" => {
+                                    // char* __builtin_float_to_string(double)
+                                    sig.params.push(AbiParam::new(types::F64));
+                                    sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
+                                "__builtin_bool_to_string" => {
+                                    // char* __builtin_bool_to_string(int8_t)
+                                    sig.params.push(AbiParam::new(types::I8));
+                                    sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
+                                "__builtin_rune_to_string" => {
+                                    // char* __builtin_rune_to_string(int32_t)
+                                    sig.params.push(AbiParam::new(types::I32));
+                                    sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
+                                "__builtin_string_concat" => {
+                                    // char* __builtin_string_concat(char*, char*)
+                                    sig.params.push(AbiParam::new(types::I64)); // pointer
+                                    sig.params.push(AbiParam::new(types::I64)); // pointer
+                                    sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
+                                "__builtin_string_literal" => {
+                                    // char* __builtin_string_literal(const char*)
+                                    sig.params.push(AbiParam::new(types::I64)); // pointer
+                                    sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
+                                _ => {
+                                    // Unknown builtin - skip it
+                                    continue;
+                                }
+                            }
+                            
+                            external_funcs.insert(function.clone(), sig);
+                        }
+                    }
                     // Check if this is a C function call
-                    if function.starts_with('c') && function.contains("::") {
+                    else if function.starts_with('c') && function.contains("::") {
                         let parts: Vec<&str> = function.split("::").collect();
                         if parts.len() == 2 {
                             let c_func_name = parts[1].to_string();
@@ -747,22 +800,6 @@ impl CodeGenerator {
                     if debug == "1" && function.contains("builtin") {
                         eprintln!("[DEBUG] Translating call to function: '{}'", function);
                     }
-                }
-                
-                // Handle built-in functions specially
-                if function == "__builtin_as_string" {
-                    // __builtin_as_string just returns its argument (which should already be a string pointer)
-                    // This is a no-op in the IR, just pass through the argument
-                    if args.len() != 1 {
-                        return Err(CodegenError::ModuleError(
-                            format!("__builtin_as_string expects exactly 1 argument, got {}", args.len())
-                        ));
-                    }
-                    let arg_val = values
-                        .get(&args[0])
-                        .copied()
-                        .ok_or(CodegenError::InvalidValue(args[0]))?;
-                    return Ok(arg_val);
                 }
                 
                 // Check if this is a tail call to the current function (self-recursion)
