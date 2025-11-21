@@ -262,13 +262,9 @@ impl TypeChecker {
         };
 
         if func_name == "reduce" {
-            eprintln!("\n=== Collecting reduce signature ===");
-            eprintln!("  Params: {} params", params.len());
-            for (i, (name, ty, has_default)) in params.iter().enumerate() {
-                eprintln!("    [{}] {}: {:?} (default: {})", i, name, ty, has_default);
-            }
-            eprintln!("  Return type: {:?}", return_type);
-        }
+                                    for (i, (name, ty, has_default)) in params.iter().enumerate() {
+                            }
+                    }
 
         self.functions
             .entry(func_name.clone())
@@ -276,8 +272,7 @@ impl TypeChecker {
             .push(signature);
 
         if func_name == "reduce" {
-            eprintln!("  Total reduce signatures: {}", self.functions.get(&func_name).unwrap().len());
-        }
+                    }
 
         Ok(())
     }
@@ -847,18 +842,11 @@ impl TypeChecker {
                 let arg_types = arg_types?;
 
                 if func_name == "reduce" {
-                    eprintln!("\n=== Checking reduce call with {} args ===", args.len());
-                    eprintln!("  Argument types:");
-                    for (i, arg_ty) in arg_types.iter().enumerate() {
-                        eprintln!("    [{}]: {:?}", i, arg_ty);
-                    }
-                    eprintln!("  Available signatures: {}", signatures.len());
-                    for (sig_idx, sig) in signatures.iter().enumerate() {
-                        eprintln!("  Signature {}:", sig_idx);
-                        eprintln!("    Params: {}", sig.params.len());
-                        for (i, (name, ty, has_def)) in sig.params.iter().enumerate() {
-                            eprintln!("      [{}] {}: {:?} (default={})", i, name, ty, has_def);
-                        }
+                                                            for (i, arg_ty) in arg_types.iter().enumerate() {
+                                            }
+                                        for (sig_idx, sig) in signatures.iter().enumerate() {
+                                                                        for (i, (name, ty, has_def)) in sig.params.iter().enumerate() {
+                                                    }
                     }
                 }
 
@@ -893,12 +881,9 @@ impl TypeChecker {
                 // Debug: print details if this is reduce
                 if func_name == "reduce" {
                     eprintln!("ERROR: No matching overload for 'reduce' with {} args", args.len());
-                    eprintln!("  Argument types:");
-                    for (i, arg_ty) in arg_types.iter().enumerate() {
-                        eprintln!("    [{}]: {:?}", i, arg_ty);
-                    }
-                    eprintln!("  Available signatures:");
-                    for (i, sig) in signatures.iter().enumerate() {
+                                        for (i, arg_ty) in arg_types.iter().enumerate() {
+                                            }
+                                        for (i, sig) in signatures.iter().enumerate() {
                         eprintln!("    Signature {}:", i);
                         for (j, (name, param_ty, has_default)) in sig.params.iter().enumerate() {
                             eprintln!("      param[{}] {}: {:?} (default: {})", j, name, param_ty, has_default);

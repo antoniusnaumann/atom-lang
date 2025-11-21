@@ -169,8 +169,7 @@ impl Lower {
 
     /// Lower a complete AST program to IR.
     pub fn lower_program(&mut self, ast: Vec<atom_ast::TopLevel>) -> LowerResult<IrProgram> {
-        eprintln!("[MONO-DEBUG] lower_program called with {} items", ast.len());
-        let mut program = IrProgram::new();
+                let mut program = IrProgram::new();
 
         // First pass: collect all function definitions (for default parameters)
         for item in &ast {
@@ -206,17 +205,12 @@ impl Lower {
         // Fourth pass: lower functions (skip generic functions - they'll be monomorphized on demand)
         for item in &ast {
             if let atom_ast::TopLevel::Function(func_def) = item {
-                eprintln!("[MONO-DEBUG] Checking function: {}, const_params: {}, params: {}", 
-                    func_def.name.name, func_def.const_params.len(), func_def.params.len());
-                for (i, param) in func_def.params.iter().enumerate() {
-                    eprintln!("[MONO-DEBUG]   param[{}]: name={}, type={:?}", 
-                        i, param.name.name, param.ty);
-                }
+                                for (i, param) in func_def.params.iter().enumerate() {
+                                    }
                 
                 // Skip generic functions (those with type parameters)
                 if self.is_generic_function(func_def) {
-                    eprintln!("[MONO] Skipping generic function: {}", func_def.name.name);
-                    continue;
+                                        continue;
                 }
                 let ir_func = self.lower_function(func_def)?;
                 program.add_function(ir_func);
@@ -235,32 +229,43 @@ impl Lower {
         
         while !self.mono_queue.is_empty() && iterations < MAX_MONO_ITERATIONS {
             iterations += 1;
-            eprintln!("[MONO] Processing monomorphization queue (iteration {})", iterations);
-            
-            // Drain the current queue (clone to avoid borrow issues)
+                        // Drain the current queue (clone to avoid borrow issues)
             let current_queue: Vec<_> = self.mono_queue.drain().collect();
             
             for (mono_name, (original_name, type_bindings, func_def)) in current_queue {
-                eprintln!("[MONO] Generating monomorphized instance: {} <- {}", mono_name, original_name);
-                eprintln!("[MONO]   Type bindings: {:?}", type_bindings);
-                
-                // Create a modified function definition with the monomorphized name
+                                                // Create a modified function definition with the monomorphized name
                 let mut specialized_func = func_def.clone();
                 specialized_func.name.name = mono_name.clone();
                 
                 // Substitute type parameters in the AST before lowering
                 specialized_func = self.substitute_type_params_in_ast(&specialized_func, &type_bindings)?;
-                eprintln!("[MONO] Type substitution complete for {}", mono_name);
-                
-                // Lower the specialized function
+                                // Lower the specialized function
                 match self.lower_function(&specialized_func) {
                     Ok(ir_func) => {
-                        eprintln!("[MONO] Successfully generated: {}", mono_name);
-                        program.add_function(ir_func);
+                        // DEBUG: Dump IR for reduce monomorphizations
+                        if mono_name.contains("reduce") && (mono_name.contains("Float64") || mono_name.contains("Int64")) {
+                            eprintln!("\n========== IR FOR {} ==========", mono_name);
+                            eprintln!("Function: {}", ir_func.name);
+                            eprintln!("Params: {:?}", ir_func.params);
+                            eprintln!("Return type: {:?}", ir_func.return_type);
+                            eprintln!("Locals:");
+                            for local in &ir_func.locals {
+                                eprintln!("  {:?}: name={}, ty={:?}", local.id, local.name, local.ty);
+                            }
+                            eprintln!("Blocks:");
+                            for block in &ir_func.blocks {
+                                eprintln!("  Block {:?}:", block.label);
+                                for (idx, inst) in block.instructions.iter().enumerate() {
+                                    eprintln!("    [{}] {:?}: {:?} = {:?}", idx, inst.result, inst.ty, inst.kind);
+                                }
+                                eprintln!("    Terminator: {:?}", block.terminator);
+                            }
+                            eprintln!("========================================\n");
+                        }
+                                                program.add_function(ir_func);
                     }
                     Err(e) => {
-                        eprintln!("[MONO] Error generating {}: {:?}", mono_name, e);
-                        return Err(e);
+                                                return Err(e);
                     }
                 }
             }
@@ -272,9 +277,7 @@ impl Lower {
             ));
         }
         
-        eprintln!("[MONO] Monomorphization complete after {} iterations", iterations);
-
-        Ok(program)
+                Ok(program)
     }
 
     // ========================================================================
@@ -412,9 +415,7 @@ impl Lower {
             self.lower_block_to_ir(&func_def.body, &mut entry_block, &mut ir_func)?;
 
         // Set terminator
-        eprintln!("[VOID-DEBUG] Function '{}': terminator={:?}, result_value={:?}, return_type={:?}",
-            ir_func.name, terminator, result_value.is_some(), return_type);
-        if matches!(terminator, IrTerminator::Unreachable) {
+                if matches!(terminator, IrTerminator::Unreachable) {
             // Block ended with an expression - add return
             // IMPORTANT: Check void return type FIRST
             if return_type.is_none() || return_type.as_ref().unwrap().is_void() {
@@ -431,14 +432,12 @@ impl Lower {
                     entry_block.set_terminator(IrTerminator::Return { value: Some(zero_value) });
                 } else {
                     if ir_func.name.contains("print") {
-                        eprintln!("[VOID-FIX] Setting void return for function '{}'", ir_func.name);
-                    }
+                                            }
                     entry_block.set_terminator(IrTerminator::Return { value: None });
                 }
             } else if let Some(value) = result_value {
                 if ir_func.name.contains("print") {
-                    eprintln!("[VOID-FIX] Function '{}' returning value {:?}", ir_func.name, value);
-                }
+                                    }
                 entry_block.set_terminator(IrTerminator::Return { value: Some(value) });
             } else {
                 return Err(LowerError::Internal(
@@ -510,12 +509,27 @@ impl Lower {
 
         // Handle tuple destructuring if multiple names
         if decl.names.len() > 1 {
+            // Get the tuple type to extract element types
+            let tuple_type = self.get_value_type(init_value, ir_block, func)
+                .unwrap_or(IrType::Tuple(vec![]));
+            
+            let element_types = if let IrType::Tuple(types) = tuple_type {
+                types
+            } else {
+                // Fallback: use Pointer(Void) for each element if we can't determine the type
+                vec![IrType::Pointer(Box::new(IrType::Void)); decl.names.len()]
+            };
+            
             // Tuple destructuring: extract each element and bind to corresponding name
             for (index, var_name_ident) in decl.names.iter().enumerate() {
                 let element_id = self.fresh_value_id();
+                let element_type = element_types.get(index)
+                    .cloned()
+                    .unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+                
                 ir_block.add_instruction(IrInstruction {
                     result: element_id,
-                    ty: IrType::Pointer(Box::new(IrType::Void)), // Simplified type
+                    ty: element_type.clone(),
                     kind: IrInstructionKind::TupleExtract {
                         tuple: init_value,
                         index: index as u32,
@@ -523,7 +537,7 @@ impl Lower {
                 });
                 self.variables.insert(
                     var_name_ident.name.clone(),
-                    VarBinding::Value(element_id, IrType::Pointer(Box::new(IrType::Void))),
+                    VarBinding::Value(element_id, element_type),
                 );
             }
         } else {
@@ -534,8 +548,8 @@ impl Lower {
             let var_type = if let Some(ty_ast) = &decl.ty {
                 self.lower_type(ty_ast)?
             } else {
-                // Try to infer type from the initializer by finding the instruction
-                // that produced init_value
+                // Try to infer type from the initializer
+                // First check if it's an instruction in the current block
                 let mut inferred_type = None;
                 for inst in &ir_block.instructions {
                     if inst.result == init_value {
@@ -543,11 +557,17 @@ impl Lower {
                         break;
                     }
                 }
-                // If we can't find the type (e.g., for parameters), default to pointer
-                let ty = inferred_type.unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+                // If not found in current block, try to get from parameters or other blocks
                 if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
-                    eprintln!("DEBUG lower_var_decl: var={}, init_value={}, inferred_type={:?}", var_name, init_value, ty);
-                }
+                                    }
+                let ty = inferred_type.or_else(|| {
+                    let t = self.get_value_type(init_value, ir_block, func);
+                    if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
+                                            }
+                    t
+                }).unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+                if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
+                                    }
                 ty
             };
 
@@ -866,8 +886,50 @@ impl Lower {
         let new_value = if matches!(op, atom_ast::BinOp::Assign) {
             // Simple assignment: var = expr
             self.lower_expr(right, ir_block, func)?
+        } else if matches!(op, atom_ast::BinOp::ConcatAssign) {
+            // Compound concat assignment: var ++= expr
+            // This is string/array concatenation
+            let current_value = self.lower_ident(&var_name, ir_block, func)?;
+            let right_value = self.lower_expr(right, ir_block, func)?;
+            
+            // Get the types to determine how to concat
+            let left_type = self.get_value_type(current_value, ir_block, func)
+                .unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+            let right_type = self.get_value_type(right_value, ir_block, func)
+                .unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+            
+            // Handle String ++= Rune
+            if matches!(left_type, IrType::Struct(ref name) if name == "String") 
+                && matches!(right_type, IrType::Int(32)) { // Rune is i32
+                // Use __builtin_append_rune_to_string to append the rune's UTF-8 bytes
+                let concat_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: concat_id,
+                    ty: IrType::Struct("String".to_string()),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_append_rune_to_string".to_string(),
+                        args: vec![current_value, right_value],
+                        is_tail: false,
+                    },
+                });
+                
+                concat_id
+            } else {
+                // For other concat operations, treat as addition for now
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: left_type,
+                    kind: IrInstructionKind::BinOp {
+                        op: IrBinOp::Add,
+                        left: current_value,
+                        right: right_value,
+                    },
+                });
+                result_id
+            }
         } else {
-            // Compound assignment: var += expr, var ++= expr, etc.
+            // Compound assignment: var += expr, etc.
             // Load current value
             let current_value = self.lower_ident(&var_name, ir_block, func)?;
             let right_value = self.lower_expr(right, ir_block, func)?;
@@ -879,11 +941,6 @@ impl Lower {
                 atom_ast::BinOp::MulAssign => IrBinOp::Mul,
                 atom_ast::BinOp::DivAssign => IrBinOp::Div,
                 atom_ast::BinOp::ModAssign => IrBinOp::Mod,
-                atom_ast::BinOp::ConcatAssign => {
-                    // For concat, we need to call a runtime function or builtin
-                    // For now, treat it like addition (simplified)
-                    IrBinOp::Add
-                }
                 _ => unreachable!(),
             };
 
@@ -1015,71 +1072,160 @@ impl Lower {
         // Check if this is actually array indexing (variable call with one argument)
         // In Atom, arr(i) is array indexing if arr is a variable/parameter holding an array
         if args.len() == 1 {
+            if func_name == "rune_arr" {
+                            }
             // Try to find the identifier as a variable or parameter
             let mut is_indexable = false;
             let mut array_value = None;
             let mut element_type = IrType::Int(64); // Default
             
-            // Check in variables
-            if let Some(VarBinding::Value(val_id, ty)) = self.variables.get(&func_name).cloned() {
-                // Check if it's an indexable type (not a closure, not a function)
-                match &ty {
-                    IrType::Closure { .. } | IrType::Function { .. } => {
-                        // This is a function/closure call, not array indexing
-                        // Fall through to handle it normally
-                    }
-                    IrType::Array { element } => {
-                        is_indexable = true;
-                        array_value = Some(val_id);
-                        element_type = (**element).clone();
-                    }
-                    IrType::Pointer(inner) => {
-                        // Pointers can be indexed
-                        is_indexable = true;
-                        array_value = Some(val_id);
-                        element_type = (**inner).clone();
-                    }
-                    _ => {
-                        // Other types might be indexable, try it
-                        is_indexable = true;
-                        array_value = Some(val_id);
+            // Check in variables (both SSA values and locals)
+            if func_name == "rune_arr" {
+                                                for (k, v) in &self.variables {
+                                    }
+            }
+            match self.variables.get(&func_name).cloned() {
+                Some(VarBinding::Value(val_id, ty)) => {
+                    // Check if it's an indexable type (not a closure, not a function)
+                    match &ty {
+                        IrType::Closure { .. } | IrType::Function { .. } => {
+                            // This is a function/closure call, not array indexing
+                            // Fall through to handle it normally
+                        }
+                        IrType::Array { element } => {
+                            is_indexable = true;
+                            array_value = Some(val_id);
+                            element_type = (**element).clone();
+                        }
+                        IrType::Pointer(inner) => {
+                            // Pointers can be indexed
+                            is_indexable = true;
+                            array_value = Some(val_id);
+                            element_type = (**inner).clone();
+                        }
+                        IrType::Tuple(elements) if !elements.is_empty() => {
+                            // Tuples can be indexed
+                            is_indexable = true;
+                            array_value = Some(val_id);
+                            // For tuples, assume all elements are the same type (first element type)
+                            element_type = elements[0].clone();
+                        }
+                        _ => {
+                            // Other types might be indexable, try it
+                            is_indexable = true;
+                            array_value = Some(val_id);
+                        }
                     }
                 }
-            } else {
-                // Check if it's a function parameter
-                for (param_idx, (param_name, param_ty)) in func.params.iter().enumerate() {
-                    if param_name == &func_name {
-                        // Found it as a parameter
-                        match param_ty {
-                            IrType::Closure { .. } | IrType::Function { .. } => {
-                                // Function/closure parameter, not array indexing
-                            }
-                            IrType::Array { element } => {
-                                is_indexable = true;
-                                // Parameters are the first ValueIds
-                                let param_value = ValueId(param_idx as u32);
-                                array_value = Some(param_value);
-                                element_type = (**element).clone();
-                            }
-                            IrType::Pointer(inner) => {
-                                is_indexable = true;
-                                let param_value = ValueId(param_idx as u32);
-                                array_value = Some(param_value);
-                                element_type = (**inner).clone();
-                            }
-                            _ => {
-                                // Try indexing anyway
-                                is_indexable = true;
-                                let param_value = ValueId(param_idx as u32);
-                                array_value = Some(param_value);
-                            }
+                Some(VarBinding::Local(local_id, ty)) => {
+                    // Variable stored in a local - need to load it first
+                    if func_name == "rune_arr" {
+                                            }
+                    match &ty {
+                        IrType::Closure { .. } | IrType::Function { .. } => {
+                            // This is a function/closure call, not array indexing
+                            // Fall through to handle it normally
+                            if func_name == "rune_arr" {
+                                                            }
                         }
-                        break;
+                        IrType::Array { element } => {
+                            is_indexable = true;
+                            // Load from local
+                            let loaded_val = self.fresh_value_id();
+                            ir_block.add_instruction(IrInstruction {
+                                result: loaded_val,
+                                ty: ty.clone(),
+                                kind: IrInstructionKind::Load {
+                                    source: IrMemoryLocation::Local(local_id),
+                                },
+                            });
+                            array_value = Some(loaded_val);
+                            element_type = (**element).clone();
+                        }
+                        IrType::Pointer(inner) => {
+                            // Pointers can be indexed
+                            is_indexable = true;
+                            // Load from local
+                            let loaded_val = self.fresh_value_id();
+                            ir_block.add_instruction(IrInstruction {
+                                result: loaded_val,
+                                ty: ty.clone(),
+                                kind: IrInstructionKind::Load {
+                                    source: IrMemoryLocation::Local(local_id),
+                                },
+                            });
+                            array_value = Some(loaded_val);
+                            element_type = (**inner).clone();
+                        }
+                        IrType::Tuple(elements) if !elements.is_empty() => {
+                            // Tuples can be indexed
+                            is_indexable = true;
+                            // Load from local
+                            let loaded_val = self.fresh_value_id();
+                            ir_block.add_instruction(IrInstruction {
+                                result: loaded_val,
+                                ty: ty.clone(),
+                                kind: IrInstructionKind::Load {
+                                    source: IrMemoryLocation::Local(local_id),
+                                },
+                            });
+                            array_value = Some(loaded_val);
+                            // For tuples, assume all elements are the same type (first element type)
+                            element_type = elements[0].clone();
+                        }
+                        _ => {
+                            // Try indexing anyway
+                            is_indexable = true;
+                            let loaded_val = self.fresh_value_id();
+                            ir_block.add_instruction(IrInstruction {
+                                result: loaded_val,
+                                ty: ty.clone(),
+                                kind: IrInstructionKind::Load {
+                                    source: IrMemoryLocation::Local(local_id),
+                                },
+                            });
+                            array_value = Some(loaded_val);
+                        }
+                    }
+                }
+                None => {
+                    // Check if it's a function parameter
+                    for (param_idx, (param_name, param_ty)) in func.params.iter().enumerate() {
+                        if param_name == &func_name {
+                            // Found it as a parameter
+                            match param_ty {
+                                IrType::Closure { .. } | IrType::Function { .. } => {
+                                    // Function/closure parameter, not array indexing
+                                }
+                                IrType::Array { element } => {
+                                    is_indexable = true;
+                                    // Parameters are the first ValueIds
+                                    let param_value = ValueId(param_idx as u32);
+                                    array_value = Some(param_value);
+                                    element_type = (**element).clone();
+                                }
+                                IrType::Pointer(inner) => {
+                                    is_indexable = true;
+                                    let param_value = ValueId(param_idx as u32);
+                                    array_value = Some(param_value);
+                                    element_type = (**inner).clone();
+                                }
+                                _ => {
+                                    // Try indexing anyway
+                                    is_indexable = true;
+                                    let param_value = ValueId(param_idx as u32);
+                                    array_value = Some(param_value);
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             }
             
             // If we found an indexable array/pointer, emit ArrayIndex
+            if func_name == "rune_arr" {
+                            }
             if is_indexable {
                 if let Some(arr_val) = array_value {
                     let index_value = self.lower_expr(&args[0], ir_block, func)?;
@@ -1164,10 +1310,25 @@ impl Lower {
         // Check if func_name is actually a function parameter (function pointer)
         if let Some(func_value_id) = self.params.get(&func_name).copied() {
             // This is an indirect call through a function pointer
+            // Get the function parameter's type to determine the return type
+            let return_ty = func.params.iter()
+                .enumerate()
+                .find(|(i, _)| ValueId(*i as u32) == func_value_id)
+                .and_then(|(_, (_, param_ty))| match param_ty {
+                    IrType::Function { return_type, .. } => {
+                        (**return_type).clone().or(Some(IrType::Void))
+                    }
+                    IrType::Closure { return_type, .. } => {
+                        (**return_type).clone().or(Some(IrType::Void))
+                    }
+                    _ => None,
+                })
+                .unwrap_or(IrType::Int(64)); // Fallback
+            
             let value_id = self.fresh_value_id();
             ir_block.add_instruction(IrInstruction {
                 result: value_id,
-                ty: IrType::Int(64), // Simplified return type
+                ty: return_ty,
                 kind: IrInstructionKind::CallIndirect {
                     func_value: func_value_id,
                     args: arg_values,
@@ -1220,22 +1381,13 @@ impl Lower {
             if let Some(func_def) = func_defs.first() {
                 if self.is_generic_function(func_def) {
                     // This is a generic function call - we need to monomorphize it
-                    eprintln!("[MONO-DEBUG] Call to generic function: {}", func_name);
-                    
-                    // Extract concrete types from arguments
+                                        // Extract concrete types from arguments
                     let concrete_types = self.extract_concrete_types(&arg_values, ir_block, func, func_def);
-                    eprintln!("[MONO-DEBUG] Extracted concrete types: {:?}", concrete_types);
-                    
-                    // Generate monomorphized function name
-                    eprintln!("[MONO-DEBUG] BEFORE generate_mono_name, concrete_types.len()={}", concrete_types.len());
-                    let mono_name = self.generate_mono_name(&func_name, &concrete_types, func_def);
-                    eprintln!("[MONO-DEBUG] AFTER generate_mono_name");
-                    eprintln!("[MONO-DEBUG] Monomorphized name: {}", mono_name);
-                    
-                    // Queue this instance for generation if not already done
+                                        // Generate monomorphized function name
+                                        let mono_name = self.generate_mono_name(&func_name, &concrete_types, func_def);
+                                                            // Queue this instance for generation if not already done
                     if !self.mono_done.contains(&mono_name) {
-                        eprintln!("[MONO-DEBUG] Queueing monomorphization: {}", mono_name);
-                        self.mono_queue.insert(
+                                                self.mono_queue.insert(
                             mono_name.clone(),
                             (func_name.clone(), concrete_types, func_def.clone()),
                         );
@@ -1546,6 +1698,22 @@ impl Lower {
             .ok_or_else(|| LowerError::UndefinedStruct(struct_name.to_string()))?
             .clone();
         
+        // Special case: String type should just return the bytes field directly
+        if struct_name == "String" && struct_def.fields.len() == 1 && struct_def.fields[0].name == "bytes" {
+            // Extract the bytes field (char*)
+            let bytes_value = self.fresh_value_id();
+            let bytes_ir_type = IrType::Pointer(Box::new(IrType::Int(8)));
+            ir_block.add_instruction(IrInstruction {
+                result: bytes_value,
+                ty: bytes_ir_type,
+                kind: IrInstructionKind::StructExtract {
+                    struct_value,
+                    field_index: 0,
+                },
+            });
+            return Ok(bytes_value);
+        }
+        
         // Start with "StructName("
         let open_str = format!("{}(", struct_name);
         let mut result = self.make_string_literal(&open_str, ir_block);
@@ -1739,19 +1907,19 @@ impl Lower {
             let array_value = self.lower_expr(first_arg, current_block, func)?;
             
             // Get array length
-            // First, try to find the type of the array value
+            // First, try to find the type of the array value and clone it to avoid borrow issues
             let array_ty = current_block
                 .instructions
                 .iter()
                 .find(|inst| inst.result == array_value)
-                .map(|inst| &inst.ty);
+                .map(|inst| inst.ty.clone());
             
             // Create a local to store the array length (needed for dominance in loop header)
             let len_local = func.add_local("$array_len".to_string(), IrType::Int(64));
             let len_value = self.fresh_value_id();
             
             // Check if this is a fixed-size tuple - if so, use compile-time length
-            if let Some(IrType::Tuple(element_types)) = array_ty {
+            if let Some(IrType::Tuple(ref element_types)) = array_ty {
                 // Fixed-size tuple: use compile-time known length
                 current_block.add_instruction(IrInstruction {
                     result: len_value,
@@ -1863,10 +2031,33 @@ impl Lower {
             });
             
             // Get array element: arr[index]
+            // Determine the element type from the array type
+            let element_type = if let Some(arr_ty) = array_ty {
+                match arr_ty {
+                    IrType::Array { element } => (*element).clone(),
+                    IrType::Tuple(elements) if !elements.is_empty() => {
+                        // For tuples, use the first element type
+                        elements[0].clone()
+                    }
+                    IrType::Pointer(inner) => (*inner).clone(),
+                    _ => IrType::Int(64), // Fallback
+                }
+            } else {
+                // Try to get the type from the array value itself
+                self.get_value_type(array_value, current_block, func)
+                    .and_then(|ty| match ty {
+                        IrType::Array { element } => Some((*element).clone()),
+                        IrType::Tuple(ref elements) if !elements.is_empty() => Some(elements[0].clone()),
+                        IrType::Pointer(inner) => Some((*inner).clone()),
+                        _ => None,
+                    })
+                    .unwrap_or(IrType::Int(64)) // Fallback
+            };
+            
             let element_value = self.fresh_value_id();
             loop_body_ir.add_instruction(IrInstruction {
                 result: element_value,
-                ty: IrType::Int(64), // TODO: Use actual element type
+                ty: element_type.clone(),
                 kind: IrInstructionKind::ArrayIndex {
                     array: array_value,
                     index: body_index,
@@ -1874,7 +2065,7 @@ impl Lower {
             });
             
             // Store $0 in a local variable so it's accessible in nested blocks
-            let dollar0_local = func.add_local("$0".to_string(), IrType::Int(64));
+            let dollar0_local = func.add_local("$0".to_string(), element_type.clone());
             loop_body_ir.add_instruction(IrInstruction {
                 result: self.fresh_value_id(),
                 ty: IrType::Void,
@@ -1886,7 +2077,7 @@ impl Lower {
             
             // Bind $0 to the local variable (not the SSA value)
             let old_dollar0 = self.variables.get("$0").cloned();
-            self.variables.insert("$0".to_string(), VarBinding::Local(dollar0_local, IrType::Int(64)));
+            self.variables.insert("$0".to_string(), VarBinding::Local(dollar0_local, element_type.clone()));
             
             // Execute loop body
             let (_body_result, _) = self.lower_block_to_ir(body_block, &mut loop_body_ir, func)?;
@@ -2106,11 +2297,15 @@ impl Lower {
             arg_values.push(value);
         }
 
+        // Try to get the actual return type from the function definition
+        let return_type = self.get_function_return_type(method_name)
+            .unwrap_or_else(|| IrType::Pointer(Box::new(IrType::Void)));
+
         // Call the function
         let value_id = self.fresh_value_id();
         ir_block.add_instruction(IrInstruction {
             result: value_id,
-            ty: IrType::Pointer(Box::new(IrType::Void)), // Simplified
+            ty: return_type,
             kind: IrInstructionKind::Call {
                 function: method_name.clone(),
                 args: arg_values,
@@ -2134,7 +2329,10 @@ impl Lower {
         for elem in elements {
             let value = self.lower_expr(elem, ir_block, func)?;
             element_values.push(value);
-            element_types.push(IrType::Int(64)); // Simplified
+            // Get the actual type of the element
+            let elem_type = self.get_value_type(value, ir_block, func)
+                .unwrap_or(IrType::Int(64)); // Fallback to Int(64)
+            element_types.push(elem_type);
         }
 
         let value_id = self.fresh_value_id();
@@ -2389,9 +2587,27 @@ impl Lower {
                     return_type: Box::new(ret_type),
                 })
             }
-            atom_ast::Type::Generic { name, .. } => {
-                // For now, treat generics as their base type
-                self.lower_named_type(&name.name)
+            atom_ast::Type::Generic { name, params, .. } => {
+                // Handle parameterized types like UInt(8), Int(32), Float(32)
+                let base_name = &name.name;
+                
+                // Try to extract bit width from first parameter
+                if let Some(first_param) = params.first() {
+                    if let Some(param_name) = &first_param.name {
+                        // Try to parse the bit width
+                        if let Ok(bits) = param_name.name.parse::<u16>() {
+                            return match base_name.as_str() {
+                                "Int" => Ok(IrType::Int(bits)),
+                                "UInt" => Ok(IrType::UInt(bits)),
+                                "Float" => Ok(IrType::Float(bits)),
+                                _ => self.lower_named_type(base_name),
+                            };
+                        }
+                    }
+                }
+                
+                // Fallback to base type without parameters
+                self.lower_named_type(base_name)
             }
             atom_ast::Type::Param(_) => {
                 // Type parameters are generic/polymorphic
@@ -2440,7 +2656,7 @@ impl Lower {
             "UInt" => Ok(IrType::UInt(64)),
             "Float" => Ok(IrType::Float(64)),
             "Rune" => Ok(IrType::Rune),
-            "String" => Ok(IrType::Pointer(Box::new(IrType::Int(8)))),
+            "String" => Ok(IrType::Struct("String".to_string())),
             _ => {
                 // Check if it's a user-defined struct or enum
                 if self.type_env.get_struct(name).is_some() {
@@ -2633,16 +2849,13 @@ impl Lower {
         // Update the function's return type if we inferred it
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
-                eprintln!("[DEBUG] Closure '{}': inferred return type = {:?}", closure_name, final_ret_ty);
-                eprintln!("[DEBUG] Closure '{}': current return type = {:?}", closure_name, lifted_func.return_type);
-            }
+                                            }
         }
         if final_ret_ty != lifted_func.return_type {
             lifted_func.return_type = final_ret_ty.clone();
             if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                 if debug == "1" {
-                    eprintln!("[DEBUG] Closure '{}': updated return type to {:?}", closure_name, final_ret_ty);
-                }
+                                    }
             }
         }
 
@@ -2792,16 +3005,14 @@ impl Lower {
     fn is_generic_function(&self, func_def: &atom_ast::FunctionDef) -> bool {
         // Check for const parameters
         if !func_def.const_params.is_empty() {
-            eprintln!("[MONO-DEBUG] {} has const_params", func_def.name.name);
-            return true;
+                        return true;
         }
 
         // Check parameter types for type parameters
         for param in &func_def.params {
             if let Some(ref ty) = param.ty {
                 if self.type_contains_type_param(ty) {
-                    eprintln!("[MONO-DEBUG] {} has type param in parameter: {:?}", func_def.name.name, ty);
-                    return true;
+                                        return true;
                 }
             }
         }
@@ -2809,8 +3020,7 @@ impl Lower {
         // Check return type for type parameters
         if let Some(ref return_type) = func_def.return_type {
             if self.type_contains_type_param(return_type) {
-                eprintln!("[MONO-DEBUG] {} has type param in return type", func_def.name.name);
-                return true;
+                                return true;
             }
         }
 
@@ -2891,14 +3101,10 @@ impl Lower {
     ) -> HashMap<String, IrType> {
         let mut bindings = HashMap::new();
         
-        eprintln!("[MONO-DEBUG] extract_concrete_types: {} args, {} params",
-            arg_values.len(), func_def.params.len());
-        
-        // Match each argument with its corresponding parameter
+                // Match each argument with its corresponding parameter
         for (i, param) in func_def.params.iter().enumerate() {
             if i >= arg_values.len() {
-                eprintln!("[MONO-DEBUG] Warning: fewer args than params at position {}", i);
-                break;
+                                break;
             }
             
             let arg_value = arg_values[i];
@@ -2906,27 +3112,20 @@ impl Lower {
             // Get the concrete type of this argument
             let arg_type = match self.get_value_type(arg_value, ir_block, func) {
                 Some(ty) => {
-                    eprintln!("[MONO-DEBUG] Arg {}: ValueId({}) has type {:?}",
-                        i, arg_value.0, ty);
-                    ty
+                                        ty
                 }
                 None => {
-                    eprintln!("[MONO-DEBUG] Warning: could not determine type for arg {} (ValueId({}))",
-                        i, arg_value.0);
-                    continue;
+                                        continue;
                 }
             };
             
             // Check if this parameter's type contains type parameters
             if let Some(param_ty) = &param.ty {
-                eprintln!("[MONO-DEBUG] Matching param {} type {:?} with arg type {:?}",
-                    param.name.name, param_ty, arg_type);
-                self.collect_type_bindings(param_ty, &arg_type, &mut bindings);
+                                self.collect_type_bindings(param_ty, &arg_type, &mut bindings);
             }
         }
         
-        eprintln!("[MONO-DEBUG] Final type bindings: {:?}", bindings);
-        bindings
+                bindings
     }
 
     /// Get the IrType of a ValueId by searching through the IR.
@@ -2939,17 +3138,13 @@ impl Lower {
         // Case 1: Value is a function parameter
         // Parameters are ValueId(0), ValueId(1), etc. matching their position
         if let Some((_, param_type)) = func.params.get(value_id.0 as usize) {
-            eprintln!("[MONO-DEBUG] ValueId({}) is parameter with type {:?}",
-                value_id.0, param_type);
-            return Some(param_type.clone());
+                        return Some(param_type.clone());
         }
         
         // Case 2: Value was created in the current block
         for inst in &ir_block.instructions {
             if inst.result == value_id {
-                eprintln!("[MONO-DEBUG] ValueId({}) found in current block: {:?}",
-                    value_id.0, inst.ty);
-                return Some(inst.ty.clone());
+                                return Some(inst.ty.clone());
             }
         }
         
@@ -2957,15 +3152,29 @@ impl Lower {
         for block in &func.blocks {
             for inst in &block.instructions {
                 if inst.result == value_id {
-                    eprintln!("[MONO-DEBUG] ValueId({}) found in block {}: {:?}",
-                        value_id.0, block.label.0, inst.ty);
-                    return Some(inst.ty.clone());
+                                        return Some(inst.ty.clone());
                 }
             }
         }
         
-        eprintln!("[MONO-DEBUG] ValueId({}) not found in parameters or blocks", value_id.0);
-        None
+                None
+    }
+
+    /// Get the return type of a function by name.
+    /// Looks up the function in function_defs and converts its return type to IrType.
+    fn get_function_return_type(&mut self, func_name: &str) -> Option<IrType> {
+        // Check function definitions - clone the return type AST to avoid borrow issues
+        let return_type_ast = self.function_defs.get(func_name)
+            .and_then(|func_defs| func_defs.first())
+            .and_then(|func_def| func_def.return_type.clone())?;
+        
+        // Try to lower the return type
+        if let Ok(ir_type) = self.lower_type(&return_type_ast) {
+            return Some(ir_type);
+        }
+        
+        // If lowering fails, default to Void
+        Some(IrType::Void)
     }
 
     /// Recursively collect type parameter bindings by matching AST type with concrete IR type.
@@ -2978,9 +3187,7 @@ impl Lower {
         match param_type {
             // Direct type parameter reference - this is what we're looking for!
             atom_ast::Type::Param(ident) => {
-                eprintln!("[MONO-DEBUG] Binding type param '{}' to {:?}",
-                    ident.name, concrete_type);
-                bindings.insert(ident.name.clone(), concrete_type.clone());
+                                bindings.insert(ident.name.clone(), concrete_type.clone());
             }
             
             // Named type - no type parameters to extract
@@ -3032,11 +3239,8 @@ impl Lower {
         concrete_types: &HashMap<String, IrType>,
         _func_def: &atom_ast::FunctionDef,
     ) -> String {
-        eprintln!("[MONO] generate_mono_name: func_name={}, concrete_types={:?}", func_name, concrete_types);
-        
-        if concrete_types.is_empty() {
-            eprintln!("[MONO] Empty concrete_types, returning original name: {}", func_name);
-            return func_name.to_string();
+                if concrete_types.is_empty() {
+                        return func_name.to_string();
         }
         
         let mut name = func_name.to_string();
@@ -3062,8 +3266,7 @@ impl Lower {
             name.push_str(&type_suffix);
         }
         
-        eprintln!("[MONO] Final monomorphized name: {}", name);
-        name
+                name
     }
 
     /// Substitute type parameters in a function definition with concrete types.
@@ -3114,13 +3317,10 @@ impl Lower {
             // BASE CASE: Direct substitution of type parameter
             atom_ast::Type::Param(ident) => {
                 if let Some(concrete_type) = type_bindings.get(&ident.name) {
-                    eprintln!("[MONO-DEBUG] Substituting type param '{}' with {:?}",
-                        ident.name, concrete_type);
-                    self.ir_type_to_ast_type(concrete_type)
+                                        self.ir_type_to_ast_type(concrete_type)
                 } else {
                     // Unbound type parameter - leave as is (or error?)
-                    eprintln!("[MONO-DEBUG] Warning: unbound type param '{}'", ident.name);
-                    Ok(ast_type.clone())
+                                        Ok(ast_type.clone())
                 }
             }
             
@@ -3221,6 +3421,10 @@ impl Lower {
             })),
             IrType::Float(32) => Ok(atom_ast::Type::Named(atom_ast::Ident {
                 name: "Float32".to_string(),
+                span,
+            })),
+            IrType::Rune => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Rune".to_string(),
                 span,
             })),
             IrType::Pointer(inner) if matches!(**inner, IrType::Int(8)) => {

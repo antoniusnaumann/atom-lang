@@ -184,6 +184,12 @@ impl CodeGenerator {
         let mut func_ids = HashMap::new();
         let mut external_funcs = HashMap::new();
         
+        // Always pre-declare __builtin_string_literal since it's needed for string constants
+        let mut string_literal_sig = Signature::new(CallConv::SystemV);
+        string_literal_sig.params.push(AbiParam::new(types::I64)); // const char* pointer
+        string_literal_sig.returns.push(AbiParam::new(types::I64)); // char* pointer
+        external_funcs.insert("__builtin_string_literal".to_string(), string_literal_sig);
+        
         for func in &ir.functions {
             let func_id = self.declare_function(&mut module, func)?;
             let mangled_name = self.mangle_function_name(func);
@@ -224,8 +230,7 @@ impl CodeGenerator {
             let func_id = func_ids[&mangled_name];
             if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                 if debug == "1" {
-                    eprintln!("[DEBUG] Compiling function '{}' with return type: {:?}", func.name, func.return_type);
-                }
+                                    }
             }
             
             // Try to compile the function, but make errors non-fatal
@@ -287,6 +292,12 @@ impl CodeGenerator {
                                     sig.params.push(AbiParam::new(types::I32));
                                     sig.returns.push(AbiParam::new(types::I64)); // pointer
                                 }
+                                "__builtin_append_rune_to_string" => {
+                                    // char* __builtin_append_rune_to_string(char*, int32_t)
+                                    sig.params.push(AbiParam::new(types::I64)); // string pointer
+                                    sig.params.push(AbiParam::new(types::I32)); // rune (i32)
+                                    sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
                                 "__builtin_string_concat" => {
                                     // char* __builtin_string_concat(char*, char*)
                                     sig.params.push(AbiParam::new(types::I64)); // pointer
@@ -297,6 +308,11 @@ impl CodeGenerator {
                                     // char* __builtin_string_literal(const char*)
                                     sig.params.push(AbiParam::new(types::I64)); // pointer
                                     sig.returns.push(AbiParam::new(types::I64)); // pointer
+                                }
+                                "__builtin_printf_and_free" => {
+                                    // int __builtin_printf_and_free(char*)
+                                    sig.params.push(AbiParam::new(types::I64)); // pointer
+                                    sig.returns.push(AbiParam::new(types::I32)); // int
                                 }
                                 _ => {
                                     // Unknown builtin - skip it
@@ -318,10 +334,34 @@ impl CodeGenerator {
                                 // Create signature for C function
                                 let mut sig = Signature::new(CallConv::SystemV);
                                 
-                                // Add variadic parameters (use actual arg count)
-                                for _ in 0..args.len() {
-                                    // For simplicity, assume all args are i64 or pointers
-                                    sig.params.push(AbiParam::new(types::I64));
+                                // For cmath functions, infer parameter types from the function name
+                                // Math functions with 'f' suffix take float32, others take float64
+                                if parts[0] == "cmath" {
+                                    let param_type = if c_func_name.ends_with('f') {
+                                        types::F32
+                                    } else {
+                                        types::F64
+                                    };
+                                    
+                                    // Add parameters based on known signatures
+                                    match c_func_name.as_str() {
+                                        // Two-parameter functions
+                                        "atan2" | "atan2f" | "pow" | "powf" | "fmod" | "fmodf" | 
+                                        "remainder" | "remainderf" | "copysign" | "copysignf" |
+                                        "fmin" | "fminf" | "fmax" | "fmaxf" | "hypot" | "hypotf" => {
+                                            sig.params.push(AbiParam::new(param_type));
+                                            sig.params.push(AbiParam::new(param_type));
+                                        }
+                                        // Default: single-parameter function
+                                        _ => {
+                                            sig.params.push(AbiParam::new(param_type));
+                                        }
+                                    }
+                                } else {
+                                    // For non-math C functions, use I64 for all parameters
+                                    for _ in 0..args.len() {
+                                        sig.params.push(AbiParam::new(types::I64));
+                                    }
                                 }
                                 
                                 // Determine return type
@@ -356,8 +396,7 @@ impl CodeGenerator {
         // Monomorphization already creates unique names like "print$String"
         // Double mangling would create mismatches between declaration and call sites
         if func.name.contains('$') {
-            eprintln!("[MANGLE] Skipping mangling for monomorphized function: {}", func.name);
-            return func.name.clone();
+                        return func.name.clone();
         }
 
         // Simple mangling scheme: funcname_param1Type_param2Type_retType
@@ -376,8 +415,7 @@ impl CodeGenerator {
             mangled.push_str(&self.type_to_mangle_string(ret_ty));
         }
         
-        eprintln!("[MANGLE] Mangled '{}' -> '{}'", func.name, mangled);
-        mangled
+                mangled
     }
 
     /// Convert a type to a string for name mangling
@@ -421,8 +459,7 @@ impl CodeGenerator {
 
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
-                eprintln!("[DEBUG] Declaring function '{}' with signature: {:?}", func.name, sig);
-            }
+                            }
         }
 
         // Determine linkage
@@ -464,26 +501,22 @@ impl CodeGenerator {
         }
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
-                eprintln!("[DEBUG] Setting signature for '{}', return_type = {:?}", func.name, func.return_type);
-            }
+                            }
         }
         if let Some(ret_ty) = &func.return_type {
             if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                 if debug == "1" {
-                    eprintln!("[DEBUG] Translating return type {:?} for '{}'", ret_ty, func.name);
-                }
+                                    }
             }
             let cl_type = self.translate_type(ret_ty)?;
             if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                 if debug == "1" {
-                    eprintln!("[DEBUG] Translated to Cranelift type: {:?}", cl_type);
-                }
+                                    }
             }
             ctx.func.signature.returns.push(AbiParam::new(cl_type));
             if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                 if debug == "1" {
-                    eprintln!("[DEBUG] Signature after adding return: {:?}", ctx.func.signature);
-                }
+                                    }
             }
         }
 
@@ -492,14 +525,10 @@ impl CodeGenerator {
             // Debug: Print IR blocks for find function before codegen
             if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                 if debug == "1" && func.name == "find" {
-                    eprintln!("[DEBUG-CODEGEN] IR blocks for '{}' before codegen:", func.name);
-                    for (idx, block) in func.blocks.iter().enumerate() {
-                        eprintln!("[DEBUG-CODEGEN]   Block {} (label={:?}):", idx, block.label);
-                        for (inst_idx, inst) in block.instructions.iter().enumerate() {
-                            eprintln!("[DEBUG-CODEGEN]     [{}] {:?}", inst_idx, inst);
-                        }
-                        eprintln!("[DEBUG-CODEGEN]     Terminator: {:?}", block.terminator);
-                    }
+                                        for (idx, block) in func.blocks.iter().enumerate() {
+                                                for (inst_idx, inst) in block.instructions.iter().enumerate() {
+                                                    }
+                                            }
                 }
             }
 
@@ -699,8 +728,7 @@ impl CodeGenerator {
         // Print Cranelift IR for debugging when ATOM_DEBUG is set
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
-                eprintln!("[DEBUG] Cranelift IR for '{}':", func.name);
-                eprintln!("{}", ctx.func.display());
+                                eprintln!("{}", ctx.func.display());
             }
         }
 
@@ -708,16 +736,14 @@ impl CodeGenerator {
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
                 if let Err(errors) = cranelift::codegen::verify_function(&ctx.func, module.isa()) {
-                    eprintln!("[DEBUG] Verification errors for function '{}':", func.name);
-                    eprintln!("{}", errors);
+                                        eprintln!("{}", errors);
                 }
             }
         }
 
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
-                eprintln!("[DEBUG] About to define function '{}', signature = {:?}", func.name, ctx.func.signature);
-            }
+                            }
         }
 
         // Define the function in the module
@@ -733,6 +759,8 @@ impl CodeGenerator {
                     eprintln!("Warning: Skipping function '{}' due to compilation error: {}", func.name, e);
                     eprintln!("This function may use unsupported features (e.g., generics without monomorphization).");
                     eprintln!("If this function is not called, the program may still work.");
+                    eprintln!("Function IR:");
+                    eprintln!("{}", ctx.func.display());
                     
                     // Clear the context
                     module.clear_context(&mut ctx);
@@ -767,7 +795,7 @@ impl CodeGenerator {
         cl_blocks: &HashMap<BlockId, Block>,
     ) -> CodegenResult<Value> {
         match &inst.kind {
-            IrInstructionKind::Const { value } => self.translate_const(builder, value, &inst.ty, module),
+            IrInstructionKind::Const { value } => self.translate_const(builder, value, &inst.ty, module, func_ids),
 
             IrInstructionKind::BinOp { op, left, right } => {
                 let left_val = values
@@ -798,8 +826,7 @@ impl CodeGenerator {
                 // Debug: print function name
                 if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                     if debug == "1" && function.contains("builtin") {
-                        eprintln!("[DEBUG] Translating call to function: '{}'", function);
-                    }
+                                            }
                 }
                 
                 // Check if this is a tail call to the current function (self-recursion)
@@ -873,10 +900,7 @@ impl CodeGenerator {
                                 need_better_match = true;
                                 if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                                     if debug == "1" {
-                                        eprintln!("[DEBUG] Function '{}' signature mismatch - looking for better overload", actual_func_name);
-                                        eprintln!("[DEBUG]   Expected: {:?}", current_sig.params.iter().map(|p| p.value_type).collect::<Vec<_>>());
-                                        eprintln!("[DEBUG]   Actual: {:?}", arg_types);
-                                    }
+                                                                                                                                                            }
                                 }
                             }
                         }
@@ -894,8 +918,7 @@ impl CodeGenerator {
                                     if types_match {
                                         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                                             if debug == "1" {
-                                                eprintln!("[DEBUG] Found compatible overload: {}", candidate_name);
-                                            }
+                                                                                            }
                                         }
                                         func_id = Some(*candidate_id);
                                         break;
@@ -941,13 +964,19 @@ impl CodeGenerator {
                     .collect();
                 let arg_vals = arg_vals?;
 
-                // Create a signature for the indirect call
-                // For now, assume all parameters are I64 and return type is I64
+                // Create a signature for the indirect call based on the actual argument types
+                // We need to get the actual types from the Cranelift values
                 let mut sig = module.make_signature();
-                for _ in &arg_vals {
-                    sig.params.push(AbiParam::new(types::I64));
+                for val in &arg_vals {
+                    let arg_ty = builder.func.dfg.value_type(*val);
+                    sig.params.push(AbiParam::new(arg_ty));
                 }
-                sig.returns.push(AbiParam::new(types::I64));
+                
+                // Use the instruction's return type for the signature
+                let ret_cl_type = self.translate_type(&inst.ty)?;
+                if !matches!(inst.ty, IrType::Void) {
+                    sig.returns.push(AbiParam::new(ret_cl_type));
+                }
                 
                 let sig_ref = builder.import_signature(sig);
                 
@@ -993,22 +1022,19 @@ impl CodeGenerator {
             }
 
             IrInstructionKind::TupleExtract { tuple, index } => {
-                // Simplified: assume tuple is just the value itself if index is 0
-                // Real implementation would load from memory offset
-                if *index == 0 {
-                    let tuple_val = values
-                        .get(tuple)
-                        .copied()
-                        .ok_or(CodegenError::InvalidValue(*tuple))?;
-                    // Create a distinct SSA value using select(true, val, val)
-                    // This is semantically identity but creates a new value
-                    let true_const = builder.ins().iconst(types::I8, 1);
-                    Ok(builder.ins().select(true_const, tuple_val, tuple_val))
-                } else {
-                    Err(CodegenError::UnsupportedInstruction(
-                        "Non-zero tuple extract not yet implemented".to_string(),
-                    ))
-                }
+                // Get the tuple pointer (returned by MakeTuple)
+                let tuple_ptr = values
+                    .get(tuple)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*tuple))?;
+                
+                // Calculate offset: each element is 8 bytes
+                let offset = (*index * 8) as i32;
+                
+                // Load from the tuple at the given offset
+                // Use the instruction's type to determine what to load
+                let load_type = self.translate_type(&inst.ty)?;
+                Ok(builder.ins().load(load_type, MemFlags::new(), tuple_ptr, offset))
             }
 
             IrInstructionKind::MakeStruct { struct_name: _, fields } => {
@@ -1121,15 +1147,19 @@ impl CodeGenerator {
                     .copied()
                     .ok_or(CodegenError::InvalidValue(*index))?;
                 
-                // Compute offset: index * 8 (assuming 8-byte elements)
-                let elem_size = builder.ins().iconst(types::I64, 8);
-                let byte_offset = builder.ins().imul(index_val, elem_size);
+                // Get the element type from the instruction's result type
+                let elem_cl_type = self.translate_type(&inst.ty)?;
+                let elem_size = self.type_size(&inst.ty);
+                
+                // Compute offset: index * elem_size
+                let size_const = builder.ins().iconst(types::I64, elem_size as i64);
+                let byte_offset = builder.ins().imul(index_val, size_const);
                 
                 // Compute element address: array_ptr + byte_offset
                 let elem_ptr = builder.ins().iadd(array_ptr, byte_offset);
                 
-                // Load the element value
-                Ok(builder.ins().load(types::I64, MemFlags::new(), elem_ptr, 0))
+                // Load the element value with the correct type
+                Ok(builder.ins().load(elem_cl_type, MemFlags::new(), elem_ptr, 0))
             }
 
             IrInstructionKind::ArrayAppend { array, element } => {
@@ -1185,11 +1215,11 @@ impl CodeGenerator {
         constant: &IrConstant,
         ty: &IrType,
         module: &mut ObjectModule,
+        func_ids: &HashMap<String, FuncId>,
     ) -> CodegenResult<Value> {
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
-                eprintln!("[DEBUG] translate_const: constant={:?}, ty={:?}", constant, ty);
-            }
+                            }
         }
         
         match constant {
@@ -1197,8 +1227,7 @@ impl CodeGenerator {
                 let cl_type = self.translate_type(ty)?;
                 if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                     if debug == "1" {
-                        eprintln!("[DEBUG] translate_const Int: cl_type={:?}, value={}", cl_type, n);
-                    }
+                                            }
                 }
                 // iconst only works with integer types, not floats
                 if cl_type == types::F32 || cl_type == types::F64 {
@@ -1212,8 +1241,7 @@ impl CodeGenerator {
                 let cl_type = self.translate_type(ty)?;
                 if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                     if debug == "1" {
-                        eprintln!("[DEBUG] translate_const UInt: cl_type={:?}, value={}", cl_type, n);
-                    }
+                                            }
                 }
                 // iconst only works with integer types, not floats
                 if cl_type == types::F32 || cl_type == types::F64 {
@@ -1262,10 +1290,22 @@ impl CodeGenerator {
                     data_id
                 };
                 
-                // Get a pointer to the global data
+                // Get a pointer to the global data (read-only static string)
                 let global_value = module.declare_data_in_func(data_id, builder.func);
-                let ptr = builder.ins().global_value(types::I64, global_value);
-                Ok(ptr)
+                let static_ptr = builder.ins().global_value(types::I64, global_value);
+                
+                // IMPORTANT: Call __builtin_string_literal to create a heap copy
+                // This is necessary because __builtin_string_concat used to free its arguments.
+                // Now that concat doesn't free (to avoid crashes), this is less critical,
+                // but we keep it for consistency and to ensure all strings are heap-allocated.
+                let string_literal_func = func_ids.get("__builtin_string_literal")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("__builtin_string_literal".to_string()))?;
+                let func_ref = module.declare_func_in_func(*string_literal_func, builder.func);
+                
+                // Call __builtin_string_literal(static_ptr) to get heap-allocated copy
+                let call = builder.ins().call(func_ref, &[static_ptr]);
+                let results = builder.inst_results(call);
+                Ok(results[0])
             }
         }
     }
@@ -1284,39 +1324,59 @@ impl CodeGenerator {
         let is_float = matches!(result_ty, IrType::Float(_));
         let is_signed = matches!(result_ty, IrType::Int(_));
 
-        // For comparison operations, ensure both operands have the same type
+        // Ensure both operands have compatible types for all binary operations
         // by extending/truncating if necessary
-        let (left, right) = if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
+        let (left, right) = {
             let left_ty = builder.func.dfg.value_type(left);
             let right_ty = builder.func.dfg.value_type(right);
             
             if left_ty != right_ty {
                 eprintln!("  Types differ, need to extend");
-                // Promote to the larger type
-                let left_bits = left_ty.bits();
-                let right_bits = right_ty.bits();
-                eprintln!("  left_bits={}, right_bits={}", left_bits, right_bits);
-                
-                if left_bits < right_bits {
-                    let new_left = if is_signed {
-                        builder.ins().sextend(right_ty, left)
-                    } else {
-                        builder.ins().uextend(right_ty, left)
-                    };
-                    (new_left, right)
+                // Determine target type: use the result type if available, otherwise promote to larger
+                let target_ty = if let Ok(cl_ty) = self.translate_type(result_ty) {
+                    cl_ty
                 } else {
-                    let new_right = if is_signed {
-                        builder.ins().sextend(left_ty, right)
+                    // Fallback: promote to the larger of the two types
+                    let left_bits = left_ty.bits();
+                    let right_bits = right_ty.bits();
+                    if left_bits > right_bits { left_ty } else { right_ty }
+                };
+                
+                eprintln!("  left_bits={}, right_bits={}, target={:?}", left_ty.bits(), right_ty.bits(), target_ty);
+                
+                // Extend or truncate to target type
+                let new_left = if left_ty != target_ty {
+                    if left_ty.bits() < target_ty.bits() {
+                        if is_signed {
+                            builder.ins().sextend(target_ty, left)
+                        } else {
+                            builder.ins().uextend(target_ty, left)
+                        }
                     } else {
-                        builder.ins().uextend(left_ty, right)
-                    };
-                    (left, new_right)
-                }
+                        builder.ins().ireduce(target_ty, left)
+                    }
+                } else {
+                    left
+                };
+                
+                let new_right = if right_ty != target_ty {
+                    if right_ty.bits() < target_ty.bits() {
+                        if is_signed {
+                            builder.ins().sextend(target_ty, right)
+                        } else {
+                            builder.ins().uextend(target_ty, right)
+                        }
+                    } else {
+                        builder.ins().ireduce(target_ty, right)
+                    }
+                } else {
+                    right
+                };
+                
+                (new_left, new_right)
             } else {
                 (left, right)
             }
-        } else {
-            (left, right)
         };
 
         let result = match op {

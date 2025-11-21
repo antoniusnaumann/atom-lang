@@ -8,7 +8,8 @@
 }
 
 +as_cstring(s String) String {
-    s ++ '\0'
+    // Strings in Atom are already null-terminated, so just return as-is
+    s
 }
 
 +split(s String, delim Rune) String* {
