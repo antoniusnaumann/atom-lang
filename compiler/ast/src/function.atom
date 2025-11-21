@@ -1,0 +1,22 @@
++FunctionDef(
+    visibility Visibility
+    name Ident
+    const_params Param*
+    params Param*
+    return Option(TypeItem)
+    body Block
+    span Span
+)
+
++Call(
+    func Expression
+    args Expression*
+    span Span
+    // Hint for the formatter if this is a dot-call
+    method Bool
+)
+
++Closure(
+    params Param*
+    return Option(TypeItem)
+)

@@ -1,0 +1,8 @@
++Span(
+    start UInt
+    end   UInt
+)
+
++merge(this Span, other Span) Span {
+    Span(start: this.start, end: other.end)
+}

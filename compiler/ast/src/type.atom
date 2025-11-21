@@ -1,0 +1,76 @@
++TypeItem(
+    Named(NamedType)
+    Param(Ident)
+    Tuple(TupleType)
+    Struct(Field*)
+    Variadic(VariadicType)
+    Closure(ClosureType)
+)
+
++NamedType(
+    name Ident
+    params TypeParam*
+    span Span
+)
+
++StructDef(
+    visibility Visibility
+    name Ident
+    type_params TypeParam*
+    fields Field*
+    span Span
+)
+
++StructInit(
+    name Option(Ident)
+    fields Field*
+    span Span
+)
+
++Field(
+    name Ident
+    type TypeItem
+    span Span
+)
+
++FieldAccess(
+    receiver Expression
+    field Ident
+    span Span
+)
+
++EnumDef(
+    visibility Visibility
+    name Ident
+    params ConstParam*
+    cases EnumCase
+    span Span
+)
+
++EnumCase(
+    name Ident
+    fields TypeItem*
+    span Span
+)
+
++TupleType(
+    types TypeItem*
+    span Span
+)
+
++Tuple(
+    fields Expression*
+    span Span
+)
+
++Variadic(
+    element TypeItem
+    size VariadicSize
+)
+
++VariadicSize(
+    Static(Expression)
+    Dynamic
+    NonEmpty
+)
+

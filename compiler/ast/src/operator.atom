@@ -1,0 +1,56 @@
++Binary(
+    op BinOp
+    left Expression
+    right Expression
+    span Span
+)
+
++Unary(
+    op UnOp
+    expr Expression
+    span Span
+)
+
++BinOp(
+    // Arithmetic
+    Add
+    Sub
+    Mul
+    Div
+    Mod
+
+    // Comparison
+    Eq
+    Ne
+    Lt
+    Le
+    Gt
+    Ge
+
+    // Logical
+    And
+    Or
+
+    // Bitwise
+    BitAnd
+    BitOr
+    LShift
+    RShift
+
+    // Collection
+    Concat      // ++
+    
+    // Assignment
+    Assign        // =
+    AddAssign     // +=
+    SubAssign     // -=
+    MulAssign     // *=
+    DivAssign     // /=
+    ModAssign     // %=
+    ConcatAssign, // ++=
+)
+
++UnOp(
+    Neg,
+    Not, // !, works as bitwise not and logical not
+)

@@ -1,0 +1,43 @@
++TopLevel(
+    Import(ImportDecl)
+    Struct(StructDef)
+    Enum(EnumDef)
+    Function(FunctionDef)
+    Variable(VarDecl)
+    TestBlock(TestBlock)
+    /// Statement (only allowed in .test.atom files)
+    Statement(Stmt)
+)
+
++ImportDecl(
+    namespace Ident
+    items ImportItems
+    span Span
+)
+
++ImportItems(
+    All
+    Named(Ident*)
+)
+
++TestBlock(
+    name Option(String)
+    body Block
+    span Span
+)
+
++Block(
+    statements Statement*
+    span Span
+)
+
++Visibility(
+    Public   // +
+    Private  // -
+    Internal // (default)
+)
+
++Ident(
+    name String
+    span Span
+)

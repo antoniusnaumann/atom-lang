@@ -1,0 +1,40 @@
++Statement(
+    Variable(_)
+    Expression(_)
+)
+
++Var(
+    names Ident*
+    type Option(TypeItem)
+    init Option(Expression)
+    span Span
+)
+
++Expression(
+    Literal(_)
+    Ident(_)
+    Binary(_)
+    Unary(_)
+    Call(_)
+    FieldAccess(_)
+    Tuple(_)
+    Struct(_)
+    Closure(_)
+    Block(_)
+    Match(_)
+    Comptime(_)
+)
+
++Literal(
+    kind LiteralKind
+    span Span
+)
+
++LiteralKind(
+    IntLit(Int)
+    FloatLit(Float)
+    StringLit(String)
+    RuneLit(Rune)
+    BoolLit(Bool)
+)
+
