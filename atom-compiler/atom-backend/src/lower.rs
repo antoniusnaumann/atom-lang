@@ -2454,6 +2454,15 @@ impl Lower {
 
             // Determine the tag value for this pattern
             let tag_value = match &arm.pattern {
+                atom_ast::Pattern::Literal(lit, _) => {
+                    // For literal patterns, use the actual literal value
+                    match lit {
+                        atom_ast::Literal::Integer(val) => *val as u32,
+                        atom_ast::Literal::Bool(b) => if *b { 1 } else { 0 },
+                        atom_ast::Literal::Rune(r) => *r as u32,
+                        _ => i as u32, // Fallback for other literal types
+                    }
+                }
                 atom_ast::Pattern::Enum { name, .. } => {
                     // For enum patterns, map the variant name to its tag value
                     // For Bool: False = 0, True = 1
@@ -2467,7 +2476,7 @@ impl Lower {
                         _ => i as u32,
                     }
                 }
-                _ => i as u32, // For non-enum patterns, use arm index
+                _ => i as u32, // For non-enum/non-literal patterns, use arm index
             };
 
             // Handle pattern bindings
@@ -2512,12 +2521,27 @@ impl Lower {
         }
 
         // Create switch terminator on current block
-        let default_block_id = case_blocks.last().unwrap().1;
-        let cases: Vec<(u32, BlockId)> = case_blocks
-            .iter()
-            .take(case_blocks.len() - 1)
-            .map(|(tag, block_id, _, _)| (*tag, *block_id))
-            .collect();
+        // Check if the last pattern is a wildcard (should be used as default)
+        let last_is_wildcard = matches!(arms.last().unwrap().pattern, atom_ast::Pattern::Wildcard(_));
+        
+        let (cases, default_block_id) = if last_is_wildcard {
+            // Last pattern is wildcard: use it as default, all others as cases
+            let default_block_id = case_blocks.last().unwrap().1;
+            let cases: Vec<(u32, BlockId)> = case_blocks
+                .iter()
+                .take(case_blocks.len() - 1)
+                .map(|(tag, block_id, _, _)| (*tag, *block_id))
+                .collect();
+            (cases, default_block_id)
+        } else {
+            // No wildcard: all patterns are explicit cases, use first as default (will be overridden by cases)
+            let default_block_id = case_blocks.first().unwrap().1;
+            let cases: Vec<(u32, BlockId)> = case_blocks
+                .iter()
+                .map(|(tag, block_id, _, _)| (*tag, *block_id))
+                .collect();
+            (cases, default_block_id)
+        };
 
         ir_block.set_terminator(IrTerminator::Switch {
             value: match_value,
