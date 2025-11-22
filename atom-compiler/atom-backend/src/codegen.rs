@@ -1829,56 +1829,77 @@ impl CodeGenerator {
                     // No cases, just jump to default
                     builder.ins().jump(*default_cl, &[]);
                 } else {
-                    // Multiple cases: use br_table or chained branches
-                    // For now, implement as chained if-else comparisons
-                    // TODO: Optimize with br_table for dense case ranges
+                    // Multiple cases: use chained if-else comparisons
+                    // Create intermediate blocks for all but the first comparison
                     
-                    // Generate: if (value == case0) goto block0; else if (value == case1) goto block1; ... else goto default
-                    let mut remaining_cases = cases.to_vec();
-                    let (first_tag, first_block) = remaining_cases.remove(0);
+                    let switch_ty = builder.func.dfg.value_type(*switch_value);
                     
-                    let first_cl = blocks
+                    // First comparison happens in the current block
+                    let (first_tag, first_block) = cases[0];
+                    let first_cl_block = blocks
                         .get(&first_block)
                         .ok_or(CodegenError::InvalidBlock(first_block))?;
                     
-                    if remaining_cases.is_empty() {
-                        // Only one case left, same as single-case above
-                        let switch_ty = builder.func.dfg.value_type(*switch_value);
-                        
-                        // Handle float vs integer comparison
-                        if switch_ty == types::F32 || switch_ty == types::F64 {
-                            let tag_const = if switch_ty == types::F64 {
-                                builder.ins().f64const(first_tag as f64)
-                            } else {
-                                builder.ins().f32const(first_tag as f32)
-                            };
-                            let cond = builder.ins().fcmp(FloatCC::Equal, *switch_value, tag_const);
-                            builder.ins().brif(cond, *first_cl, &[], *default_cl, &[]);
-                        } else {
-                            let tag_const = builder.ins().iconst(switch_ty, first_tag as i64);
-                            let cond = builder.ins().icmp(IntCC::Equal, *switch_value, tag_const);
-                            builder.ins().brif(cond, *first_cl, &[], *default_cl, &[]);
-                        }
+                    // Create intermediate blocks for remaining comparisons
+                    let mut intermediate_blocks = Vec::new();
+                    for _ in 1..cases.len() {
+                        intermediate_blocks.push(builder.create_block());
+                    }
+                    
+                    // First comparison in current block
+                    let first_fallthrough = if intermediate_blocks.is_empty() {
+                        *default_cl
                     } else {
-                        // Multiple cases: create fallthrough blocks
-                        // For simplicity, just use the first case as an if, and jump to default for all others
-                        // This is a simplified implementation for match expressions with 2 arms
-                        let switch_ty = builder.func.dfg.value_type(*switch_value);
+                        intermediate_blocks[0]
+                    };
+                    
+                    if switch_ty == types::F32 || switch_ty == types::F64 {
+                        let tag_const = if switch_ty == types::F64 {
+                            builder.ins().f64const(first_tag as f64)
+                        } else {
+                            builder.ins().f32const(first_tag as f32)
+                        };
+                        let cond = builder.ins().fcmp(FloatCC::Equal, *switch_value, tag_const);
+                        builder.ins().brif(cond, *first_cl_block, &[], first_fallthrough, &[]);
+                    } else {
+                        let tag_const = builder.ins().iconst(switch_ty, first_tag as i64);
+                        let cond = builder.ins().icmp(IntCC::Equal, *switch_value, tag_const);
+                        builder.ins().brif(cond, *first_cl_block, &[], first_fallthrough, &[]);
+                    }
+                    
+                    // Handle remaining cases in intermediate blocks
+                    for (i, (case_tag, case_block)) in cases.iter().skip(1).enumerate() {
+                        let case_cl_block = blocks
+                            .get(case_block)
+                            .ok_or(CodegenError::InvalidBlock(*case_block))?;
                         
-                        // Handle float vs integer comparison
+                        let current_intermediate = intermediate_blocks[i];
+                        let fallthrough = if i + 1 < intermediate_blocks.len() {
+                            intermediate_blocks[i + 1]
+                        } else {
+                            *default_cl
+                        };
+                        
+                        builder.switch_to_block(current_intermediate);
+                        
                         if switch_ty == types::F32 || switch_ty == types::F64 {
                             let tag_const = if switch_ty == types::F64 {
-                                builder.ins().f64const(first_tag as f64)
+                                builder.ins().f64const(*case_tag as f64)
                             } else {
-                                builder.ins().f32const(first_tag as f32)
+                                builder.ins().f32const(*case_tag as f32)
                             };
                             let cond = builder.ins().fcmp(FloatCC::Equal, *switch_value, tag_const);
-                            builder.ins().brif(cond, *first_cl, &[], *default_cl, &[]);
+                            builder.ins().brif(cond, *case_cl_block, &[], fallthrough, &[]);
                         } else {
-                            let tag_const = builder.ins().iconst(switch_ty, first_tag as i64);
+                            let tag_const = builder.ins().iconst(switch_ty, *case_tag as i64);
                             let cond = builder.ins().icmp(IntCC::Equal, *switch_value, tag_const);
-                            builder.ins().brif(cond, *first_cl, &[], *default_cl, &[]);
+                            builder.ins().brif(cond, *case_cl_block, &[], fallthrough, &[]);
                         }
+                    }
+                    
+                    // Seal all intermediate blocks
+                    for intermediate in &intermediate_blocks {
+                        builder.seal_block(*intermediate);
                     }
                 }
             }
