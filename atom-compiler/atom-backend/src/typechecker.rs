@@ -650,7 +650,7 @@ impl TypeChecker {
         }
 
         // Check type compatibility
-        // Special case for Concat: allow Rune to be concatenated with String
+        // Special case for Concat: allow various concatenation operations
         if type_op == BinaryOp::Concat {
             // Helper to check if a type is the String struct
             let is_string_type = |ty: &Type| -> bool {
@@ -666,14 +666,54 @@ impl TypeChecker {
             let is_left_rune = matches!(left_ty, Type::Rune);
             let is_right_rune = matches!(right_ty, Type::Rune);
             
+            // String ++ Rune concatenation
             if is_left_string && is_right_rune {
-                // Allow String ++ Rune -> returns String
                 return Ok(left_ty);
             }
             
+            // Rune ++ String concatenation
             if is_right_string && is_left_rune {
-                // Allow Rune ++ String -> returns String
                 return Ok(right_ty);
+            }
+            
+            // Handle tuple concatenation
+            match (&left_ty, &right_ty) {
+                // Variadic tuple ++ element: Int* ++ Int
+                (Type::Tuple(left_tuple), _) if left_tuple.variadic.is_some() => {
+                    if let Some((elem_ty, _)) = &left_tuple.variadic {
+                        // Check if right type matches the variadic element type
+                        if right_ty.can_convert_to(elem_ty) {
+                            return Ok(left_ty);
+                        }
+                    }
+                }
+                
+                // Variadic tuple ++ variadic tuple: Int* ++ Int*
+                (Type::Tuple(left_tuple), Type::Tuple(right_tuple)) 
+                    if left_tuple.variadic.is_some() && right_tuple.variadic.is_some() => {
+                    if let (Some((left_elem, _)), Some((right_elem, _))) = 
+                        (&left_tuple.variadic, &right_tuple.variadic) {
+                        // Element types must be compatible
+                        if left_elem.structurally_equal(right_elem) {
+                            return Ok(left_ty);
+                        }
+                    }
+                }
+                
+                // Fixed tuple ++ fixed tuple: (Int, Float) ++ (String, Bool)
+                (Type::Tuple(left_tuple), Type::Tuple(right_tuple))
+                    if left_tuple.variadic.is_none() && right_tuple.variadic.is_none() => {
+                    // Concatenate the field types
+                    let mut combined_fields = left_tuple.fields.clone();
+                    combined_fields.extend(right_tuple.fields.clone());
+                    
+                    return Ok(Type::Tuple(TupleType {
+                        fields: combined_fields,
+                        variadic: None,
+                    }));
+                }
+                
+                _ => {}
             }
         }
         

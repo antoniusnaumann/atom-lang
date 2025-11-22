@@ -203,9 +203,6 @@ char* __builtin_rune_to_string(int32_t value) {
 // Append a rune (UTF-8 codepoint) to a string (for concatenation)
 // This is different from __builtin_rune_to_string which formats for display
 char* __builtin_append_rune_to_string(char* str, int32_t rune) {
-    fprintf(stderr, "[DEBUG] __builtin_append_rune_to_string: str=%p, rune=%d (0x%X '%c')\n", 
-            (void*)str, rune, rune, (rune >= 32 && rune < 127) ? (char)rune : '?');
-    
     if (!str) {
         str = (char*)malloc(1);
         if (!str) return NULL;
@@ -261,8 +258,6 @@ char* __builtin_append_rune_to_string(char* str, int32_t rune) {
     
     // Free original string
     free(str);
-    
-    fprintf(stderr, "[DEBUG] __builtin_append_rune_to_string: returning %p ('%s', len=%zu)\n", (void*)result, result, strlen(result));
     
     return result;
 }

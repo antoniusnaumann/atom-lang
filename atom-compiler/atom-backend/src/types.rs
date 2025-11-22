@@ -969,7 +969,7 @@ impl Type {
     fn supports_concat(&self) -> bool {
         match self {
             Type::Struct(s) if s.name == "String" => true, // String struct from stdlib
-            Type::Tuple(t) => t.variadic.is_some(), // Only variadic tuples
+            Type::Tuple(_) => true, // All tuples support concat (both fixed and variadic)
             Type::Void => true,
             Type::TypeParam(_) => true, // Type params assumed to support ops
             Type::Generic { base, .. } => base.supports_concat(),

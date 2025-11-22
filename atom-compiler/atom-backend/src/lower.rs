@@ -799,6 +799,172 @@ impl Lower {
         let left_value = self.lower_expr(left, ir_block, func)?;
         let right_value = self.lower_expr(right, ir_block, func)?;
 
+        // Handle Concat operator specially for String ++ String and String ++ Rune
+        if matches!(op, atom_ast::BinOp::Concat) {
+            let left_type = self.get_value_type(left_value, ir_block, func)
+                .unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+            let right_type = self.get_value_type(right_value, ir_block, func)
+                .unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
+            
+            // Helper: check if a type is a string (either Pointer(Int(8)) or Struct("String"))
+            let is_string_type = |ty: &IrType| -> bool {
+                matches!(ty, IrType::Pointer(inner) if matches!(**inner, IrType::Int(8)))
+                    || matches!(ty, IrType::Struct(name) if name == "String")
+            };
+            
+            // String ++ String: call __builtin_string_concat
+            if is_string_type(&left_type) && is_string_type(&right_type) {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_string_concat".to_string(),
+                        args: vec![left_value, right_value],
+                        is_tail: false,
+                    },
+                });
+                return Ok(result_id);
+            }
+            
+            // String ++ Rune: call __builtin_append_rune_to_string
+            if is_string_type(&left_type) && matches!(right_type, IrType::Rune) {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_append_rune_to_string".to_string(),
+                        args: vec![left_value, right_value],
+                        is_tail: false,
+                    },
+                });
+                return Ok(result_id);
+            }
+            
+            // Rune ++ String: convert rune to string first, then concat
+            if matches!(left_type, IrType::Rune) && is_string_type(&right_type) {
+                // Convert rune to string first
+                let rune_str_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: rune_str_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_rune_to_string".to_string(),
+                        args: vec![left_value],
+                        is_tail: false,
+                    },
+                });
+                // Then concat the two strings
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: IrType::Pointer(Box::new(IrType::Int(8))),
+                    kind: IrInstructionKind::Call {
+                        function: "__builtin_string_concat".to_string(),
+                        args: vec![rune_str_id, right_value],
+                        is_tail: false,
+                    },
+                });
+                return Ok(result_id);
+            }
+            
+            // Variadic tuple ++ variadic tuple (Array ++ Array): Int* ++ Int*
+            if matches!(left_type, IrType::Array { .. }) && matches!(right_type, IrType::Array { .. }) {
+                let result_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: result_id,
+                    ty: left_type.clone(),
+                    kind: IrInstructionKind::ArrayConcat {
+                        left: left_value,
+                        right: right_value,
+                    },
+                });
+                return Ok(result_id);
+            }
+            
+            // Variadic tuple ++ element (Array ++ Element): Int* ++ Int
+            if matches!(left_type, IrType::Array { .. }) {
+                // For appending an element, we need to create a single-element array first
+                // then concat it with the main array
+                if let IrType::Array { element } = &left_type {
+                    // Create a single-element array from the right value
+                    let single_elem_array_id = self.fresh_value_id();
+                    let single_elem_array_ty = IrType::Array { element: element.clone() };
+                    ir_block.add_instruction(IrInstruction {
+                        result: single_elem_array_id,
+                        ty: single_elem_array_ty.clone(),
+                        kind: IrInstructionKind::MakeTuple {
+                            elements: vec![right_value],
+                        },
+                    });
+                    
+                    // Now concatenate the two arrays
+                    let result_id = self.fresh_value_id();
+                    ir_block.add_instruction(IrInstruction {
+                        result: result_id,
+                        ty: left_type.clone(),
+                        kind: IrInstructionKind::ArrayConcat {
+                            left: left_value,
+                            right: single_elem_array_id,
+                        },
+                    });
+                    return Ok(result_id);
+                }
+            }
+            
+            // Fixed tuple ++ fixed tuple: (Int, Float) ++ (String, Bool)
+            if matches!(left_type, IrType::Tuple(_)) && matches!(right_type, IrType::Tuple(_)) {
+                // For fixed tuples, concatenation means creating a new tuple with all elements
+                // This requires extracting all elements from both tuples and making a new one
+                if let (IrType::Tuple(left_types), IrType::Tuple(right_types)) = (&left_type, &right_type) {
+                    let mut all_elements = Vec::new();
+                    let mut all_types = Vec::new();
+                    
+                    // Extract all elements from left tuple
+                    for (i, elem_ty) in left_types.iter().enumerate() {
+                        let elem_id = self.fresh_value_id();
+                        ir_block.add_instruction(IrInstruction {
+                            result: elem_id,
+                            ty: elem_ty.clone(),
+                            kind: IrInstructionKind::TupleExtract {
+                                tuple: left_value,
+                                index: i as u32,
+                            },
+                        });
+                        all_elements.push(elem_id);
+                        all_types.push(elem_ty.clone());
+                    }
+                    
+                    // Extract all elements from right tuple
+                    for (i, elem_ty) in right_types.iter().enumerate() {
+                        let elem_id = self.fresh_value_id();
+                        ir_block.add_instruction(IrInstruction {
+                            result: elem_id,
+                            ty: elem_ty.clone(),
+                            kind: IrInstructionKind::TupleExtract {
+                                tuple: right_value,
+                                index: i as u32,
+                            },
+                        });
+                        all_elements.push(elem_id);
+                        all_types.push(elem_ty.clone());
+                    }
+                    
+                    // Create a new tuple with all elements
+                    let result_id = self.fresh_value_id();
+                    ir_block.add_instruction(IrInstruction {
+                        result: result_id,
+                        ty: IrType::Tuple(all_types),
+                        kind: IrInstructionKind::MakeTuple {
+                            elements: all_elements,
+                        },
+                    });
+                    return Ok(result_id);
+                }
+            }
+        }
+
         let ir_op = self.convert_binop(op)?;
         
         // Determine result type
