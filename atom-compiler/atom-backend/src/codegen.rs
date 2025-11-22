@@ -217,7 +217,7 @@ impl CodeGenerator {
                 })?;
             // For __builtin_* functions, use the name as-is
             // For C library functions, add the c:: prefix
-            if c_name.starts_with("__builtin_") {
+            if c_name.starts_with("__builtin_") || c_name.starts_with("__atom_") {
                 func_ids.insert(c_name.clone(), func_id);
             } else {
                 func_ids.insert(format!("c::{}", c_name), func_id);
@@ -327,17 +327,53 @@ impl CodeGenerator {
                     else if function.starts_with('c') && function.contains("::") {
                         let parts: Vec<&str> = function.split("::").collect();
                         if parts.len() == 2 {
-                            let c_func_name = parts[1].to_string();
+                            // Map certain math macros to runtime functions
+                            // isnan, isinf, isfinite are macros on many platforms, use runtime wrappers instead
+                            let c_func_name = match parts[1] {
+                                "isnan" => "__atom_isnan",
+                                "isinf" => "__atom_isinf",
+                                "isfinite" => "__atom_isfinite",
+                                "isnan_f32" => "__atom_isnan_f32",
+                                "isinf_f32" => "__atom_isinf_f32",
+                                "isfinite_f32" => "__atom_isfinite_f32",
+                                other => other,
+                            }.to_string();
                             
                             // Only add if not already declared
                             if !external_funcs.contains_key(&c_func_name) {
                                 // Create signature for C function
                                 let mut sig = Signature::new(CallConv::SystemV);
                                 
+                                // Special handling for __atom_ runtime functions
+                                if c_func_name.starts_with("__atom_") {
+                                    match c_func_name.as_str() {
+                                        "__atom_isnan" | "__atom_isinf" | "__atom_isfinite" => {
+                                            // These runtime functions accept f64 and return i32
+                                            sig.params.push(AbiParam::new(types::F64));
+                                            sig.returns.push(AbiParam::new(types::I32));
+                                        }
+                                        "__atom_isnan_f32" | "__atom_isinf_f32" | "__atom_isfinite_f32" => {
+                                            // F32 variants accept f32 and return i32
+                                            sig.params.push(AbiParam::new(types::F32));
+                                            sig.returns.push(AbiParam::new(types::I32));
+                                        }
+                                        _ => {
+                                            // Unknown __atom_ function - use generic signature
+                                            for _ in 0..args.len() {
+                                                sig.params.push(AbiParam::new(types::I64));
+                                            }
+                                            sig.returns.push(AbiParam::new(types::I64));
+                                        }
+                                    }
+                                }
                                 // For cmath functions, infer parameter types from the function name
                                 // Math functions with 'f' suffix take float32, others take float64
-                                if parts[0] == "cmath" {
-                                    let param_type = if c_func_name.ends_with('f') {
+                                // Special case: functions ending in "inf" (like isinf, isfinite) are NOT f32 variants
+                                else if parts[0] == "cmath" {
+                                    let is_f32_variant = c_func_name.ends_with('f') && 
+                                        !c_func_name.ends_with("inf") && 
+                                        !c_func_name.ends_with("nan");
+                                    let param_type = if is_f32_variant {
                                         types::F32
                                     } else {
                                         types::F64
@@ -367,7 +403,11 @@ impl CodeGenerator {
                                 // Determine return type
                                 let ret_type = match c_func_name.as_str() {
                                     "exit" | "printf" => None,
+                                    // isnan, isinf, isfinite and their 'f' variants return int, not float
+                                    "isnan" | "isnanf" | "isinf" | "isinff" | "isfinite" | "isfinitef" => Some(types::I32),
+                                    // Math functions with 'f' suffix return float32
                                     name if name.ends_with('f') => Some(types::F32),
+                                    // Other cmath functions return float64
                                     _ if parts[0] == "cmath" => Some(types::F64),
                                     _ => Some(types::I64),
                                 };
@@ -862,8 +902,25 @@ impl CodeGenerator {
                     // Extract C function name: "cstdlib::printf" -> "printf"
                     let parts: Vec<&str> = function.split("::").collect();
                     if parts.len() == 2 {
-                        // Look up the external function with the c:: prefix
-                        format!("c::{}", parts[1])
+                        // Map certain math macros to runtime functions
+                        // isnan, isinf, isfinite are macros on many platforms, use runtime wrappers instead
+                        let mapped_name = match parts[1] {
+                            "isnan" => "__atom_isnan",
+                            "isinf" => "__atom_isinf",
+                            "isfinite" => "__atom_isfinite",
+                            "isnan_f32" => "__atom_isnan_f32",
+                            "isinf_f32" => "__atom_isinf_f32",
+                            "isfinite_f32" => "__atom_isfinite_f32",
+                            other => other,
+                        };
+                        
+                        // __atom_ functions are registered without c:: prefix, others with c:: prefix
+                        let result = if mapped_name.starts_with("__atom_") {
+                            mapped_name.to_string()
+                        } else {
+                            format!("c::{}", mapped_name)
+                        };
+                        result
                     } else {
                         function.clone()
                     }

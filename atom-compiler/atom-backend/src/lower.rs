@@ -1408,22 +1408,31 @@ impl Lower {
             if parts.len() == 2 && parts[0] == "cmath" {
                 let c_func_name = parts[1];
                 
-                // Check if this is a float-polymorphic function (isnan, isinf, isfinite, etc.)
-                let needs_f_suffix = matches!(
+                // Check if this is a float-polymorphic function
+                // For math.h functions, use 'f' suffix for f32 (e.g., sinf)
+                // For our runtime wrappers, use '_f32' suffix (e.g., __atom_isnan_f32)
+                let needs_variant_suffix = matches!(
                     c_func_name,
-                    "isnan" | "isinf" | "isfinite" | "sin" | "cos" | "tan" | 
+                    "sin" | "cos" | "tan" | 
                     "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" |
-                    "exp" | "log" | "log10" | "sqrt" | "ceil" | "floor" | "fabs"
+                    "exp" | "log" | "log10" | "sqrt" | "ceil" | "floor" | "fabs" |
+                    "isnan" | "isinf" | "isfinite"
                 );
                 
-                if needs_f_suffix && !arg_values.is_empty() {
+                if needs_variant_suffix && !arg_values.is_empty() {
                     // Check the first argument type
                     let first_arg_type = self.get_value_type(arg_values[0], ir_block, func);
                     let use_f32_variant = matches!(first_arg_type, Some(IrType::Float(32)));
                     
                     if use_f32_variant {
-                        // Use the 'f' suffix version (e.g., isnanf instead of isnan)
-                        let adjusted_name = format!("{}::{}f", parts[0], c_func_name);
+                        // For is* functions from our runtime, use _f32 suffix
+                        // For standard math.h functions, use 'f' suffix
+                        let suffix = if matches!(c_func_name, "isnan" | "isinf" | "isfinite") {
+                            "_f32"
+                        } else {
+                            "f"
+                        };
+                        let adjusted_name = format!("{}::{}{}", parts[0], c_func_name, suffix);
                         (adjusted_name, self.infer_c_function_return_type(&actual_func_name))
                     } else {
                         // Use the regular version
@@ -1491,6 +1500,8 @@ impl Lower {
         // Special case for known C functions
         match c_func_name {
             "exit" | "printf" => IrType::Void,
+            // isnan, isinf, isfinite return int (32-bit), not float
+            "isnan" | "isnanf" | "isinf" | "isinff" | "isfinite" | "isfinitef" => IrType::Int(32),
             // Math functions ending with 'f' return float (32-bit)
             name if name.ends_with('f') && parts[0] == "cmath" => IrType::Float(32),
             // Math functions without 'f' return double (64-bit)

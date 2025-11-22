@@ -335,3 +335,38 @@ int __builtin_printf_and_free(char* str) {
     free(str);
     return result;
 }
+
+// ========================================================================
+// Math Classification Functions
+// ========================================================================
+
+// These are wrappers around the standard C99 macros to provide
+// callable functions for the compiler backend
+
+#include <math.h>
+
+int __atom_isnan(double x) {
+    return isnan(x);
+}
+
+int __atom_isinf(double x) {
+    return isinf(x);
+}
+
+int __atom_isfinite(double x) {
+    return isfinite(x);
+}
+
+// Float32 variants (C macros are polymorphic, so these work too)
+int __atom_isnan_f32(float x) {
+    return isnan(x);
+}
+
+int __atom_isinf_f32(float x) {
+    return isinf(x);
+}
+
+int __atom_isfinite_f32(float x) {
+    return isfinite(x);
+}
+
