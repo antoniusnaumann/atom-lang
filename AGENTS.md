@@ -7,7 +7,7 @@
 - **Single test**: `cd atom-compiler && cargo test <TESTNAME> --verbose` (e.g., `cargo test parse_all_files`)
 - **Single test in crate**: `cd atom-compiler/atom-parser && cargo test <TESTNAME> --verbose`
 - **Lint**: `cd atom-compiler && cargo clippy --workspace -- -D warnings`
-- **Compile Atom source**: `./atomc <file.atom> [--no-std] [-o output]`
+- **Compile Atom source**: `./atomc <file.atom> [--no-std] [-o output] [--debug]`
 - **Tree-sitter build**: `cd tree-sitter-atom && tree-sitter generate`
 - **Tree-sitter test**: `cd tree-sitter-atom && tree-sitter parse <file.atom> --quiet --stat`
 
@@ -20,14 +20,16 @@
 - **Error handling**: Return `ParseResult<T>` (alias for `Result<T, ParseError>`). Use `?` operator for propagation.
 - **Patterns**: Prefer pattern matching over conditionals. Use `Option` and `Result` explicitly, avoid unwrap in lib code.
 - **Comments**: Use doc comments `///` for public items. Inline comments for complex logic only.
+- **Debug output**: Wrap verbose debug output with `if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1")` checks.
 
 ## Atom Language Rules
 - **Casing**: `PascalCase` for types/enum cases, `snake_case` for functions/vars/fields/modules. No keywords—structural typing.
 - **Visibility**: `+` (public), `-` (file-private), none (package-internal). Prefix types and functions.
-- **Specification**: Always reference the README.md and the .atom files in std/src/ and examples/ when working on the compiler
+- **Specification**: Always reference the README.md and the .atom files in std/src/ and examples/ when working on the compiler.
 
 ## Architecture
 - **Modular design**: Parser and backend are intentionally separate. Parser outputs S-Expression AST, backend consumes it.
 - **Backend independence**: atom-backend does NOT depend on atom-parser. This allows swapping parser implementations.
 - **Compilation pipeline**: `.atom source` → `atom-parser` → `S-Expression AST` → `atom-compile` → `executable`
 - **Use atomc script**: For end-to-end compilation, use `./atomc` which orchestrates the full pipeline.
+- **IR lowering**: Match statements generate switch IR. In codegen, switches become chained if-else with first case in current block, rest in intermediate blocks.
