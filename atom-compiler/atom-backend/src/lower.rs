@@ -420,7 +420,7 @@ impl Lower {
                 if matches!(terminator, IrTerminator::Unreachable) {
             // Block ended with an expression - add return
             // IMPORTANT: Check void return type FIRST
-            if return_type.is_none() || return_type.as_ref().unwrap().is_void() {
+            if return_type.is_none() || return_type.as_ref().map_or(false, |rt| rt.is_void()) {
                 // For main function with no return type, automatically return 0
                 if is_main && return_type.is_some() {
                     let zero_value = self.fresh_value_id();
@@ -562,15 +562,18 @@ impl Lower {
                 // If not found in current block, try to get from parameters or other blocks
                 if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
                                     }
-                let ty = inferred_type.or_else(|| {
+                // CRITICAL FIX: Variable type MUST be inferred correctly for type safety.
+                // If we cannot determine the type, this is an internal error that should be caught.
+                inferred_type.or_else(|| {
                     let t = self.get_value_type(init_value, ir_block, func);
                     if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
                                             }
                     t
-                }).unwrap_or(IrType::Pointer(Box::new(IrType::Void)));
-                if std::env::var("ATOM_DEBUG_VERIFY").is_ok() {
-                                    }
-                ty
+                }).ok_or_else(|| LowerError::Internal(
+                    format!("Cannot infer type for variable '{}' from initializer (value {:?}). \
+                            Type annotation required or initializer must have determinable type.",
+                            var_name, init_value)
+                ))?
             };
 
             // Check if this is a mutable variable (declared with :=)
@@ -976,9 +979,14 @@ impl Lower {
             }
             // Arithmetic operators - infer from left operand type
             _ => {
-                // Get the type of the left value
+                // CRITICAL FIX: Type MUST be known for arithmetic operations to ensure type safety.
+                // Failing to determine the type could lead to incorrect codegen or runtime errors.
                 self.get_value_type(left_value, ir_block, func)
-                    .unwrap_or(IrType::Int(64)) // Fallback to Int(64) if type cannot be determined
+                    .ok_or_else(|| LowerError::Internal(
+                        format!("Cannot determine type for binary operation {:?} on value {:?}. \
+                                Type information is required for correct code generation.", 
+                                op, left_value)
+                    ))?
             }
         };
 
@@ -1173,8 +1181,33 @@ impl Lower {
             atom_ast::UnOp::BitNot => IrUnOp::BitNot,
         };
 
-        // Result type is same as operand type (simplified)
-        let result_type = IrType::Int(64);
+        // CRITICAL FIX: Result type must match operand type for correct semantics.
+        // For example, negating a Float(32) should return Float(32), not Int(64).
+        // Not operator returns Bool for boolean operands, preserves type for bitwise not.
+        let result_type = if matches!(op, atom_ast::UnOp::Not) {
+            // Logical not on boolean -> returns Bool
+            // Get operand type to check if it's boolean
+            let operand_type = self.get_value_type(operand, ir_block, func);
+            match operand_type {
+                Some(IrType::Bool) => IrType::Bool,
+                Some(ty) => ty, // BitNot preserves type
+                None => {
+                    return Err(LowerError::Internal(
+                        format!("Cannot determine type for unary operation {:?} on value {:?}. \
+                                Type information is required for correct code generation.",
+                                op, operand)
+                    ));
+                }
+            }
+        } else {
+            // Neg and BitNot preserve the operand type
+            self.get_value_type(operand, ir_block, func)
+                .ok_or_else(|| LowerError::Internal(
+                    format!("Cannot determine type for unary operation {:?} on value {:?}. \
+                            Type information is required for correct code generation.",
+                            op, operand)
+                ))?
+        };
 
         let value_id = self.fresh_value_id();
         ir_block.add_instruction(IrInstruction {
@@ -1632,13 +1665,7 @@ impl Lower {
             
             let return_ty = if let Some(ret_ty_ast) = ret_ty_ast_opt {
                 // Convert the return type from AST to IR type
-                match self.lower_type(&ret_ty_ast) {
-                    Ok(ir_ty) => ir_ty,
-                    Err(_) => {
-                        // Fallback to Int(64) if type lowering fails
-                        IrType::Int(64)
-                    }
-                }
+                self.lower_type(&ret_ty_ast)?
             } else {
                 // No return type specified or function not found, use fallback
                 IrType::Int(64)
@@ -2622,22 +2649,54 @@ impl Lower {
     fn lower_field_access(
         &mut self,
         object: &atom_ast::Expr,
-        _field_name: &str,
+        field_name: &str,
         ir_block: &mut IrBlock,
         func: &mut IrFunction,
     ) -> LowerResult<ValueId> {
         let object_value = self.lower_expr(object, ir_block, func)?;
 
-        // TODO: Look up field index from type information
-        let field_index = 0; // Simplified
+        // Get the type of the object to determine field index and type
+        let object_type = self.get_value_type(object_value, ir_block, func)
+            .ok_or_else(|| LowerError::Internal("Cannot determine type of field access object".to_string()))?;
+
+        // Extract struct name from object type
+        let struct_name = match &object_type {
+            IrType::Struct(name) => name,
+            _ => return Err(LowerError::Internal(format!(
+                "Field access on non-struct type: {:?}",
+                object_type
+            ))),
+        };
+
+        // Look up the struct definition in type environment
+        let struct_def = self.type_env.get_struct(struct_name)
+            .ok_or_else(|| LowerError::UndefinedStruct(struct_name.clone()))?;
+
+        // Find the field by name and get its index
+        let (field_index, field_type) = struct_def.fields.iter()
+            .enumerate()
+            .find(|(_, field)| field.name == field_name)
+            .ok_or_else(|| LowerError::Internal(format!(
+                "Field '{}' not found in struct '{}'",
+                field_name, struct_name
+            )))?;
+
+        // Convert backend Type to IrType
+        let field_ir_type = self.backend_type_to_ir(&field_type.ty)?;
+
+        // Debug output for field access
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("FieldAccess: struct={}, field={}, index={}, type={:?}", 
+                      struct_name, field_name, field_index, field_ir_type);
+        }
 
         let value_id = self.fresh_value_id();
         ir_block.add_instruction(IrInstruction {
             result: value_id,
-            ty: IrType::Int(64), // Simplified
+            ty: field_ir_type,
             kind: IrInstructionKind::StructExtract {
                 struct_value: object_value,
-                field_index,
+                field_index: field_index as u32,
             },
         });
 
@@ -2743,7 +2802,9 @@ impl Lower {
 
         // Create switch terminator on current block
         // Check if the last pattern is a wildcard (should be used as default)
-        let last_is_wildcard = matches!(arms.last().unwrap().pattern, atom_ast::Pattern::Wildcard(_));
+        let last_is_wildcard = arms.last()
+            .map(|arm| matches!(arm.pattern, atom_ast::Pattern::Wildcard(_)))
+            .unwrap_or(false);
         
         let (cases, default_block_id) = if last_is_wildcard {
             // Last pattern is wildcard: use it as default, all others as cases
@@ -2985,6 +3046,65 @@ impl Lower {
         }
     }
 
+    /// Convert a backend Type to IrType.
+    /// This is used when we have type information from the type environment
+    /// and need to convert it to IR types.
+    fn backend_type_to_ir(&self, ty: &crate::types::Type) -> LowerResult<IrType> {
+        use crate::types::Type;
+        
+        match ty {
+            Type::Void => Ok(IrType::Void),
+            Type::Int(Some(bits)) => Ok(IrType::Int(*bits as u16)),
+            Type::Int(None) => Ok(IrType::Int(64)),
+            Type::UInt(Some(bits)) => Ok(IrType::UInt(*bits as u16)),
+            Type::UInt(None) => Ok(IrType::UInt(64)),
+            Type::Float(Some(bits)) => Ok(IrType::Float(*bits as u16)),
+            Type::Float(None) => Ok(IrType::Float(64)),
+            Type::Rune => Ok(IrType::Rune),
+            Type::TypeMeta => Ok(IrType::Void), // Type values are compile-time only
+            Type::Tuple(tuple_ty) => {
+                let mut field_types = Vec::new();
+                for field in &tuple_ty.fields {
+                    field_types.push(self.backend_type_to_ir(&field.ty)?);
+                }
+                Ok(IrType::Tuple(field_types))
+            }
+            Type::Struct(struct_ty) => Ok(IrType::Struct(struct_ty.name.clone())),
+            Type::Enum(enum_ty) => Ok(IrType::Enum(enum_ty.name.clone())),
+            Type::Function(func_ty) => {
+                let mut param_types = Vec::new();
+                for param_ty in &func_ty.params {
+                    param_types.push(self.backend_type_to_ir(param_ty)?);
+                }
+                let return_type = if let Some(ret_ty) = &func_ty.return_type {
+                    Some(self.backend_type_to_ir(ret_ty)?)
+                } else {
+                    None
+                };
+                Ok(IrType::Function {
+                    params: param_types,
+                    return_type: Box::new(return_type),
+                })
+            }
+            Type::TypeParam(_) => {
+                // Type parameters are polymorphic - treat as opaque pointer
+                Ok(IrType::Pointer(Box::new(IrType::Void)))
+            }
+            Type::Generic { base, .. } => {
+                // For generic instantiations, convert the base type
+                // TODO: Handle type arguments properly for full monomorphization
+                self.backend_type_to_ir(base)
+            }
+            Type::Infer(_) | Type::Error => {
+                // Inference types should be resolved by now
+                Err(LowerError::Internal(format!(
+                    "Unresolved type during lowering: {:?}",
+                    ty
+                )))
+            }
+        }
+    }
+
     // ========================================================================
     // Helper Methods
     // ========================================================================
@@ -3122,8 +3242,15 @@ impl Lower {
 
         // If body produces a value but no return type was specified, infer it
         let final_ret_ty = if ret_ty.is_none() && body_value.is_some() {
-            // Get the type of the returned value
-            let value_id = body_value.unwrap();
+            // Get the type of the returned value - safe to unwrap here since we checked is_some() above
+            let value_id = match body_value {
+                Some(v) => v,
+                None => {
+                    return Err(LowerError::Internal(
+                        "Expected body value for closure return type inference".to_string()
+                    ));
+                }
+            };
             
             // First try to get the type from the last instruction
             if let Some(last_inst) = entry_block.instructions.last() {
