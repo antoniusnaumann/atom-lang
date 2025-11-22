@@ -2554,9 +2554,71 @@ impl Lower {
             .map(|(i, (_, _, _, actual_pred_id))| (*actual_pred_id, case_values[i]))
             .collect();
 
+        // Infer phi type from the first incoming value
+        // All arms of a match must return the same type, so we can use the first arm's type
+        let phi_type = if let Some((_, first_value_id)) = incoming.first() {
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("Trying to infer phi type: first_value_id={:?}", first_value_id);
+                    eprintln!("  Searching {} function blocks", func.blocks.len());
+                    eprintln!("  Searching {} case blocks", case_blocks.len());
+                }
+            }
+            
+            // Find the instruction that produced this value to get its type
+            let mut inferred_type = IrType::Int(64); // Default fallback
+            let mut found = false;
+            
+            // Search through all blocks in the function to find the instruction
+            for block in &func.blocks {
+                for inst in &block.instructions {
+                    if inst.result == *first_value_id {
+                        inferred_type = inst.ty.clone();
+                        found = true;
+                        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                            if debug == "1" {
+                                eprintln!("  Found in func block {:?}: type={:?}", block.label, inferred_type);
+                            }
+                        }
+                        break;
+                    }
+                }
+                if found { break; }
+            }
+            
+            // Also search in case blocks that haven't been added to func yet
+            if !found {
+                for (_, _, case_block, _) in &case_blocks {
+                    for inst in &case_block.instructions {
+                        if inst.result == *first_value_id {
+                            inferred_type = inst.ty.clone();
+                            found = true;
+                            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                                if debug == "1" {
+                                    eprintln!("  Found in case block {:?}: type={:?}", case_block.label, inferred_type);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if found { break; }
+                }
+            }
+            
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("  Final: found={}, inferred_type={:?}", found, inferred_type);
+                }
+            }
+            
+            inferred_type
+        } else {
+            IrType::Int(64) // Fallback if no incoming values
+        };
+
         ir_block.add_instruction(IrInstruction {
             result: result_value,
-            ty: IrType::Int(64), // Simplified
+            ty: phi_type,
             kind: IrInstructionKind::Phi { incoming },
         });
 

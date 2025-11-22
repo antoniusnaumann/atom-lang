@@ -1623,17 +1623,19 @@ impl CodeGenerator {
         blocks: &HashMap<BlockId, Block>,
         func: &IrFunction,
     ) -> CodegenResult<()> {
-        // Helper to get phi parameter value for a target block
-        let get_phi_arg = |target: &BlockId| -> Option<Value> {
+        // Helper to get phi parameter value and type info for a target block
+        let get_phi_info = |target: &BlockId| -> Option<(Value, IrType)> {
             // Find the target block in the IR function
             let target_ir_block = func.blocks.iter().find(|b| &b.label == target)?;
-            // Check if it has a phi node
+            
+            // Check if this block has phi node
             for inst in &target_ir_block.instructions {
                 if let IrInstructionKind::Phi { incoming } = &inst.kind {
                     // Find the incoming value from current_block
                     for (from_block, value_id) in incoming {
                         if from_block == current_block {
-                            return values.get(value_id).copied();
+                            let phi_value = values.get(value_id).copied()?;
+                            return Some((phi_value, inst.ty.clone()));
                         }
                     }
                 }
@@ -1658,8 +1660,34 @@ impl CodeGenerator {
                     .ok_or(CodegenError::InvalidBlock(*target))?;
                 
                 // Check if target block needs phi arguments
-                if let Some(phi_val) = get_phi_arg(target) {
-                    builder.ins().jump(*cl_block, &[phi_val]);
+                if let Some((phi_val, phi_ty)) = get_phi_info(target) {
+                    // Ensure the phi value matches the expected block parameter type
+                    let block_params = builder.func.dfg.block_params(*cl_block);
+                    if block_params.is_empty() {
+                        // No block parameters, just use the value directly
+                        builder.ins().jump(*cl_block, &[phi_val]);
+                    } else {
+                        let expected_type = builder.func.dfg.value_type(block_params[0]);
+                        let actual_type = builder.func.dfg.value_type(phi_val);
+                        
+                        let converted_val = if expected_type == actual_type {
+                            phi_val
+                        } else if actual_type.bits() < expected_type.bits() {
+                            // Need to extend - use signed extension for Int types
+                            if matches!(phi_ty, IrType::Int(_)) {
+                                builder.ins().sextend(expected_type, phi_val)
+                            } else {
+                                builder.ins().uextend(expected_type, phi_val)
+                            }
+                        } else if actual_type.bits() > expected_type.bits() {
+                            // Need to reduce
+                            builder.ins().ireduce(expected_type, phi_val)
+                        } else {
+                            phi_val
+                        };
+                        
+                        builder.ins().jump(*cl_block, &[converted_val]);
+                    }
                 } else {
                     builder.ins().jump(*cl_block, &[]);
                 }
