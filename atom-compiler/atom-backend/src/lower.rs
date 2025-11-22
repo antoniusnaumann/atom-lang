@@ -2289,31 +2289,15 @@ impl Lower {
         }
 
         // General method call: convert to function call with receiver as first arg
-        let receiver_value = self.lower_expr(receiver, ir_block, func)?;
+        // Build a call expression for the method with receiver as first argument
+        let mut all_args = vec![receiver.clone()];
+        all_args.extend_from_slice(args);
         
-        let mut arg_values = vec![receiver_value];
-        for arg in args {
-            let value = self.lower_expr(arg, ir_block, func)?;
-            arg_values.push(value);
-        }
-
-        // Try to get the actual return type from the function definition
-        let return_type = self.get_function_return_type(method_name)
-            .unwrap_or_else(|| IrType::Pointer(Box::new(IrType::Void)));
-
-        // Call the function
-        let value_id = self.fresh_value_id();
-        ir_block.add_instruction(IrInstruction {
-            result: value_id,
-            ty: return_type,
-            kind: IrInstructionKind::Call {
-                function: method_name.clone(),
-                args: arg_values,
-                is_tail: false,
-            },
-        });
-
-        Ok(value_id)
+        // Create an identifier expression for the method name
+        let func_expr = atom_ast::Expr::Ident(method.clone());
+        
+        // Delegate to lower_call which handles generic functions and monomorphization
+        self.lower_call(&func_expr, &all_args, ir_block, func)
     }
 
     /// Lower a tuple expression to IR.

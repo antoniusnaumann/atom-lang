@@ -1115,12 +1115,18 @@ impl TypeChecker {
             let arg_types = arg_types?;
 
             for sig in &signatures {
-                if sig.params.len() == arg_types.len() {
+                // Count required (non-default) parameters
+                let required_params = sig.params.iter()
+                    .take_while(|(_, _, has_default)| !has_default)
+                    .count();
+                
+                // Check if arg count is valid (between required and total params)
+                if arg_types.len() >= required_params && arg_types.len() <= sig.params.len() {
                     // Try to unify type parameters
                     let mut type_bindings = std::collections::HashMap::new();
                     let mut matches = true;
                     
-                    for (i, (_, param_ty, _)) in sig.params.iter().enumerate() {
+                    for (i, (_, param_ty, _)) in sig.params.iter().take(arg_types.len()).enumerate() {
                         if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
                             matches = false;
                             break;
