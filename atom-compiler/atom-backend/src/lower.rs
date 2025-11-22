@@ -368,9 +368,9 @@ impl Lower {
         self.variables.clear();
         self.params.clear();
 
-        let name = func_def.name.name.clone();
+        let name = self.mangle_function_name(func_def);
         let is_public = matches!(func_def.visibility, Visibility::Public);
-        let is_main = name == "main";
+        let is_main = func_def.name.name == "main";
 
         // Lower parameters
         let mut params = Vec::new();
@@ -1434,13 +1434,17 @@ impl Lower {
             arg_values.push(value);
         }
         
+        // Save the original argument count before adding defaults
+        // This is needed for proper overload resolution throughout
+        let original_arg_count = arg_values.len();
+        
         // Fill in default parameters if needed
         // Look up the function definition to get default values
         // We need to collect the default expressions first to avoid borrow issues
         let mut default_exprs = Vec::new();
         if let Some(func_defs) = self.function_defs.get(&func_name) {
-            // For now, just use the first overload (TODO: handle overloading properly)
-            if let Some(func_def) = func_defs.first() {
+            // Select the correct overload based on ORIGINAL argument count
+            if let Some(func_def) = self.select_overload(func_defs, original_arg_count) {
                 // Check if we need to add default parameters
                 let num_provided = arg_values.len();
                 let num_params = func_def.params.len();
@@ -1540,8 +1544,9 @@ impl Lower {
         }
 
         // Check if this is a call to a generic function that needs monomorphization
+        // Also handle function overloading by mangling names
         let actual_func_name = if let Some(func_defs) = self.function_defs.get(&func_name) {
-            if let Some(func_def) = func_defs.first() {
+            if let Some(func_def) = self.select_overload(func_defs, original_arg_count) {
                 if self.is_generic_function(func_def) {
                     // This is a generic function call - we need to monomorphize it
                                         // Extract concrete types from arguments
@@ -1559,7 +1564,8 @@ impl Lower {
                     
                     mono_name
                 } else {
-                    func_name.clone()
+                    // Not generic, but may need name mangling for overloading
+                    self.mangle_function_name(func_def)
                 }
             } else {
                 func_name.clone()
@@ -1615,7 +1621,7 @@ impl Lower {
         } else {
             // Look up the function definition to get the actual return type
             let ret_ty_ast_opt = if let Some(func_defs) = self.function_defs.get(&actual_func_name) {
-                if let Some(func_def) = func_defs.first() {
+                if let Some(func_def) = self.select_overload(func_defs, original_arg_count) {
                     func_def.return_type.clone()
                 } else {
                     None
@@ -3296,6 +3302,59 @@ impl Lower {
     // ========================================================================
     // Generic Function Detection
     // ========================================================================
+
+    /// Generate a mangled function name for overloaded functions.
+    ///
+    /// When multiple functions have the same name but different signatures,
+    /// we need to generate unique names for the IR/codegen layer.
+    /// The mangling scheme is: name_{param_count} for overloads with different arities.
+    fn mangle_function_name(&self, func_def: &atom_ast::FunctionDef) -> String {
+        let base_name = &func_def.name.name;
+        let param_count = func_def.params.len();
+        
+        // Check if this function has overloads
+        if let Some(overloads) = self.function_defs.get(base_name) {
+            if overloads.len() > 1 {
+                // Multiple overloads - need to mangle
+                return format!("{}_{}", base_name, param_count);
+            }
+        }
+        
+        // No overloading, use base name
+        base_name.clone()
+    }
+
+    /// Select the correct function overload based on the number of arguments provided.
+    ///
+    /// This handles function overloading by matching the number of provided arguments
+    /// against the number of required and optional parameters in each overload.
+    /// 
+    /// Returns the first overload where:
+    /// - arg_count >= required_params (all required params are provided)
+    /// - arg_count <= total_params (not too many args, considering defaults)
+    fn select_overload<'a>(
+        &self,
+        func_defs: &'a [atom_ast::FunctionDef],
+        arg_count: usize,
+    ) -> Option<&'a atom_ast::FunctionDef> {
+        for func_def in func_defs.iter() {
+            // Count required parameters (those without defaults)
+            let required_params = func_def
+                .params
+                .iter()
+                .take_while(|p| p.default.is_none())
+                .count();
+            let total_params = func_def.params.len();
+            
+            // Check if this overload matches the argument count
+            if arg_count >= required_params && arg_count <= total_params {
+                return Some(func_def);
+            }
+        }
+        
+        // No matching overload found
+        None
+    }
 
     /// Check if a function definition is generic (has type parameters).
     ///
