@@ -575,6 +575,7 @@ impl Lower {
             if !decl.is_const {
                 // Mutable variable - allocate a local (stack slot) and store the initial value
                 let local_id = self.fresh_local_id();
+                
                 func.locals.push(IrLocal {
                     id: local_id,
                     name: var_name.clone(),
@@ -1080,10 +1081,6 @@ impl Lower {
             let mut element_type = IrType::Int(64); // Default
             
             // Check in variables (both SSA values and locals)
-            if func_name == "rune_arr" {
-                                                for (k, v) in &self.variables {
-                                    }
-            }
             match self.variables.get(&func_name).cloned() {
                 Some(VarBinding::Value(val_id, ty)) => {
                     // Check if it's an indexable type (not a closure, not a function)
@@ -1224,8 +1221,6 @@ impl Lower {
             }
             
             // If we found an indexable array/pointer, emit ArrayIndex
-            if func_name == "rune_arr" {
-                            }
             if is_indexable {
                 if let Some(arr_val) = array_value {
                     let index_value = self.lower_expr(&args[0], ir_block, func)?;
@@ -1407,11 +1402,66 @@ impl Lower {
 
         // Determine return type
         // Check if this is a C library function call
-        let return_type = if actual_func_name.starts_with('c') && actual_func_name.contains("::") {
-            self.infer_c_function_return_type(&actual_func_name)
+        let (adjusted_func_name, return_type) = if actual_func_name.starts_with('c') && actual_func_name.contains("::") {
+            // For C math functions, adjust the function name based on argument types
+            let parts: Vec<&str> = actual_func_name.split("::").collect();
+            if parts.len() == 2 && parts[0] == "cmath" {
+                let c_func_name = parts[1];
+                
+                // Check if this is a float-polymorphic function (isnan, isinf, isfinite, etc.)
+                let needs_f_suffix = matches!(
+                    c_func_name,
+                    "isnan" | "isinf" | "isfinite" | "sin" | "cos" | "tan" | 
+                    "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" |
+                    "exp" | "log" | "log10" | "sqrt" | "ceil" | "floor" | "fabs"
+                );
+                
+                if needs_f_suffix && !arg_values.is_empty() {
+                    // Check the first argument type
+                    let first_arg_type = self.get_value_type(arg_values[0], ir_block, func);
+                    let use_f32_variant = matches!(first_arg_type, Some(IrType::Float(32)));
+                    
+                    if use_f32_variant {
+                        // Use the 'f' suffix version (e.g., isnanf instead of isnan)
+                        let adjusted_name = format!("{}::{}f", parts[0], c_func_name);
+                        (adjusted_name, self.infer_c_function_return_type(&actual_func_name))
+                    } else {
+                        // Use the regular version
+                        (actual_func_name.clone(), self.infer_c_function_return_type(&actual_func_name))
+                    }
+                } else {
+                    (actual_func_name.clone(), self.infer_c_function_return_type(&actual_func_name))
+                }
+            } else {
+                (actual_func_name.clone(), self.infer_c_function_return_type(&actual_func_name))
+            }
         } else {
-            // Simplified - should query type environment
-            IrType::Int(64)
+            // Look up the function definition to get the actual return type
+            let ret_ty_ast_opt = if let Some(func_defs) = self.function_defs.get(&actual_func_name) {
+                if let Some(func_def) = func_defs.first() {
+                    func_def.return_type.clone()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            
+            let return_ty = if let Some(ret_ty_ast) = ret_ty_ast_opt {
+                // Convert the return type from AST to IR type
+                match self.lower_type(&ret_ty_ast) {
+                    Ok(ir_ty) => ir_ty,
+                    Err(_) => {
+                        // Fallback to Int(64) if type lowering fails
+                        IrType::Int(64)
+                    }
+                }
+            } else {
+                // No return type specified or function not found, use fallback
+                IrType::Int(64)
+            };
+            
+            (actual_func_name, return_ty)
         };
 
         let value_id = self.fresh_value_id();
@@ -1419,7 +1469,7 @@ impl Lower {
             result: value_id,
             ty: return_type,
             kind: IrInstructionKind::Call {
-                function: actual_func_name,
+                function: adjusted_func_name,
                 args: arg_values,
                 is_tail: false,
             },
