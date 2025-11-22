@@ -1,5 +1,6 @@
-main(n Int) Int {
-    fib(n)
+main() Int {
+    print("4th fibonacci number is: ")
+    fib(4).print()
 }
 
 /// Calculates the nth fibonacci number

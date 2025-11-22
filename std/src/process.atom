@@ -24,6 +24,6 @@
 /// Prints the error message and quits
 +error(msg String) {
     // TODO: Fix print to support LogLevel parameter
-    // print(msg, Fatal)
+    print(msg, Fatal)
     exit(Failure)
 }
