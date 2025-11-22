@@ -242,25 +242,27 @@ impl Lower {
                                 // Lower the specialized function
                 match self.lower_function(&specialized_func) {
                     Ok(ir_func) => {
-                        // DEBUG: Dump IR for reduce monomorphizations
-                        if mono_name.contains("reduce") && (mono_name.contains("Float64") || mono_name.contains("Int64")) {
-                            eprintln!("\n========== IR FOR {} ==========", mono_name);
-                            eprintln!("Function: {}", ir_func.name);
-                            eprintln!("Params: {:?}", ir_func.params);
-                            eprintln!("Return type: {:?}", ir_func.return_type);
-                            eprintln!("Locals:");
-                            for local in &ir_func.locals {
-                                eprintln!("  {:?}: name={}, ty={:?}", local.id, local.name, local.ty);
-                            }
-                            eprintln!("Blocks:");
-                            for block in &ir_func.blocks {
-                                eprintln!("  Block {:?}:", block.label);
-                                for (idx, inst) in block.instructions.iter().enumerate() {
-                                    eprintln!("    [{}] {:?}: {:?} = {:?}", idx, inst.result, inst.ty, inst.kind);
+                        // DEBUG: Dump IR for reduce monomorphizations (only when --debug flag is set)
+                        if let Ok(debug_val) = std::env::var("ATOM_DEBUG") {
+                            if debug_val == "1" && mono_name.contains("reduce") && (mono_name.contains("Float64") || mono_name.contains("Int64")) {
+                                eprintln!("\n========== IR FOR {} ==========", mono_name);
+                                eprintln!("Function: {}", ir_func.name);
+                                eprintln!("Params: {:?}", ir_func.params);
+                                eprintln!("Return type: {:?}", ir_func.return_type);
+                                eprintln!("Locals:");
+                                for local in &ir_func.locals {
+                                    eprintln!("  {:?}: name={}, ty={:?}", local.id, local.name, local.ty);
                                 }
-                                eprintln!("    Terminator: {:?}", block.terminator);
+                                eprintln!("Blocks:");
+                                for block in &ir_func.blocks {
+                                    eprintln!("  Block {:?}:", block.label);
+                                    for (idx, inst) in block.instructions.iter().enumerate() {
+                                        eprintln!("    [{}] {:?}: {:?} = {:?}", idx, inst.result, inst.ty, inst.kind);
+                                    }
+                                    eprintln!("    Terminator: {:?}", block.terminator);
+                                }
+                                eprintln!("========================================\n");
                             }
-                            eprintln!("========================================\n");
                         }
                                                 program.add_function(ir_func);
                     }
@@ -1839,7 +1841,9 @@ impl Lower {
         // TODO: Implement proper variant switching and field extraction
         let simple_result = self.make_string_literal(enum_name, ir_block);
         
-        eprintln!("[AS_STRING] Warning: Enum as_string() only shows enum name, not variant details");
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("[AS_STRING] Warning: Enum as_string() only shows enum name, not variant details");
+        }
         
         Ok(simple_result)
     }

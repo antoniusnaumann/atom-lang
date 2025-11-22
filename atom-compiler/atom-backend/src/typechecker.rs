@@ -878,8 +878,8 @@ impl TypeChecker {
                     }
                 }
 
-                // Debug: print details if this is reduce
-                if func_name == "reduce" {
+                // Debug: print details if this is reduce (only in debug mode)
+                if func_name == "reduce" && std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
                     eprintln!("ERROR: No matching overload for 'reduce' with {} args", args.len());
                                         for (i, arg_ty) in arg_types.iter().enumerate() {
                                             }

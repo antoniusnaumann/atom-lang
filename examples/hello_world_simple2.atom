@@ -1,3 +1,0 @@
-main() {
-    cstdlib::printf("Hello World!\n")
-}

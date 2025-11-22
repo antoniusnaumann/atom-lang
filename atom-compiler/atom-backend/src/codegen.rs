@@ -235,9 +235,15 @@ impl CodeGenerator {
             
             // Try to compile the function, but make errors non-fatal
             if let Err(e) = self.compile_function(&mut module, func, func_id, &func_ids) {
-                eprintln!("Warning: Skipping function '{}' due to compilation error: {}", func.name, e);
-                eprintln!("This function may use unsupported features (e.g., non-zero tuple extract).");
-                eprintln!("If this function is not called, the program may still work.");
+                // In normal mode, show concise warning
+                if std::env::var("ATOM_DEBUG").ok().as_deref() != Some("1") {
+                    eprintln!("Warning: Skipping function '{}' (use --debug for details)", func.name);
+                } else {
+                    // In debug mode, show full details
+                    eprintln!("Warning: Skipping function '{}' due to compilation error: {}", func.name, e);
+                    eprintln!("This function may use unsupported features (e.g., non-zero tuple extract).");
+                    eprintln!("If this function is not called, the program may still work.");
+                }
                 // Continue with next function instead of propagating error
                 continue;
             }
@@ -721,21 +727,23 @@ impl CodeGenerator {
                         loop_header,
                         &cl_blocks,
                     ).map_err(|e| {
-                        eprintln!("[ERROR] Failed to translate instruction {} in block {}:", inst_idx, block_idx);
-                        eprintln!("  Function: {}", func.name);
-                        eprintln!("  Block label: {:?}", block.label);
-                        eprintln!("  Instruction: {:?}", inst);
-                        eprintln!("  Available values before this instruction:");
-                        for (vid, cranelift_val) in values.iter() {
-                            eprintln!("    {:?} -> {:?}", vid, cranelift_val);
-                        }
-                        eprintln!("  Block instructions:");
-                        for (i, instr) in block.instructions.iter().enumerate() {
-                            eprintln!("    [{}] {:?}", i, instr);
+                        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                            eprintln!("[ERROR] Failed to translate instruction {} in block {}:", inst_idx, block_idx);
+                            eprintln!("  Function: {}", func.name);
+                            eprintln!("  Block label: {:?}", block.label);
+                            eprintln!("  Instruction: {:?}", inst);
+                            eprintln!("  Available values before this instruction:");
+                            for (vid, cranelift_val) in values.iter() {
+                                eprintln!("    {:?} -> {:?}", vid, cranelift_val);
+                            }
+                            eprintln!("  Block instructions:");
+                            for (i, instr) in block.instructions.iter().enumerate() {
+                                eprintln!("    [{}] {:?}", i, instr);
+                            }
                         }
                         CodegenError::ModuleError(format!(
-                            "Error translating instruction {} in block {}:\n  Instruction: {:?}\n  Available values: {:?}\n  Error: {}",
-                            inst_idx, block_idx, inst, values.keys().collect::<Vec<_>>(), e
+                            "Error translating instruction {} in block {}: {}",
+                            inst_idx, block_idx, e
                         ))
                     })?;
                     values.insert(inst.result, value);
@@ -796,11 +804,17 @@ impl CodeGenerator {
             Err(e) => {
                 // Check if this is a verification error for a function that might not be used
                 if e.to_string().contains("Verifier errors") || e.to_string().contains("Compilation error") {
-                    eprintln!("Warning: Skipping function '{}' due to compilation error: {}", func.name, e);
-                    eprintln!("This function may use unsupported features (e.g., generics without monomorphization).");
-                    eprintln!("If this function is not called, the program may still work.");
-                    eprintln!("Function IR:");
-                    eprintln!("{}", ctx.func.display());
+                    // In normal mode, show concise warning
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() != Some("1") {
+                        eprintln!("Warning: Skipping function '{}' (use --debug for details)", func.name);
+                    } else {
+                        // In debug mode, show full details
+                        eprintln!("Warning: Skipping function '{}' due to compilation error: {}", func.name, e);
+                        eprintln!("This function may use unsupported features (e.g., generics without monomorphization).");
+                        eprintln!("If this function is not called, the program may still work.");
+                        eprintln!("Function IR:");
+                        eprintln!("{}", ctx.func.display());
+                    }
                     
                     // Clear the context
                     module.clear_context(&mut ctx);
@@ -809,9 +823,11 @@ impl CodeGenerator {
                     Ok(())
                 } else {
                     // For other errors, fail compilation
-                    eprintln!("Failed to define function '{}'. Error: {}", func.name, e);
-                    eprintln!("Function IR:");
-                    eprintln!("{}", ctx.func.display());
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("Failed to define function '{}'. Error: {}", func.name, e);
+                        eprintln!("Function IR:");
+                        eprintln!("{}", ctx.func.display());
+                    }
                     Err(CodegenError::ModuleError(format!(
                         "Failed to define function '{}': {}",
                         func.name, e
@@ -1388,7 +1404,9 @@ impl CodeGenerator {
             let right_ty = builder.func.dfg.value_type(right);
             
             if left_ty != right_ty {
-                eprintln!("  Types differ, need to extend");
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("  Types differ, need to extend");
+                }
                 // Determine target type: use the result type if available, otherwise promote to larger
                 let target_ty = if let Ok(cl_ty) = self.translate_type(result_ty) {
                     cl_ty
@@ -1399,7 +1417,9 @@ impl CodeGenerator {
                     if left_bits > right_bits { left_ty } else { right_ty }
                 };
                 
-                eprintln!("  left_bits={}, right_bits={}, target={:?}", left_ty.bits(), right_ty.bits(), target_ty);
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("  left_bits={}, right_bits={}, target={:?}", left_ty.bits(), right_ty.bits(), target_ty);
+                }
                 
                 // Extend or truncate to target type
                 let new_left = if left_ty != target_ty {
