@@ -342,8 +342,12 @@ impl Lower {
             ));
         };
 
-        // TODO: Evaluate constant initialization expressions
-        let init = None;
+        // Evaluate constant initialization expression if present
+        let init = if let Some(init_expr) = &decl.init {
+            Some(self.eval_const_expr(init_expr)?)
+        } else {
+            None
+        };
 
         let is_public = matches!(decl.visibility, Visibility::Public);
 
@@ -1013,29 +1017,82 @@ impl Lower {
         ir_block: &mut IrBlock,
         func: &mut IrFunction,
     ) -> LowerResult<ValueId> {
-        // For now, implement as non-short-circuiting
-        // TODO: Implement proper short-circuiting with control flow
+        // Implement proper short-circuit evaluation with control flow
+        // For &&: if left is false, result is false (left_value), else evaluate right
+        // For ||: if left is true, result is true (left_value), else evaluate right
+        
+        // Evaluate left operand in current block
         let left_value = self.lower_expr(left, ir_block, func)?;
-        let right_value = self.lower_expr(right, ir_block, func)?;
-
-        let ir_op = match op {
-            atom_ast::BinOp::And => IrBinOp::And,
-            atom_ast::BinOp::Or => IrBinOp::Or,
+        
+        // Create basic blocks for control flow
+        let right_block_id = self.fresh_block_id();
+        let merge_block_id = self.fresh_block_id();
+        
+        // Set up the branch based on operator type
+        match op {
+            atom_ast::BinOp::And => {
+                // For &&: if left is true, evaluate right; if false, skip to merge with left_value
+                ir_block.set_terminator(IrTerminator::Branch {
+                    condition: left_value,
+                    true_block: right_block_id,
+                    false_block: merge_block_id,
+                });
+            }
+            atom_ast::BinOp::Or => {
+                // For ||: if left is true, skip to merge with left_value; if false, evaluate right
+                ir_block.set_terminator(IrTerminator::Branch {
+                    condition: left_value,
+                    true_block: merge_block_id,
+                    false_block: right_block_id,
+                });
+            }
+            _ => unreachable!(),
+        }
+        
+        // Save and add the current block to the function
+        let left_block_id = ir_block.label;
+        let current_block = std::mem::replace(ir_block, IrBlock::new(merge_block_id));
+        func.add_block(current_block);
+        
+        // Right block: evaluate right operand
+        let mut right_block = IrBlock::new(right_block_id);
+        let right_value = self.lower_expr(right, &mut right_block, func)?;
+        let right_block_actual_id = right_block.label;
+        right_block.set_terminator(IrTerminator::Jump { target: merge_block_id });
+        func.add_block(right_block);
+        
+        // Merge block: use phi node to select result
+        // ir_block is now the merge block (from mem::replace above)
+        let result_id = self.fresh_value_id();
+        
+        // Create phi node with incoming values from both paths
+        let phi_incoming = match op {
+            atom_ast::BinOp::And => {
+                // If left was false, use left_value (from left block)
+                // If left was true, use right_value (from right block)
+                vec![
+                    (left_block_id, left_value),           // false path (skipped right)
+                    (right_block_actual_id, right_value),  // true path (evaluated right)
+                ]
+            }
+            atom_ast::BinOp::Or => {
+                // If left was true, use left_value (from left block)
+                // If left was false, use right_value (from right block)
+                vec![
+                    (left_block_id, left_value),           // true path (skipped right)
+                    (right_block_actual_id, right_value),  // false path (evaluated right)
+                ]
+            }
             _ => unreachable!(),
         };
-
-        let value_id = self.fresh_value_id();
+        
         ir_block.add_instruction(IrInstruction {
-            result: value_id,
+            result: result_id,
             ty: IrType::Bool,
-            kind: IrInstructionKind::BinOp {
-                op: ir_op,
-                left: left_value,
-                right: right_value,
-            },
+            kind: IrInstructionKind::Phi { incoming: phi_incoming },
         });
-
-        Ok(value_id)
+        
+        Ok(result_id)
     }
 
     /// Lower an assignment operation.
@@ -2032,19 +2089,79 @@ impl Lower {
             .ok_or_else(|| LowerError::UndefinedEnum(enum_name.to_string()))?
             .clone();
         
-        // Enums are complex because we need to switch on the variant tag
-        // For now, implement a simplified version that assumes we know the variant
-        // A full implementation would require creating multiple basic blocks with a switch
+        // Extract the enum tag (first element of the tuple representation)
+        let tag_value = self.fresh_value_id();
+        ir_block.add_instruction(IrInstruction {
+            result: tag_value,
+            ty: IrType::Int(32),
+            kind: IrInstructionKind::TupleExtract {
+                tuple: enum_value,
+                index: 0,
+            },
+        });
         
-        // For simplicity, we'll just return the enum name for now
-        // TODO: Implement proper variant switching and field extraction
-        let simple_result = self.make_string_literal(enum_name, ir_block);
+        // Create a block for each variant and a merge block
+        let merge_block_id = self.fresh_block_id();
+        let mut variant_blocks = Vec::new();
+        let mut variant_strings = Vec::new();
         
-        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-            eprintln!("[AS_STRING] Warning: Enum as_string() only shows enum name, not variant details");
+        for (variant_index, case) in enum_def.cases.iter().enumerate() {
+            let variant_name = &case.name;
+            let variant_block_id = self.fresh_block_id();
+            let mut variant_block = IrBlock::new(variant_block_id);
+            
+            // For now, just create a string with the variant name
+            // TODO: Extract and format variant fields if they exist
+            let variant_str = self.make_string_literal(variant_name, &mut variant_block);
+            
+            // Jump to merge block
+            variant_block.set_terminator(IrTerminator::Jump { target: merge_block_id });
+            let variant_block_label = variant_block.label;
+            
+            variant_blocks.push((variant_index as u32, variant_block_id, variant_block, variant_block_label));
+            variant_strings.push(variant_str);
         }
         
-        Ok(simple_result)
+        // Create switch on the tag
+        let cases: Vec<(u32, BlockId)> = variant_blocks
+            .iter()
+            .map(|(tag, block_id, _, _)| (*tag, *block_id))
+            .collect();
+        
+        let default_block_id = variant_blocks.first()
+            .map(|(_, block_id, _, _)| *block_id)
+            .unwrap_or(merge_block_id);
+        
+        ir_block.set_terminator(IrTerminator::Switch {
+            value: tag_value,
+            cases,
+            default: default_block_id,
+        });
+        
+        // Save and add the current block
+        let current_block = std::mem::replace(ir_block, IrBlock::new(merge_block_id));
+        func.add_block(current_block);
+        
+        // Add all variant blocks
+        for (_, _, block, _) in &variant_blocks {
+            func.add_block(block.clone());
+        }
+        
+        // Create merge block with phi node
+        let result_value = self.fresh_value_id();
+        let incoming: Vec<(BlockId, ValueId)> = variant_blocks
+            .iter()
+            .enumerate()
+            .map(|(i, (_, _, _, block_label))| (*block_label, variant_strings[i]))
+            .collect();
+        
+        ir_block.add_instruction(IrInstruction {
+            result: result_value,
+            ty: IrType::Pointer(Box::new(IrType::Int(8))),
+            kind: IrInstructionKind::Phi { incoming },
+        });
+        
+        Ok(result_value)
     }
     
     /// Helper: Convert a value of known type to string (used for recursive calls)
@@ -2923,6 +3040,29 @@ impl Lower {
         // ir_block is now the merge block (from the mem::replace above)
 
         Ok(result_value)
+    }
+
+    // ========================================================================
+    // Constant Evaluation
+    // ========================================================================
+
+    /// Evaluate a constant expression for global variable initialization.
+    /// Only supports simple literal expressions for now.
+    fn eval_const_expr(&mut self, expr: &atom_ast::Expr) -> LowerResult<IrConstant> {
+        match expr {
+            atom_ast::Expr::Literal(lit, _) => {
+                match lit {
+                    atom_ast::Literal::Integer(n) => Ok(IrConstant::Int(*n)),
+                    atom_ast::Literal::Float(f) => Ok(IrConstant::Float(*f)),
+                    atom_ast::Literal::String(s) => Ok(IrConstant::String(s.as_bytes().to_vec())),
+                    atom_ast::Literal::Rune(c) => Ok(IrConstant::Rune(*c)),
+                    atom_ast::Literal::Bool(b) => Ok(IrConstant::Bool(*b)),
+                }
+            }
+            _ => Err(LowerError::Unsupported(
+                "Non-literal constant expressions in global variables not yet supported".to_string(),
+            )),
+        }
     }
 
     // ========================================================================
