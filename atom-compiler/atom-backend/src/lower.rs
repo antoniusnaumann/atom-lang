@@ -244,7 +244,8 @@ impl Lower {
                     Ok(ir_func) => {
                         // DEBUG: Dump IR for reduce monomorphizations (only when --debug flag is set)
                         if let Ok(debug_val) = std::env::var("ATOM_DEBUG") {
-                            if debug_val == "1" && mono_name.contains("reduce") && (mono_name.contains("Float64") || mono_name.contains("Int64")) {
+                            eprintln!("DEBUG: Checking function: name={}, mono_name={}", ir_func.name, mono_name);
+                            if debug_val == "1" && (mono_name.contains("reduce") && (mono_name.contains("Float64") || mono_name.contains("Int64")) || ir_func.name == "main") {
                                 eprintln!("\n========== IR FOR {} ==========", mono_name);
                                 eprintln!("Function: {}", ir_func.name);
                                 eprintln!("Params: {:?}", ir_func.params);
@@ -757,29 +758,19 @@ impl Lower {
                     let enum_name_cloned = enum_name.to_string();
                     let idx_value = idx as i64;
                     
-                    // Enums are represented as tuples: (tag, payload...)
-                    // For parameterless variants (None, True, False), create tuple with just tag
-                    
-                    // Create the enum tag as a constant
+                    // FIX: Simple enums (without payload) are represented as plain integers (the tag value)
+                    // This allows them to be passed by value and compared directly
+                    // Create the enum tag as a constant with the Enum type
                     let tag_id = self.fresh_value_id();
                     ir_block.add_instruction(IrInstruction {
                         result: tag_id,
-                        ty: IrType::Int(32),
+                        ty: IrType::Enum(enum_name_cloned),
                         kind: IrInstructionKind::Const {
                             value: IrConstant::Int(idx_value),
                         },
                     });
                     
-                    // Create a tuple with just the tag (parameterless variant)
-                    let value_id = self.fresh_value_id();
-                    ir_block.add_instruction(IrInstruction {
-                        result: value_id,
-                        ty: IrType::Enum(enum_name_cloned),
-                        kind: IrInstructionKind::MakeTuple {
-                            elements: vec![tag_id],
-                        },
-                    });
-                    Ok(value_id)
+                    Ok(tag_id)
                 } else {
                     Err(LowerError::UndefinedVariable(name.to_string()))
                 }
@@ -2101,16 +2092,9 @@ impl Lower {
             .ok_or_else(|| LowerError::UndefinedEnum(enum_name.to_string()))?
             .clone();
         
-        // Extract the enum tag (first element of the tuple representation)
-        let tag_value = self.fresh_value_id();
-        ir_block.add_instruction(IrInstruction {
-            result: tag_value,
-            ty: IrType::Int(32),
-            kind: IrInstructionKind::TupleExtract {
-                tuple: enum_value,
-                index: 0,
-            },
-        });
+        // FIX: Enums are now plain integers (the tag value), not tuples
+        // So we can use the enum_value directly as the tag
+        let tag_value = enum_value;
         
         // Create a block for each variant and a merge block
         let merge_block_id = self.fresh_block_id();
@@ -2292,20 +2276,49 @@ impl Lower {
         // Condition loop: loop(expr) where expr is a boolean expression
         let is_array_iter = matches!(first_arg, Expr::Ident(_));
         
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("DEBUG loop_builtin: is_array_iter={}, first_arg={:?}", is_array_iter, first_arg);
+            }
+        }
+        
         if is_array_iter {
             // Array iteration: loop(arr) { body with $0 }
             // Implement as: for i in 0..len(arr) { $0 = arr[i]; body }
+            
+            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                if debug == "1" {
+                    eprintln!("DEBUG loop: is_array_iter=true, first_arg={:?}", first_arg);
+                }
+            }
             
             // Get the array value
             let array_value = self.lower_expr(first_arg, current_block, func)?;
             
             // Get array length
-            // First, try to find the type of the array value and clone it to avoid borrow issues
-            let array_ty = current_block
-                .instructions
-                .iter()
-                .find(|inst| inst.result == array_value)
-                .map(|inst| inst.ty.clone());
+            // Try to find the type of the array value
+            // First check if it's a variable (including parameters) in self.variables
+            let array_ty = if let Expr::Ident(ident) = first_arg {
+                // Look up the variable to get its type
+                let ty = self.variables.get(&ident.name).and_then(|binding| {
+                    match binding {
+                        VarBinding::Value(_, ty) | VarBinding::Local(_, ty) => Some(ty.clone()),
+                    }
+                });
+                if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                    if debug == "1" {
+                        eprintln!("DEBUG loop: ident={}, found_type={:?}", ident.name, ty);
+                    }
+                }
+                ty
+            } else {
+                // Otherwise, find the instruction that produced this value
+                current_block
+                    .instructions
+                    .iter()
+                    .find(|inst| inst.result == array_value)
+                    .map(|inst| inst.ty.clone())
+            };
             
             // Create a local to store the array length (needed for dominance in loop header)
             let len_local = func.add_local("$array_len".to_string(), IrType::Int(64));
@@ -2313,6 +2326,12 @@ impl Lower {
             
             // Check if this is a fixed-size tuple - if so, use compile-time length
             if let Some(IrType::Tuple(ref element_types)) = array_ty {
+                if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                    if debug == "1" {
+                        eprintln!("DEBUG loop: Using compile-time tuple length = {}", element_types.len());
+                    }
+                }
+
                 // Fixed-size tuple: use compile-time known length
                 current_block.add_instruction(IrInstruction {
                     result: len_value,
@@ -2873,17 +2892,9 @@ impl Lower {
             }
         }
         let switch_value = if let Some(IrType::Enum(_enum_name)) = &match_value_type {
-            // For enums, extract the tag (first element of the tuple)
-            let tag_id = self.fresh_value_id();
-            ir_block.add_instruction(IrInstruction {
-                result: tag_id,
-                ty: IrType::Int(32),
-                kind: IrInstructionKind::TupleExtract {
-                    tuple: match_value,
-                    index: 0,
-                },
-            });
-            tag_id
+            // FIX: Enums are now plain integers (the tag value), not tuples
+            // So we can use match_value directly as the tag
+            match_value
         } else {
             // For non-enum types (literals, bools, etc.), switch directly on the value
             match_value
@@ -4113,6 +4124,10 @@ impl Lower {
         match ir_type {
             IrType::Void => Ok(atom_ast::Type::Named(atom_ast::Ident {
                 name: "Void".to_string(),
+                span,
+            })),
+            IrType::Bool => Ok(atom_ast::Type::Named(atom_ast::Ident {
+                name: "Bool".to_string(),
                 span,
             })),
             IrType::Int(64) => Ok(atom_ast::Type::Named(atom_ast::Ident {

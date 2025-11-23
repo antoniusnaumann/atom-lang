@@ -38,14 +38,14 @@
 
 /// Check if array contains an item
 +contains(arr t*, item t) Bool {
-    found := False
+    count := 0
     loop(arr) {
         match($0 == item) {
-            True { found = True }
+            True { count += 1 }
             False { }
         }
     }
-    found
+    count > 0
 }
 
 /// Reverse an array

@@ -652,6 +652,7 @@ impl CodeGenerator {
             // Track values and stack slots
             let mut values = HashMap::new();
             let mut stack_slots = HashMap::new();
+            let mut value_types: HashMap<ValueId, IrType> = HashMap::new();
 
             // Switch to the actual entry block (not the loop header if one exists)
             builder.switch_to_block(actual_entry_block);
@@ -662,8 +663,9 @@ impl CodeGenerator {
                 .map(|i| builder.block_params(actual_entry_block)[i])
                 .collect();
             
-            for (i, _) in func.params.iter().enumerate() {
+            for (i, (_, param_ty)) in func.params.iter().enumerate() {
                 values.insert(ValueId(i as u32), param_values[i]);
+                value_types.insert(ValueId(i as u32), param_ty.clone());
             }
             
             // If we have a loop header, immediately jump to it from the entry block
@@ -713,6 +715,7 @@ impl CodeGenerator {
                         // The phi value is the block parameter
                         let param_value = builder.block_params(cl_block)[0]; // First (and only) parameter
                         values.insert(inst.result, param_value);
+                        value_types.insert(inst.result, inst.ty.clone());
                         continue;
                     }
                     
@@ -720,6 +723,7 @@ impl CodeGenerator {
                         &mut builder,
                         inst,
                         &values,
+                        &value_types,
                         &stack_slots,
                         func_ids,
                         module,
@@ -747,6 +751,7 @@ impl CodeGenerator {
                         ))
                     })?;
                     values.insert(inst.result, value);
+                    value_types.insert(inst.result, inst.ty.clone());
                 }
 
                 // Translate terminator
@@ -843,6 +848,7 @@ impl CodeGenerator {
         builder: &mut FunctionBuilder,
         inst: &IrInstruction,
         values: &HashMap<ValueId, Value>,
+        value_types: &HashMap<ValueId, IrType>,
         stack_slots: &HashMap<LocalId, StackSlot>,
         func_ids: &HashMap<String, FuncId>,
         module: &mut ObjectModule,
@@ -860,7 +866,9 @@ impl CodeGenerator {
                 let right_val = values
                     .get(right)
                     .ok_or(CodegenError::InvalidValue(*right))?;
-                self.translate_binop(builder, *op, *left_val, *right_val, &inst.ty)
+                let left_ty = value_types.get(left);
+                let right_ty = value_types.get(right);
+                self.translate_binop(builder, *op, *left_val, *right_val, left_ty, right_ty, &inst.ty)
             }
 
             IrInstructionKind::UnOp { op, operand } => {
@@ -1097,48 +1105,80 @@ impl CodeGenerator {
 
             IrInstructionKind::MakeTuple { elements } => {
                 // Allocate stack space for the tuple
-                // Each element is 8 bytes (i64) for simplicity
+                // Layout: [length: i64][elem0][elem1][elem2]...
+                // Return pointer points to elem0, so length is at offset -8
                 if elements.is_empty() {
                     // Empty tuple = null pointer
                     Ok(builder.ins().iconst(types::I64, 0))
                 } else {
-                    // Create a stack slot for the tuple
-                    let tuple_size = (elements.len() * 8) as u32;
+                    // Create a stack slot for: length + elements
+                    // Length takes 8 bytes, each element takes 8 bytes
+                    let tuple_size = ((elements.len() + 1) * 8) as u32;
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         tuple_size,
                         0,
                     ));
                     
-                    // Store each element at its offset
+                    // Store length at offset 0
+                    let len_val = builder.ins().iconst(types::I64, elements.len() as i64);
+                    builder.ins().stack_store(len_val, slot, 0);
+                    
+                    // Store each element at offset 8 + (i * 8)
                     for (i, elem_id) in elements.iter().enumerate() {
                         let elem_val = values
                             .get(elem_id)
                             .copied()
                             .ok_or(CodegenError::InvalidValue(*elem_id))?;
-                        let offset = (i * 8) as i32;
+                        let offset = ((i + 1) * 8) as i32;
                         builder.ins().stack_store(elem_val, slot, offset);
                     }
                     
-                    // Return the address of the tuple
-                    Ok(builder.ins().stack_addr(types::I64, slot, 0))
+                    // Return the address of the first element (offset 8)
+                    // This makes length accessible at ptr[-8]
+                    Ok(builder.ins().stack_addr(types::I64, slot, 8))
                 }
             }
 
             IrInstructionKind::TupleExtract { tuple, index } => {
-                // Get the tuple pointer (returned by MakeTuple)
-                let tuple_ptr = values
+                // Get the tuple value (returned by MakeTuple or a simple enum value)
+                let tuple_val = values
                     .get(tuple)
                     .copied()
                     .ok_or(CodegenError::InvalidValue(*tuple))?;
                 
-                // Calculate offset: each element is 8 bytes
-                let offset = (*index * 8) as i32;
+                // Check the actual type of the tuple value
+                let tuple_val_type = builder.func.dfg.value_type(tuple_val);
                 
-                // Load from the tuple at the given offset
-                // Use the instruction's type to determine what to load
-                let load_type = self.translate_type(&inst.ty)?;
-                Ok(builder.ins().load(load_type, MemFlags::new(), tuple_ptr, offset))
+                // Special case: for simple enums (like Bool, None), the value IS the tag, not a pointer
+                // MakeTuple ALWAYS returns I64 (pointer), so if tuple_val is NOT I64, it's a simple enum
+                // If we're extracting index 0 (the tag) and the value is NOT a pointer (I64),
+                // just return the value directly
+                if *index == 0 && tuple_val_type != types::I64 {
+                    // This is a simple enum tag extraction - return the value directly
+                    let expected_type = self.translate_type(&inst.ty)?;
+                    if tuple_val_type == expected_type {
+                        Ok(tuple_val)
+                    } else if expected_type == types::I32 && tuple_val_type == types::I8 {
+                        // Extend i8 to i32
+                        Ok(builder.ins().uextend(types::I32, tuple_val))
+                    } else if expected_type == types::I8 && tuple_val_type == types::I32 {
+                        // Reduce i32 to i8
+                        Ok(builder.ins().ireduce(types::I8, tuple_val))
+                    } else {
+                        // Type mismatch - return value as-is
+                        Ok(tuple_val)
+                    }
+                } else {
+                    // Normal case: tuple is a pointer to a tuple structure
+                    // Calculate offset: each element is 8 bytes
+                    let offset = (*index * 8) as i32;
+                    
+                    // Load from the tuple at the given offset
+                    // Use the instruction's type to determine what to load
+                    let load_type = self.translate_type(&inst.ty)?;
+                    Ok(builder.ins().load(load_type, MemFlags::new(), tuple_val, offset))
+                }
             }
 
             IrInstructionKind::MakeStruct { struct_name: _, fields } => {
@@ -1283,13 +1323,14 @@ impl CodeGenerator {
             }
 
             IrInstructionKind::ArrayLen { array } => {
-                // TODO: Extract length from fat pointer
-                // For now, return 0 as placeholder
-                let _array_val = values
+                // Extract length from the tuple/array metadata
+                // Tuples store length at offset -8 from the data pointer
+                let array_val = values
                     .get(array)
                     .copied()
                     .ok_or(CodegenError::InvalidValue(*array))?;
-                Ok(builder.ins().iconst(types::I64, 0))
+                // Load length from ptr[-8]
+                Ok(builder.ins().load(types::I64, MemFlags::new(), array_val, -8))
             }
 
             IrInstructionKind::ArrayIndex { array, index } => {
@@ -1473,11 +1514,21 @@ impl CodeGenerator {
         op: IrBinOp,
         left: Value,
         right: Value,
+        left_ty: Option<&IrType>,
+        right_ty: Option<&IrType>,
         result_ty: &IrType,
     ) -> CodegenResult<Value> {
         use IrBinOp::*;
 
-        let is_signed = matches!(result_ty, IrType::Int(_));
+        // Determine if we should use signed operations based on operand types
+        // For comparison operations, check the operand types (not result which is Bool)
+        // Enums should use signed comparisons since they're represented as signed integers
+        let is_signed = match (left_ty, right_ty) {
+            (Some(IrType::Int(_)), _) | (_, Some(IrType::Int(_))) => true,
+            (Some(IrType::Enum(_)), _) | (_, Some(IrType::Enum(_))) => true,  // Enums use signed comparison
+            (Some(IrType::UInt(_)), Some(IrType::UInt(_))) => false,
+            _ => matches!(result_ty, IrType::Int(_)),  // Fallback to result type
+        };
 
         // Ensure both operands have compatible types for all binary operations
         // by extending/truncating if necessary

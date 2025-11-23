@@ -259,17 +259,18 @@ impl TypeEnvironment {
     pub fn with_stdlib() -> Self {
         let mut env = Self::new();
 
-        // Add Bool enum: Bool(True, False)
+        // Add Bool enum: Bool(False, True)
+        // IMPORTANT: False must be index 0, True must be index 1 (standard boolean convention)
         env.add_enum(EnumType {
             name: "Bool".to_string(),
             params: vec![],
             cases: vec![
                 EnumCase {
-                    name: "True".to_string(),
+                    name: "False".to_string(),
                     fields: vec![],
                 },
                 EnumCase {
-                    name: "False".to_string(),
+                    name: "True".to_string(),
                     fields: vec![],
                 },
             ],
