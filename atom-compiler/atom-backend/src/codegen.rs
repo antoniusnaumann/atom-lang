@@ -1006,20 +1006,51 @@ impl CodeGenerator {
                 
                 let func_ref = module.declare_func_in_func(func_id, builder.func);
                 
+                // Get the function signature for type checking
+                let func_sig = module.declarations().get_function_decl(func_id).signature.clone();
+                
+                // Collect argument values
                 let arg_vals: Result<Vec<_>, _> = args
                     .iter()
                     .map(|arg| values.get(arg).copied().ok_or(CodegenError::InvalidValue(*arg)))
                     .collect();
-                let arg_vals = arg_vals?;
+                let mut arg_vals = arg_vals?;
+                
+                // Convert arguments to match expected signature types
+                for (i, param) in func_sig.params.iter().enumerate() {
+                    if i < arg_vals.len() {
+                        let expected_type = param.value_type;
+                        let actual_type = builder.func.dfg.value_type(arg_vals[i]);
+                        
+                        if expected_type != actual_type {
+                            // Insert type conversion
+                            arg_vals[i] = self.convert_value_type(
+                                builder,
+                                arg_vals[i],
+                                actual_type,
+                                expected_type,
+                            )?;
+                        }
+                    }
+                }
 
                 let call = builder.ins().call(func_ref, &arg_vals);
                 let results = builder.inst_results(call);
                 
+                // Convert return value if needed
                 if results.is_empty() {
                     // Void function - return a dummy value
                     Ok(builder.ins().iconst(types::I64, 0))
                 } else {
-                    Ok(results[0])
+                    let result_val = results[0];
+                    let actual_ret_type = builder.func.dfg.value_type(result_val);
+                    let expected_ret_type = self.translate_type(&inst.ty)?;
+                    
+                    if actual_ret_type != expected_ret_type {
+                        self.convert_value_type(builder, result_val, actual_ret_type, expected_ret_type)
+                    } else {
+                        Ok(result_val)
+                    }
                 }
             }
 
@@ -1394,7 +1425,6 @@ impl CodeGenerator {
     ) -> CodegenResult<Value> {
         use IrBinOp::*;
 
-        let is_float = matches!(result_ty, IrType::Float(_));
         let is_signed = matches!(result_ty, IrType::Int(_));
 
         // Ensure both operands have compatible types for all binary operations
@@ -1405,56 +1435,94 @@ impl CodeGenerator {
             
             if left_ty != right_ty {
                 if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                    eprintln!("  Types differ, need to extend");
-                }
-                // Determine target type: use the result type if available, otherwise promote to larger
-                let target_ty = if let Ok(cl_ty) = self.translate_type(result_ty) {
-                    cl_ty
-                } else {
-                    // Fallback: promote to the larger of the two types
-                    let left_bits = left_ty.bits();
-                    let right_bits = right_ty.bits();
-                    if left_bits > right_bits { left_ty } else { right_ty }
-                };
-                
-                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                    eprintln!("  left_bits={}, right_bits={}, target={:?}", left_ty.bits(), right_ty.bits(), target_ty);
+                    eprintln!("  Types differ: left={:?}, right={:?}", left_ty, right_ty);
                 }
                 
-                // Extend or truncate to target type
-                let new_left = if left_ty != target_ty {
-                    if left_ty.bits() < target_ty.bits() {
-                        if is_signed {
-                            builder.ins().sextend(target_ty, left)
+                // Handle float/integer type mismatches differently
+                let both_floats = left_ty.is_float() && right_ty.is_float();
+                let both_ints = !left_ty.is_float() && !right_ty.is_float();
+                
+                if both_floats {
+                    // Float conversion: promote to f64 if one is f32 and other is f64
+                    let target_ty = if left_ty.bits() > right_ty.bits() { left_ty } else { right_ty };
+                    
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("  Float conversion to {:?}", target_ty);
+                    }
+                    
+                    let new_left = if left_ty != target_ty {
+                        builder.ins().fpromote(target_ty, left)
+                    } else {
+                        left
+                    };
+                    
+                    let new_right = if right_ty != target_ty {
+                        builder.ins().fpromote(target_ty, right)
+                    } else {
+                        right
+                    };
+                    
+                    (new_left, new_right)
+                } else if both_ints {
+                    // Integer conversion: use result type or promote to larger
+                    let target_ty = if let Ok(cl_ty) = self.translate_type(result_ty) {
+                        cl_ty
+                    } else {
+                        // Fallback: promote to the larger of the two types
+                        let left_bits = left_ty.bits();
+                        let right_bits = right_ty.bits();
+                        if left_bits > right_bits { left_ty } else { right_ty }
+                    };
+                    
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("  Integer conversion to {:?}", target_ty);
+                    }
+                    
+                    // Extend or truncate to target type
+                    let new_left = if left_ty != target_ty {
+                        if left_ty.bits() < target_ty.bits() {
+                            if is_signed {
+                                builder.ins().sextend(target_ty, left)
+                            } else {
+                                builder.ins().uextend(target_ty, left)
+                            }
                         } else {
-                            builder.ins().uextend(target_ty, left)
+                            builder.ins().ireduce(target_ty, left)
                         }
                     } else {
-                        builder.ins().ireduce(target_ty, left)
-                    }
-                } else {
-                    left
-                };
-                
-                let new_right = if right_ty != target_ty {
-                    if right_ty.bits() < target_ty.bits() {
-                        if is_signed {
-                            builder.ins().sextend(target_ty, right)
+                        left
+                    };
+                    
+                    let new_right = if right_ty != target_ty {
+                        if right_ty.bits() < target_ty.bits() {
+                            if is_signed {
+                                builder.ins().sextend(target_ty, right)
+                            } else {
+                                builder.ins().uextend(target_ty, right)
+                            }
                         } else {
-                            builder.ins().uextend(target_ty, right)
+                            builder.ins().ireduce(target_ty, right)
                         }
                     } else {
-                        builder.ins().ireduce(target_ty, right)
-                    }
+                        right
+                    };
+                    
+                    (new_left, new_right)
                 } else {
-                    right
-                };
-                
-                (new_left, new_right)
+                    // Mixed float/int - this shouldn't happen in well-typed code
+                    // Just return as-is and let Cranelift error if invalid
+                    eprintln!("Warning: Mixed float/int operands in binary operation");
+                    (left, right)
+                }
             } else {
                 (left, right)
             }
         };
+        
+        // NOW check the final types to determine if these are floats (after alignment)
+        let left_ty = builder.func.dfg.value_type(left);
+        let right_ty = builder.func.dfg.value_type(right);
+        let is_float = left_ty.is_float() || right_ty.is_float();
 
         let result = match op {
             Add => {
@@ -1505,50 +1573,117 @@ impl CodeGenerator {
                 if is_float {
                     builder.ins().fcmp(FloatCC::Equal, left, right)
                 } else {
-                    builder.ins().icmp(IntCC::Equal, left, right)
+                    // Check if operands are i8 (booleans) - icmp doesn't support i8
+                    let left_ty = builder.func.dfg.value_type(left);
+                    if left_ty == types::I8 {
+                        // For i8, use XOR and check if result is 0 (equal)
+                        let xor_result = builder.ins().bxor(left, right);
+                        let zero = builder.ins().iconst(types::I8, 0);
+                        // Extend to i16 for icmp
+                        let xor_ext = builder.ins().uextend(types::I16, xor_result);
+                        let zero_ext = builder.ins().uextend(types::I16, zero);
+                        builder.ins().icmp(IntCC::Equal, xor_ext, zero_ext)
+                    } else {
+                        builder.ins().icmp(IntCC::Equal, left, right)
+                    }
                 }
             }
             Ne => {
                 if is_float {
                     builder.ins().fcmp(FloatCC::NotEqual, left, right)
                 } else {
-                    builder.ins().icmp(IntCC::NotEqual, left, right)
+                    let left_ty = builder.func.dfg.value_type(left);
+                    if left_ty == types::I8 {
+                        // For i8, use XOR directly (non-zero means not equal)
+                        let xor_result = builder.ins().bxor(left, right);
+                        let zero = builder.ins().iconst(types::I8, 0);
+                        let xor_ext = builder.ins().uextend(types::I16, xor_result);
+                        let zero_ext = builder.ins().uextend(types::I16, zero);
+                        builder.ins().icmp(IntCC::NotEqual, xor_ext, zero_ext)
+                    } else {
+                        builder.ins().icmp(IntCC::NotEqual, left, right)
+                    }
                 }
             }
             Lt => {
                 if is_float {
                     builder.ins().fcmp(FloatCC::LessThan, left, right)
-                } else if is_signed {
-                    builder.ins().icmp(IntCC::SignedLessThan, left, right)
                 } else {
-                    builder.ins().icmp(IntCC::UnsignedLessThan, left, right)
+                    let left_ty = builder.func.dfg.value_type(left);
+                    if left_ty == types::I8 {
+                        // Extend to i16 for comparison
+                        let left_ext = builder.ins().uextend(types::I16, left);
+                        let right_ext = builder.ins().uextend(types::I16, right);
+                        if is_signed {
+                            builder.ins().icmp(IntCC::SignedLessThan, left_ext, right_ext)
+                        } else {
+                            builder.ins().icmp(IntCC::UnsignedLessThan, left_ext, right_ext)
+                        }
+                    } else if is_signed {
+                        builder.ins().icmp(IntCC::SignedLessThan, left, right)
+                    } else {
+                        builder.ins().icmp(IntCC::UnsignedLessThan, left, right)
+                    }
                 }
             }
             Le => {
                 if is_float {
                     builder.ins().fcmp(FloatCC::LessThanOrEqual, left, right)
-                } else if is_signed {
-                    builder.ins().icmp(IntCC::SignedLessThanOrEqual, left, right)
                 } else {
-                    builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, left, right)
+                    let left_ty = builder.func.dfg.value_type(left);
+                    if left_ty == types::I8 {
+                        let left_ext = builder.ins().uextend(types::I16, left);
+                        let right_ext = builder.ins().uextend(types::I16, right);
+                        if is_signed {
+                            builder.ins().icmp(IntCC::SignedLessThanOrEqual, left_ext, right_ext)
+                        } else {
+                            builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, left_ext, right_ext)
+                        }
+                    } else if is_signed {
+                        builder.ins().icmp(IntCC::SignedLessThanOrEqual, left, right)
+                    } else {
+                        builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, left, right)
+                    }
                 }
             }
             Gt => {
                 if is_float {
                     builder.ins().fcmp(FloatCC::GreaterThan, left, right)
-                } else if is_signed {
-                    builder.ins().icmp(IntCC::SignedGreaterThan, left, right)
                 } else {
-                    builder.ins().icmp(IntCC::UnsignedGreaterThan, left, right)
+                    let left_ty = builder.func.dfg.value_type(left);
+                    if left_ty == types::I8 {
+                        let left_ext = builder.ins().uextend(types::I16, left);
+                        let right_ext = builder.ins().uextend(types::I16, right);
+                        if is_signed {
+                            builder.ins().icmp(IntCC::SignedGreaterThan, left_ext, right_ext)
+                        } else {
+                            builder.ins().icmp(IntCC::UnsignedGreaterThan, left_ext, right_ext)
+                        }
+                    } else if is_signed {
+                        builder.ins().icmp(IntCC::SignedGreaterThan, left, right)
+                    } else {
+                        builder.ins().icmp(IntCC::UnsignedGreaterThan, left, right)
+                    }
                 }
             }
             Ge => {
                 if is_float {
                     builder.ins().fcmp(FloatCC::GreaterThanOrEqual, left, right)
-                } else if is_signed {
-                    builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, left, right)
                 } else {
-                    builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, left, right)
+                    let left_ty = builder.func.dfg.value_type(left);
+                    if left_ty == types::I8 {
+                        let left_ext = builder.ins().uextend(types::I16, left);
+                        let right_ext = builder.ins().uextend(types::I16, right);
+                        if is_signed {
+                            builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, left_ext, right_ext)
+                        } else {
+                            builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, left_ext, right_ext)
+                        }
+                    } else if is_signed {
+                        builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, left, right)
+                    } else {
+                        builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, left, right)
+                    }
                 }
             }
             And => builder.ins().band(left, right),
@@ -1588,8 +1723,17 @@ impl CodeGenerator {
             }
             Not => {
                 // Logical not: convert to 0/1 then XOR with 1
-                let zero = builder.ins().iconst(types::I8, 0);
-                builder.ins().icmp(IntCC::Equal, operand, zero)
+                let operand_ty = builder.func.dfg.value_type(operand);
+                if operand_ty == types::I8 {
+                    // For i8 booleans, extend to i16 for icmp
+                    let zero = builder.ins().iconst(types::I8, 0);
+                    let operand_ext = builder.ins().uextend(types::I16, operand);
+                    let zero_ext = builder.ins().uextend(types::I16, zero);
+                    builder.ins().icmp(IntCC::Equal, operand_ext, zero_ext)
+                } else {
+                    let zero = builder.ins().iconst(operand_ty, 0);
+                    builder.ins().icmp(IntCC::Equal, operand, zero)
+                }
             }
             BitNot => builder.ins().bnot(operand),
         };
@@ -1726,7 +1870,22 @@ impl CodeGenerator {
                     let val = values
                         .get(val_id)
                         .ok_or(CodegenError::InvalidValue(*val_id))?;
-                    builder.ins().return_(&[*val]);
+                    
+                    // Check if return value type needs conversion
+                    let ret_val = if !builder.func.signature.returns.is_empty() {
+                        let expected_type = builder.func.signature.returns[0].value_type;
+                        let actual_type = builder.func.dfg.value_type(*val);
+                        
+                        if expected_type != actual_type {
+                            self.convert_value_type(builder, *val, actual_type, expected_type)?
+                        } else {
+                            *val
+                        }
+                    } else {
+                        *val
+                    };
+                    
+                    builder.ins().return_(&[ret_val]);
                 } else {
                     builder.ins().return_(&[]);
                 }
@@ -1783,7 +1942,21 @@ impl CodeGenerator {
                 let false_cl = blocks
                     .get(false_block)
                     .ok_or(CodegenError::InvalidBlock(*false_block))?;
-                builder.ins().brif(*cond, *true_cl, &[], *false_cl, &[]);
+                
+                // Check if true or false blocks need phi arguments
+                let true_args: Vec<Value> = if let Some((phi_val, _)) = get_phi_info(true_block) {
+                    vec![phi_val]
+                } else {
+                    vec![]
+                };
+                
+                let false_args: Vec<Value> = if let Some((phi_val, _)) = get_phi_info(false_block) {
+                    vec![phi_val]
+                } else {
+                    vec![]
+                };
+                
+                builder.ins().brif(*cond, *true_cl, &true_args, *false_cl, &false_args);
             }
             IrTerminator::Switch {
                 value,
@@ -1908,6 +2081,41 @@ impl CodeGenerator {
             }
         }
         Ok(())
+    }
+
+    /// Convert a value from one Cranelift type to another
+    fn convert_value_type(
+        &self,
+        builder: &mut FunctionBuilder,
+        value: Value,
+        from_type: Type,
+        to_type: Type,
+    ) -> CodegenResult<Value> {
+        if from_type == to_type {
+            return Ok(value);
+        }
+        
+        // Float conversions
+        if from_type == types::F32 && to_type == types::F64 {
+            return Ok(builder.ins().fpromote(types::F64, value));
+        }
+        if from_type == types::F64 && to_type == types::F32 {
+            return Ok(builder.ins().fdemote(types::F32, value));
+        }
+        
+        // Integer conversions
+        if from_type.is_int() && to_type.is_int() {
+            if from_type.bits() < to_type.bits() {
+                // Extend (zero-extend for now; could be sign-extend based on type info)
+                return Ok(builder.ins().uextend(to_type, value));
+            } else if from_type.bits() > to_type.bits() {
+                // Reduce
+                return Ok(builder.ins().ireduce(to_type, value));
+            }
+        }
+        
+        // No conversion available - return as-is
+        Ok(value)
     }
 
     /// Translate an IR type to a Cranelift type
