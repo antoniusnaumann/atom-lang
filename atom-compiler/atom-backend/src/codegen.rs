@@ -1150,9 +1150,61 @@ impl CodeGenerator {
                         .get(&fields[0])
                         .copied()
                         .ok_or(CodegenError::InvalidValue(fields[0]))?;
-                    // Create a distinct SSA value using select(true, val, val)
-                    let true_const = builder.ins().iconst(types::I8, 1);
-                    Ok(builder.ins().select(true_const, field_val, field_val))
+                    
+                    // Get the expected result type and actual field type
+                    let expected_type = self.translate_type(&inst.ty)?;
+                    let field_type = builder.func.dfg.value_type(field_val);
+                    
+                    // Debug output
+                    eprintln!("DEBUG MakeStruct: inst.ty={:?}, expected={:?}, field={:?}, match={}", 
+                              inst.ty, expected_type, field_type, field_type == expected_type);
+                    eprintln!("  expected==I64: {}, field==F64: {}", expected_type == types::I64, field_type == types::F64);
+                    
+                    // Check if we need type conversion (e.g., Float in enum -> i64 pointer)
+                    if expected_type == types::I64 && field_type == types::F64 {
+                        eprintln!("  -> Taking F64->I64 branch");
+                        // Store float in stack and return pointer
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            0,
+                        ));
+                        let slot_addr = builder.ins().stack_addr(types::I64, slot, 0);
+                        builder.ins().store(MemFlags::new(), field_val, slot_addr, 0);
+                        Ok(slot_addr)
+                    } else if expected_type == types::I64 && field_type == types::F32 {
+                        eprintln!("  -> Taking F32->I64 branch");
+                        // Store f32 in stack and return pointer
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            4,
+                            0,
+                        ));
+                        let slot_addr = builder.ins().stack_addr(types::I64, slot, 0);
+                        builder.ins().store(MemFlags::new(), field_val, slot_addr, 0);
+                        Ok(slot_addr)
+                    } else if field_type == expected_type {
+                        eprintln!("  -> Taking select branch (types match)");
+                        // Types match: use select to create distinct SSA value
+                        let true_const = builder.ins().iconst(types::I8, 1);
+                        Ok(builder.ins().select(true_const, field_val, field_val))
+                    } else {
+                        eprintln!("  -> Taking fallback branch (unexpected case)");
+                        // Unexpected case: try to handle by allocating stack
+                        let slot_size = if field_type.bytes() > 0 {
+                            field_type.bytes()
+                        } else {
+                            8
+                        };
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_size,
+                            0,
+                        ));
+                        let slot_addr = builder.ins().stack_addr(types::I64, slot, 0);
+                        builder.ins().store(MemFlags::new(), field_val, slot_addr, 0);
+                        Ok(slot_addr)
+                    }
                 }
             }
 

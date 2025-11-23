@@ -757,14 +757,26 @@ impl Lower {
                     let enum_name_cloned = enum_name.to_string();
                     let idx_value = idx as i64;
                     
-                    // It's an enum case - create a constant representing it
-                    // For now, represent enum cases as integer tags
+                    // Enums are represented as tuples: (tag, payload...)
+                    // For parameterless variants (None, True, False), create tuple with just tag
+                    
+                    // Create the enum tag as a constant
+                    let tag_id = self.fresh_value_id();
+                    ir_block.add_instruction(IrInstruction {
+                        result: tag_id,
+                        ty: IrType::Int(32),
+                        kind: IrInstructionKind::Const {
+                            value: IrConstant::Int(idx_value),
+                        },
+                    });
+                    
+                    // Create a tuple with just the tag (parameterless variant)
                     let value_id = self.fresh_value_id();
                     ir_block.add_instruction(IrInstruction {
                         result: value_id,
                         ty: IrType::Enum(enum_name_cloned),
-                        kind: IrInstructionKind::Const {
-                            value: IrConstant::Int(idx_value),
+                        kind: IrInstructionKind::MakeTuple {
+                            elements: vec![tag_id],
                         },
                     });
                     Ok(value_id)
@@ -2733,17 +2745,32 @@ impl Lower {
         }
 
         // Check if this is actually an enum variant constructor
-        if let Some((enum_name, _case, _idx)) = self.type_env.find_enum_case(&struct_name) {
+        if let Some((enum_name, _case, idx)) = self.type_env.find_enum_case(&struct_name) {
             // This is an enum variant with payload (e.g., Some(x))
-            // Represent it as an enum type, not a struct type
+            // Enums are represented as tuples: (tag, payload...)
             let enum_name_cloned = enum_name.to_string();
+            let idx_value = idx as i64;
+            
+            // Create the tag constant
+            let tag_id = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: tag_id,
+                ty: IrType::Int(32),
+                kind: IrInstructionKind::Const {
+                    value: IrConstant::Int(idx_value),
+                },
+            });
+            
+            // Create tuple with tag + payload fields
+            let mut tuple_elements = vec![tag_id];
+            tuple_elements.extend(field_values);
+            
             let value_id = self.fresh_value_id();
             ir_block.add_instruction(IrInstruction {
                 result: value_id,
                 ty: IrType::Enum(enum_name_cloned),
-                kind: IrInstructionKind::MakeStruct {
-                    struct_name,
-                    fields: field_values,
+                kind: IrInstructionKind::MakeTuple {
+                    elements: tuple_elements,
                 },
             });
             Ok(value_id)
@@ -2838,6 +2865,30 @@ impl Lower {
             return Err(LowerError::InvalidPattern("Match must have at least one arm".to_string()));
         }
 
+        // Determine what we're matching on and extract the tag if it's an enum
+        let match_value_type = self.get_value_type(match_value, ir_block, func);
+        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+            if debug == "1" {
+                eprintln!("Match value type: {:?}", match_value_type);
+            }
+        }
+        let switch_value = if let Some(IrType::Enum(_enum_name)) = &match_value_type {
+            // For enums, extract the tag (first element of the tuple)
+            let tag_id = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: tag_id,
+                ty: IrType::Int(32),
+                kind: IrInstructionKind::TupleExtract {
+                    tuple: match_value,
+                    index: 0,
+                },
+            });
+            tag_id
+        } else {
+            // For non-enum types (literals, bools, etc.), switch directly on the value
+            match_value
+        };
+
         // Create blocks for each arm and a merge block
         let merge_block_id = self.fresh_block_id();
         let mut case_blocks = Vec::new();
@@ -2861,16 +2912,12 @@ impl Lower {
                     }
                 }
                 atom_ast::Pattern::Enum { name, .. } => {
-                    // For enum patterns, map the variant name to its tag value
-                    // For Bool: False = 0, True = 1
-                    match name.name.as_str() {
-                        "False" => 0,
-                        "True" => 1,
-                        // For Option: None = 0, Some = 1
-                        "None" => 0,
-                        "Some" => 1,
-                        // For other enums, use arm index as fallback
-                        _ => i as u32,
+                    // For enum patterns, look up the actual tag value from the enum definition
+                    if let Some((_, _, idx)) = self.type_env.find_enum_case(&name.name) {
+                        idx as u32
+                    } else {
+                        // Fallback if not found
+                        i as u32
                     }
                 }
                 _ => i as u32, // For non-enum/non-literal patterns, use arm index
@@ -2878,15 +2925,53 @@ impl Lower {
 
             // Handle pattern bindings
             // For enum patterns like Some(inner), bind the payload to the variable
-            if let atom_ast::Pattern::Enum { name: _, fields, .. } = &arm.pattern {
+            if let atom_ast::Pattern::Enum { name, fields, .. } = &arm.pattern {
+                if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                    if debug == "1" {
+                        eprintln!("Processing enum pattern: {}, match_value_type={:?}", name.name, match_value_type);
+                    }
+                }
+                
+                // Determine the payload type from the enum definition
+                let payload_type = if let Some(IrType::Enum(enum_name)) = &match_value_type {
+                    if let Some(enum_def) = self.type_env.get_enum(enum_name) {
+                        // Find the variant matching this pattern
+                        if let Some(variant) = enum_def.cases.iter().find(|c| c.name == name.name) {
+                            // Get the type of the first field (if any)
+                            if let Some(first_field_ty) = variant.fields.first() {
+                                let ty = self.backend_type_to_ir(first_field_ty).ok();
+                                if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                                    if debug == "1" {
+                                        eprintln!("Extracting payload for {}: type={:?}", name.name, ty);
+                                    }
+                                }
+                                ty
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 for field_pattern in fields {
                     if let atom_ast::Pattern::Ident(ident) = field_pattern {
                         // Extract the payload from the matched enum variant
-                        // For simplification, create a dummy extraction (extract from match_value)
                         let payload_id = self.fresh_value_id();
+                        let actual_payload_type = payload_type.clone().unwrap_or(IrType::Int(64));
+                        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                            if debug == "1" {
+                                eprintln!("Binding {} to payload type {:?}", ident.name, actual_payload_type);
+                            }
+                        }
                         arm_block.add_instruction(IrInstruction {
                             result: payload_id,
-                            ty: IrType::Pointer(Box::new(IrType::Void)), // Simplified
+                            ty: actual_payload_type.clone(),
                             kind: IrInstructionKind::TupleExtract {
                                 tuple: match_value,
                                 index: 1, // Index 0 is the tag, index 1 is the payload
@@ -2895,7 +2980,7 @@ impl Lower {
                         // Bind the variable
                         self.variables.insert(
                             ident.name.clone(),
-                            VarBinding::Value(payload_id, IrType::Pointer(Box::new(IrType::Void))),
+                            VarBinding::Value(payload_id, actual_payload_type),
                         );
                     }
                 }
@@ -2943,7 +3028,7 @@ impl Lower {
         };
 
         ir_block.set_terminator(IrTerminator::Switch {
-            value: match_value,
+            value: switch_value,
             cases,
             default: default_block_id,
         });
