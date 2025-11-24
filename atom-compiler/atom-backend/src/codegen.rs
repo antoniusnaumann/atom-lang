@@ -1104,25 +1104,34 @@ impl CodeGenerator {
             }
 
             IrInstructionKind::MakeTuple { elements } => {
-                // Allocate stack space for the tuple
+                // Heap-allocate space for the tuple using malloc
                 // Layout: [length: i64][elem0][elem1][elem2]...
                 // Return pointer points to elem0, so length is at offset -8
                 if elements.is_empty() {
                     // Empty tuple = null pointer
                     Ok(builder.ins().iconst(types::I64, 0))
                 } else {
-                    // Create a stack slot for: length + elements
-                    // Length takes 8 bytes, each element takes 8 bytes
-                    let tuple_size = ((elements.len() + 1) * 8) as u32;
-                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        tuple_size,
-                        0,
-                    ));
+                    // Declare malloc function (will be imported at link time)
+                    let mut malloc_sig = Signature::new(CallConv::SystemV);
+                    malloc_sig.params.push(AbiParam::new(types::I64)); // size_t size
+                    malloc_sig.returns.push(AbiParam::new(types::I64)); // void* ptr
+                    let malloc_func_id = module
+                        .declare_function("malloc", Linkage::Import, &malloc_sig)
+                        .map_err(|e| CodegenError::ModuleError(e.to_string()))?;
+                    let malloc_ref = module.declare_func_in_func(malloc_func_id, builder.func);
+                    
+                    // Calculate size: (elements.len() + 1) * 8 bytes
+                    let tuple_size = ((elements.len() + 1) * 8) as i64;
+                    let size_val = builder.ins().iconst(types::I64, tuple_size);
+                    
+                    // Call malloc to allocate heap memory
+                    let malloc_call = builder.ins().call(malloc_ref, &[size_val]);
+                    let results = builder.inst_results(malloc_call);
+                    let heap_ptr = results[0];
                     
                     // Store length at offset 0
                     let len_val = builder.ins().iconst(types::I64, elements.len() as i64);
-                    builder.ins().stack_store(len_val, slot, 0);
+                    builder.ins().store(MemFlags::new(), len_val, heap_ptr, 0);
                     
                     // Store each element at offset 8 + (i * 8)
                     for (i, elem_id) in elements.iter().enumerate() {
@@ -1131,12 +1140,13 @@ impl CodeGenerator {
                             .copied()
                             .ok_or(CodegenError::InvalidValue(*elem_id))?;
                         let offset = ((i + 1) * 8) as i32;
-                        builder.ins().stack_store(elem_val, slot, offset);
+                        builder.ins().store(MemFlags::new(), elem_val, heap_ptr, offset);
                     }
                     
-                    // Return the address of the first element (offset 8)
+                    // Return pointer to first element (heap_ptr + 8)
                     // This makes length accessible at ptr[-8]
-                    Ok(builder.ins().stack_addr(types::I64, slot, 8))
+                    let elem_ptr = builder.ins().iadd_imm(heap_ptr, 8);
+                    Ok(elem_ptr)
                 }
             }
 

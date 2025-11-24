@@ -2891,10 +2891,48 @@ impl Lower {
                 eprintln!("Match value type: {:?}", match_value_type);
             }
         }
-        let switch_value = if let Some(IrType::Enum(_enum_name)) = &match_value_type {
-            // FIX: Enums are now plain integers (the tag value), not tuples
-            // So we can use match_value directly as the tag
-            match_value
+        // Check if we're matching on an enum pattern (has Enum patterns in arms)
+        let has_enum_patterns = arms.iter().any(|arm| {
+            matches!(arm.pattern, atom_ast::Pattern::Enum { .. })
+        });
+        
+        let switch_value = if has_enum_patterns {
+            // Check if any arm has fields (payload) - if so, enum is a tuple (tag, payload...)
+            // and we need to extract the tag from index 0
+            let has_payload = arms.iter().any(|arm| {
+                if let atom_ast::Pattern::Enum { fields, .. } = &arm.pattern {
+                    !fields.is_empty()
+                } else {
+                    false
+                }
+            });
+            
+            if has_payload {
+                // Enum with payload: extract tag from tuple at index 0
+                let tag_id = self.fresh_value_id();
+                ir_block.add_instruction(IrInstruction {
+                    result: tag_id,
+                    ty: IrType::Int(32),
+                    kind: IrInstructionKind::TupleExtract {
+                        tuple: match_value,
+                        index: 0,
+                    },
+                });
+                if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                    if debug == "1" {
+                        eprintln!("Extracting tag from enum tuple, tag_id={:?}, match_value_type={:?}", tag_id, match_value_type);
+                    }
+                }
+                tag_id
+            } else {
+                // Simple enum without payload: use value directly as tag
+                if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                    if debug == "1" {
+                        eprintln!("Simple enum without payload, using value directly");
+                    }
+                }
+                match_value
+            }
         } else {
             // For non-enum types (literals, bools, etc.), switch directly on the value
             match_value
@@ -2981,6 +3019,12 @@ impl Lower {
                                 index: 1, // Index 0 is the tag, index 1 is the payload
                             },
                         });
+                        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
+                            if debug == "1" {
+                                eprintln!("TupleExtract payload: match_value={:?}, index=1, payload_id={:?}, payload_type={:?}", 
+                                    match_value, payload_id, actual_payload_type);
+                            }
+                        }
                         // Bind the variable
                         self.variables.insert(
                             ident.name.clone(),
