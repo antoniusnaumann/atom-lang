@@ -1215,7 +1215,7 @@ impl CodeGenerator {
                         .get(tuple)
                         .ok_or(CodegenError::InvalidValue(*tuple))?;
                     
-                    // Handle Tuple, Array, and Enum types
+                    // Handle Tuple, Array, Enum, and Struct types
                     let element_types: Vec<IrType> = match tuple_type {
                         IrType::Tuple(types) => types.clone(),
                         IrType::Array { element } => {
@@ -1229,9 +1229,15 @@ impl CodeGenerator {
                             // This is safe because we're just calculating offsets
                             vec![IrType::Int(64); (*index as usize) + 1]
                         }
+                        IrType::Struct(struct_name) => {
+                            // For structs, look up the struct definition and get field types
+                            let struct_def = self.struct_defs.get(struct_name)
+                                .ok_or_else(|| CodegenError::StructNotFound(struct_name.clone()))?;
+                            struct_def.fields.iter().map(|(_name, ty)| ty.clone()).collect()
+                        }
                         _ => {
                             return Err(CodegenError::UnsupportedType(
-                                format!("TupleExtract requires tuple/array/enum type, got {:?}", tuple_type)
+                                format!("TupleExtract requires tuple/array/enum/struct type, got {:?}", tuple_type)
                             ));
                         }
                     };

@@ -1290,7 +1290,13 @@ impl Lower {
         // Handle field access followed by call (e.g., s.bytes(i))
         // This is typically array/pointer indexing, not a function call
         if let atom_ast::Expr::FieldAccess { object, field, .. } = func_expr {
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("DEBUG lower_call: FieldAccess detected, field={}, args.len={}", field.name, args.len());
+            }
             if args.len() == 1 && field.name == "bytes" {
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG lower_call: Handling s.bytes(i) as field indexing");
+                }
                 // This is s.bytes(i) - field access followed by array indexing
                 let object_value = self.lower_expr(object, ir_block, func)?;
                 
@@ -1323,7 +1329,12 @@ impl Lower {
         
         // Get function name
         let func_name = match func_expr {
-            atom_ast::Expr::Ident(ident) => ident.name.clone(),
+            atom_ast::Expr::Ident(ident) => {
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && ident.name == "bytes" {
+                    eprintln!("DEBUG lower_call: Found direct 'bytes' function call with {} args", args.len());
+                }
+                ident.name.clone()
+            }
             _ => {
                 return Err(LowerError::Unsupported(
                     "Indirect function calls".to_string(),
@@ -2654,10 +2665,17 @@ impl Lower {
             // This avoids lowering complex expressions twice
             if let atom_ast::Expr::Ident(ident) = receiver {
                 // Look up the variable type without lowering
+                // Check locals first
                 if let Some(local) = func.locals.iter()
                     .find(|local| local.name == ident.name) 
                 {
                     receiver_type_for_check = Some(local.ty.clone());
+                }
+                // If not found in locals, check function parameters
+                else if let Some((_, param_ty)) = func.params.iter()
+                    .find(|(param_name, _)| param_name == &ident.name)
+                {
+                    receiver_type_for_check = Some(param_ty.clone());
                 }
             }
             
@@ -2724,7 +2742,10 @@ impl Lower {
         all_args.extend_from_slice(args);
         
         if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-            eprintln!("DEBUG lower_method_call: method={}, receiver={:?}", method_name, receiver);
+            eprintln!("DEBUG lower_method_call: method={}, receiver={:?}, args.len={}", method_name, receiver, args.len());
+            if method_name == "bytes" {
+                eprintln!("DEBUG: Found bytes method call!");
+            }
         }
         
         // Create an identifier expression for the method name
