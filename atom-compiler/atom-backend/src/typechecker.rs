@@ -1167,16 +1167,28 @@ impl TypeChecker {
                     let mut matches = true;
                     
                     for (i, (_, param_ty, _)) in sig.params.iter().take(arg_types.len()).enumerate() {
+                        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && method_name == "unwrap" {
+                            eprintln!("DEBUG unify param {}: actual={:?}, param={:?}", i, arg_types[i], param_ty);
+                        }
                         if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
                             matches = false;
                             break;
+                        }
+                        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && method_name == "unwrap" {
+                            eprintln!("DEBUG after unify: bindings={:?}", type_bindings);
                         }
                     }
 
                     if matches {
                         // Substitute type parameters in return type
                         let return_ty = sig.return_type.clone().unwrap_or(Type::Void);
+                        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && (method_name == "unwrap" || method_name == "first") {
+                            eprintln!("DEBUG check_method_call {}: return_ty={:?}, type_bindings={:?}", method_name, return_ty, type_bindings);
+                        }
                         let substituted = self.substitute_type_params(&return_ty, &type_bindings);
+                        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && (method_name == "unwrap" || method_name == "first") {
+                            eprintln!("DEBUG check_method_call {}: substituted={:?}", method_name, substituted);
+                        }
                         return Ok(substituted);
                     }
                 }
@@ -1282,6 +1294,34 @@ impl TypeChecker {
                     false
                 }
             }
+            Type::Generic { base: param_base, args: param_args } => {
+                // Handle generic types like Option(t), Result(t, e)
+                // Unify Option(Int) with Option(t) to bind t = Int
+                if let Type::Generic { base: actual_base, args: actual_args } = actual {
+                    // Bases must unify (e.g., both are Option)
+                    if !self.try_unify_type(actual_base, param_base, bindings) {
+                        return false;
+                    }
+                    // Type arguments must match in count
+                    if param_args.len() != actual_args.len() {
+                        return false;
+                    }
+                    // Unify each type argument
+                    for (actual_arg, param_arg) in actual_args.iter().zip(param_args.iter()) {
+                        match (actual_arg, param_arg) {
+                            (ConstArg::Type(actual_ty), ConstArg::Type(param_ty)) => {
+                                if !self.try_unify_type(actual_ty, param_ty, bindings) {
+                                    return false;
+                                }
+                            }
+                            _ => return false,  // Non-type args not supported yet
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
             _ => {
                 // For non-generic types, just check convertibility
                 actual.can_convert_to(param)
@@ -1313,6 +1353,22 @@ impl TypeChecker {
                     )
                 });
                 Type::Tuple(TupleType { fields, variadic })
+            }
+            Type::Generic { base, args } => {
+                // Recursively substitute in base and args
+                let substituted_base = Box::new(self.substitute_type_params(base, bindings));
+                let substituted_args = args.iter().map(|arg| {
+                    match arg {
+                        ConstArg::Type(ty) => {
+                            ConstArg::Type(Box::new(self.substitute_type_params(ty, bindings)))
+                        }
+                        _ => arg.clone(),  // Non-type args unchanged
+                    }
+                }).collect();
+                Type::Generic {
+                    base: substituted_base,
+                    args: substituted_args,
+                }
             }
             _ => ty.clone(),
         }
