@@ -282,6 +282,16 @@ pub enum IrType {
     Struct(String),
     /// Named enum type
     Enum(String),
+    /// Generic enum instantiation (e.g., Option(Int64))
+    GenericEnum {
+        name: String,
+        type_args: Vec<IrType>,
+    },
+    /// Generic struct instantiation (e.g., Container(Int64))
+    GenericStruct {
+        name: String,
+        type_args: Vec<IrType>,
+    },
     /// Function pointer type
     Function {
         params: Vec<IrType>,
@@ -729,6 +739,34 @@ impl fmt::Display for IrType {
             }
             IrType::Struct(name) => write!(f, "{}", name),
             IrType::Enum(name) => write!(f, "{}", name),
+            IrType::GenericEnum { name, type_args } => {
+                write!(f, "{}", name)?;
+                if !type_args.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            IrType::GenericStruct { name, type_args } => {
+                write!(f, "{}", name)?;
+                if !type_args.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
             IrType::Function {
                 params,
                 return_type,

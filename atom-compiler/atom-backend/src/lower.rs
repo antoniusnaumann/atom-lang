@@ -169,12 +169,25 @@ impl Lower {
 
     /// Lower a complete AST program to IR.
     pub fn lower_program(&mut self, ast: Vec<atom_ast::TopLevel>) -> LowerResult<IrProgram> {
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG lower_program: received {} top-level items", ast.len());
+        }
+        
                 let mut program = IrProgram::new();
 
         // First pass: collect all function definitions (for default parameters)
         for item in &ast {
             if let atom_ast::TopLevel::Function(func_def) = item {
                 let name = func_def.name.name.clone();
+                
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    if name == "first" || name == "unwrap" {
+                        eprintln!("DEBUG lower_program: collecting function {}", name);
+                        eprintln!("  params: {:?}", func_def.params.iter().map(|p| (&p.name.name, &p.ty)).collect::<Vec<_>>());
+                        eprintln!("  return_type: {:?}", func_def.return_type);
+                    }
+                }
+                
                 self.function_defs.entry(name).or_insert_with(Vec::new).push(func_def.clone());
             }
         }
@@ -210,7 +223,10 @@ impl Lower {
                 
                 // Skip generic functions (those with type parameters)
                 if self.is_generic_function(func_def) {
-                                        continue;
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG: Skipping generic function: {}", func_def.name.name);
+                    }
+                    continue;
                 }
                 let ir_func = self.lower_function(func_def)?;
                 program.add_function(ir_func);
@@ -245,7 +261,11 @@ impl Lower {
                         // DEBUG: Dump IR for reduce monomorphizations (only when --debug flag is set)
                         if let Ok(debug_val) = std::env::var("ATOM_DEBUG") {
                             eprintln!("DEBUG: Checking function: name={}, mono_name={}", ir_func.name, mono_name);
-                            if debug_val == "1" && (mono_name.contains("reduce") && (mono_name.contains("Float64") || mono_name.contains("Int64")) || ir_func.name == "main") {
+                            if debug_val == "1" && (
+                                mono_name.contains("unwrap") ||
+                                (mono_name.contains("reduce") && (mono_name.contains("Float64") || mono_name.contains("Int64"))) || 
+                                ir_func.name == "main"
+                            ) {
                                 eprintln!("\n========== IR FOR {} ==========", mono_name);
                                 eprintln!("Function: {}", ir_func.name);
                                 eprintln!("Params: {:?}", ir_func.params);
@@ -1287,6 +1307,14 @@ impl Lower {
         ir_block: &mut IrBlock,
         func: &mut IrFunction,
     ) -> LowerResult<ValueId> {
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            if let atom_ast::Expr::Ident(ident) = func_expr {
+                if ident.name == "first" || ident.name == "unwrap" {
+                    eprintln!("DEBUG lower_call: func={}, args.len={}", ident.name, args.len());
+                }
+            }
+        }
+        
         // Handle field access followed by call (e.g., s.bytes(i))
         // This is typically array/pointer indexing, not a function call
         if let atom_ast::Expr::FieldAccess { object, field, .. } = func_expr {
@@ -1649,14 +1677,32 @@ impl Lower {
 
         // Check if this is a call to a generic function that needs monomorphization
         // Also handle function overloading by mangling names
+        // Store concrete types for later return type substitution
+        let mut type_substitutions: HashMap<String, IrType> = HashMap::new();
+        
         let actual_func_name = if let Some(func_defs) = self.function_defs.get(&func_name) {
             if let Some(func_def) = self.select_overload(func_defs, original_arg_count) {
                 if self.is_generic_function(func_def) {
                     // This is a generic function call - we need to monomorphize it
                                         // Extract concrete types from arguments
                     let concrete_types = self.extract_concrete_types(&arg_values, ir_block, func, func_def);
+                    
+                    // DEBUG: Show what we extracted
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG MONO: func={}, concrete_types={:?}", func_name, concrete_types);
+                    }
+                    
                                         // Generate monomorphized function name
                                         let mono_name = self.generate_mono_name(&func_name, &concrete_types, func_def);
+                    
+                    // DEBUG: Show the generated name
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG MONO: func={}, mono_name={}", func_name, mono_name);
+                    }
+                    
+                    // Store type substitutions for return type processing
+                    type_substitutions = concrete_types.clone();
+                    
                                                             // Queue this instance for generation if not already done
                     if !self.mono_done.contains(&mono_name) {
                                                 self.mono_queue.insert(
@@ -1724,7 +1770,8 @@ impl Lower {
             }
         } else {
             // Look up the function definition to get the actual return type
-            let ret_ty_ast_opt = if let Some(func_defs) = self.function_defs.get(&actual_func_name) {
+            // NOTE: Use original func_name, not actual_func_name (which may be monomorphized)
+            let ret_ty_ast_opt = if let Some(func_defs) = self.function_defs.get(&func_name) {
                 if let Some(func_def) = self.select_overload(func_defs, original_arg_count) {
                     func_def.return_type.clone()
                 } else {
@@ -1735,8 +1782,30 @@ impl Lower {
             };
             
             let return_ty = if let Some(ret_ty_ast) = ret_ty_ast_opt {
+                // If this was a generic function, substitute type params in return type
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("[MONO-RET] func_name={}, type_substitutions={:?}, ret_ty_ast={:?}", 
+                        func_name, type_substitutions, ret_ty_ast);
+                }
+                let substituted_ast = if !type_substitutions.is_empty() {
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("[MONO] Substituting return type AST with bindings: {:?}", type_substitutions);
+                        eprintln!("[MONO] Original return type AST: {:?}", ret_ty_ast);
+                    }
+                    let result = self.substitute_ast_type(&ret_ty_ast, &type_substitutions)?;
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("[MONO] Substituted return type AST: {:?}", result);
+                    }
+                    result
+                } else {
+                    (*ret_ty_ast).clone()
+                };
                 // Convert the return type from AST to IR type
-                self.lower_type(&ret_ty_ast)?
+                let lowered = self.lower_type(&substituted_ast)?;
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("[MONO-RET] func_name={}, lowered return type={:?}", func_name, lowered);
+                }
+                lowered
             } else {
                 // No return type specified or function not found, use fallback
                 IrType::Int(64)
@@ -2746,6 +2815,9 @@ impl Lower {
             if method_name == "bytes" {
                 eprintln!("DEBUG: Found bytes method call!");
             }
+            if method_name == "first" || method_name == "unwrap" {
+                eprintln!("DEBUG lower_method_call: {} - about to call lower_call with {} args", method_name, all_args.len());
+            }
         }
         
         // Create an identifier expression for the method name
@@ -3028,20 +3100,29 @@ impl Lower {
                 // Enums with payloads are stored as tuples (tag, payload...)
                 // Use get_value_type to find the actual IR type
                 let payload_type = {
-                    // Try to infer from the match value type
-                    // Since we don't have full type information for generic payloads at this point,
-                    // we'll use Int64 as a safe default that works for most cases
-                    // TODO: Track monomorphized enum payload types during type inference
+                    // Get the actual type of the match value
+                    let val_type = self.get_value_type(match_value, ir_block, func);
                     if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
                         if debug == "1" {
-                            let val_type = self.get_value_type(match_value, ir_block, func);
                             eprintln!("Match value {} type for {}: {:?}", match_value.0, name.name, val_type);
                         }
                     }
                     
-                    // Default to Int64 for now - this works for numeric types
-                    // A proper implementation would infer the actual monomorphized type
-                    Some(IrType::Int(64))
+                    // Extract payload type from GenericEnum type args
+                    match val_type {
+                        Some(IrType::GenericEnum { type_args, .. }) if !type_args.is_empty() => {
+                            // For Option(t), type_args = [t]
+                            // The payload type is the first (and usually only) type arg
+                            Some(type_args[0].clone())
+                        }
+                        Some(IrType::GenericStruct { type_args, .. }) if !type_args.is_empty() => {
+                            Some(type_args[0].clone())
+                        }
+                        _ => {
+                            // Default to Int64 for non-generic enums
+                            Some(IrType::Int(64))
+                        }
+                    }
                 };
 
                 for field_pattern in fields {
@@ -3079,18 +3160,40 @@ impl Lower {
 
             // Lower the arm body
             let arm_value = self.lower_expr(&arm.body, &mut arm_block, func)?;
-            case_values.push(arm_value);
-
-            // Jump to merge block
-            arm_block.set_terminator(IrTerminator::Jump {
-                target: merge_block_id,
-            });
+            
+            // Check if this arm ends with a diverging call (like `error`)
+            // If so, mark it as unreachable instead of jumping to merge
+            let is_diverging = {
+                // Check if the last instruction is a call to a known diverging function
+                arm_block.instructions.last()
+                    .map(|inst| {
+                        if let IrInstructionKind::Call { function, .. } = &inst.kind {
+                            // Known diverging functions
+                            function == "error" || function == "exit" || function == "panic"
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
+            };
+            
+            if is_diverging {
+                // This arm diverges (never returns), use Unreachable terminator
+                arm_block.set_terminator(IrTerminator::Unreachable);
+                // Don't add to case_values since it won't contribute to the phi
+            } else {
+                // Normal case: jump to merge block and add value for phi
+                case_values.push(arm_value);
+                arm_block.set_terminator(IrTerminator::Jump {
+                    target: merge_block_id,
+                });
+            }
 
             // NOTE: After lowering the arm body, arm_block might have been replaced with a
             // nested merge block (if the body contained match expressions). We need to use
             // arm_block.label (the actual current label) for the phi node, not arm_block_id.
             let actual_predecessor_id = arm_block.label;
-            case_blocks.push((tag_value, arm_block_id, arm_block, actual_predecessor_id));
+            case_blocks.push((tag_value, arm_block_id, arm_block, actual_predecessor_id, is_diverging));
         }
 
         // Create switch terminator on current block
@@ -3105,7 +3208,7 @@ impl Lower {
             let cases: Vec<(u32, BlockId)> = case_blocks
                 .iter()
                 .take(case_blocks.len() - 1)
-                .map(|(tag, block_id, _, _)| (*tag, *block_id))
+                .map(|(tag, block_id, _, _, _)| (*tag, *block_id))
                 .collect();
             (cases, default_block_id)
         } else {
@@ -3113,7 +3216,7 @@ impl Lower {
             let default_block_id = case_blocks.first().unwrap().1;
             let cases: Vec<(u32, BlockId)> = case_blocks
                 .iter()
-                .map(|(tag, block_id, _, _)| (*tag, *block_id))
+                .map(|(tag, block_id, _, _, _)| (*tag, *block_id))
                 .collect();
             (cases, default_block_id)
         };
@@ -3130,82 +3233,85 @@ impl Lower {
         let current_block = std::mem::replace(ir_block, IrBlock::new(merge_block_id));
         func.add_block(current_block);
 
-        // Add all case blocks to function
-        for (_, _, block, _) in &case_blocks {
-            func.add_block(block.clone());
-        }
-
         // Create merge block with phi node
         let result_value = self.fresh_value_id();
 
-        // Use the actual predecessor block IDs (which might be nested merge blocks)
-        let incoming: Vec<(BlockId, ValueId)> = case_blocks
-            .iter()
-            .enumerate()
-            .map(|(i, (_, _, _, actual_pred_id))| (*actual_pred_id, case_values[i]))
-            .collect();
-
-        // Infer phi type from the first incoming value
-        // All arms of a match must return the same type, so we can use the first arm's type
-        let phi_type = if let Some((_, first_value_id)) = incoming.first() {
-            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                if debug == "1" {
-                    eprintln!("Trying to infer phi type: first_value_id={:?}", first_value_id);
-                    eprintln!("  Searching {} function blocks", func.blocks.len());
-                    eprintln!("  Searching {} case blocks", case_blocks.len());
+        // Infer phi type from all incoming values, preferring non-default types
+        // This handles cases where diverging functions (like `error`) return a default type
+        let phi_type = {
+            let mut candidate_types = Vec::new();
+            
+            // Collect types from all non-diverging case values
+            let mut value_idx = 0;
+            for (i, (_, _, case_block, _, is_diverging)) in case_blocks.iter().enumerate() {
+                if *is_diverging {
+                    // Skip diverging branches - they don't contribute to phi
+                    continue;
                 }
-            }
-            
-            // Find the instruction that produced this value to get its type
-            let mut inferred_type = IrType::Int(64); // Default fallback
-            let mut found = false;
-            
-            // Search through all blocks in the function to find the instruction
-            for block in &func.blocks {
-                for inst in &block.instructions {
-                    if inst.result == *first_value_id {
-                        inferred_type = inst.ty.clone();
-                        found = true;
-                        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                            if debug == "1" {
-                                eprintln!("  Found in func block {:?}: type={:?}", block.label, inferred_type);
-                            }
-                        }
+                
+                let value_id = case_values[value_idx];
+                value_idx += 1;
+                let mut found_type = None;
+                
+                // Search in case blocks
+                for inst in &case_block.instructions {
+                    if inst.result == value_id {
+                        found_type = Some(inst.ty.clone());
                         break;
                     }
                 }
-                if found { break; }
-            }
-            
-            // Also search in case blocks that haven't been added to func yet
-            if !found {
-                for (_, _, case_block, _) in &case_blocks {
-                    for inst in &case_block.instructions {
-                        if inst.result == *first_value_id {
-                            inferred_type = inst.ty.clone();
-                            found = true;
-                            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                                if debug == "1" {
-                                    eprintln!("  Found in case block {:?}: type={:?}", case_block.label, inferred_type);
-                                }
+                
+                // Also search in function blocks if not found
+                if found_type.is_none() {
+                    for block in &func.blocks {
+                        for inst in &block.instructions {
+                            if inst.result == value_id {
+                                found_type = Some(inst.ty.clone());
+                                break;
                             }
-                            break;
                         }
+                        if found_type.is_some() { break; }
                     }
-                    if found { break; }
+                }
+                
+                if let Some(ty) = found_type {
+                    candidate_types.push((i, ty));
                 }
             }
             
-            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                if debug == "1" {
-                    eprintln!("  Final: found={}, inferred_type={:?}", found, inferred_type);
-                }
+            // Prefer non-Int(64) types, as Int(64) is the default for void/diverging functions
+            // If we have any non-Int(64) type, use the first one
+            let preferred_type = candidate_types.iter()
+                .find(|(_, ty)| !matches!(ty, IrType::Int(64)))
+                .map(|(_, ty)| ty.clone())
+                .or_else(|| candidate_types.first().map(|(_, ty)| ty.clone()))
+                .unwrap_or(IrType::Int(64));
+            
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("PHI type inference: candidate_types={:?}, preferred={:?}", candidate_types, preferred_type);
             }
             
-            inferred_type
-        } else {
-            IrType::Int(64) // Fallback if no incoming values
+            preferred_type
         };
+        
+        // Build incoming list, skipping diverging branches
+        let mut incoming: Vec<(BlockId, ValueId)> = Vec::new();
+        let mut value_idx = 0;
+        for (i, (_, _, case_block, actual_pred_id, is_diverging)) in case_blocks.iter().enumerate() {
+            if *is_diverging {
+                // Skip diverging branches
+                continue;
+            }
+            
+            let value_id = case_values[value_idx];
+            value_idx += 1;
+            incoming.push((*actual_pred_id, value_id));
+        }
+
+        // Add all case blocks to function
+        for (_, _, block, _, _) in &case_blocks {
+            func.add_block(block.clone());
+        }
 
         ir_block.add_instruction(IrInstruction {
             result: result_value,
@@ -3275,7 +3381,7 @@ impl Lower {
                 // Handle parameterized types like UInt(8), Int(32), Float(32)
                 let base_name = &name.name;
                 
-                // Try to extract bit width from first parameter
+                // Try to extract bit width from first parameter (for Int(64), Float(32), etc.)
                 if let Some(first_param) = params.first() {
                     if let Some(param_name) = &first_param.name {
                         // Try to parse the bit width
@@ -3287,6 +3393,34 @@ impl Lower {
                                 _ => self.lower_named_type(base_name),
                             };
                         }
+                    }
+                    
+                    // Check if this has actual type arguments (not bit widths)
+                    // E.g., Option(t) or Result(Int, String)
+                    let has_type_args = params.iter().any(|p| p.ty.is_some());
+                    
+                    if has_type_args {
+                        // Lower each type argument
+                        let mut type_args = Vec::new();
+                        for param in params {
+                            if let Some(ty) = &param.ty {
+                                type_args.push(self.lower_type(ty)?);
+                            }
+                        }
+                        
+                        // Check if this is an enum or struct
+                        let base_ir_ty = self.lower_named_type(base_name)?;
+                        return match base_ir_ty {
+                            IrType::Enum(_) => Ok(IrType::GenericEnum {
+                                name: base_name.clone(),
+                                type_args,
+                            }),
+                            IrType::Struct(_) => Ok(IrType::GenericStruct {
+                                name: base_name.clone(),
+                                type_args,
+                            }),
+                            _ => Ok(base_ir_ty), // Not enum/struct, use base type
+                        };
                     }
                 }
                 
@@ -3806,16 +3940,31 @@ impl Lower {
     /// 2. Any of its parameters have types that contain TypeParam, OR
     /// 3. Its return type contains TypeParam
     fn is_generic_function(&self, func_def: &atom_ast::FunctionDef) -> bool {
+        let debug = std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1");
+        
+        if debug && (func_def.name.name == "first" || func_def.name.name == "unwrap") {
+            eprintln!("DEBUG is_generic_function: checking {}", func_def.name.name);
+            eprintln!("  const_params: {}", func_def.const_params.len());
+            eprintln!("  params: {:?}", func_def.params.iter().map(|p| (&p.name.name, &p.ty)).collect::<Vec<_>>());
+            eprintln!("  return_type: {:?}", func_def.return_type);
+        }
+        
         // Check for const parameters
         if !func_def.const_params.is_empty() {
-                        return true;
+            if debug {
+                eprintln!("DEBUG is_generic_function: {} has const_params", func_def.name.name);
+            }
+            return true;
         }
 
         // Check parameter types for type parameters
         for param in &func_def.params {
             if let Some(ref ty) = param.ty {
                 if self.type_contains_type_param(ty) {
-                                        return true;
+                    if debug {
+                        eprintln!("DEBUG is_generic_function: {} has param type param: {:?}", func_def.name.name, ty);
+                    }
+                    return true;
                 }
             }
         }
@@ -3823,8 +3972,15 @@ impl Lower {
         // Check return type for type parameters
         if let Some(ref return_type) = func_def.return_type {
             if self.type_contains_type_param(return_type) {
-                                return true;
+                if debug {
+                    eprintln!("DEBUG is_generic_function: {} has return type param: {:?}", func_def.name.name, return_type);
+                }
+                return true;
             }
+        }
+        
+        if debug && (func_def.name.name == "first" || func_def.name.name == "unwrap") {
+            eprintln!("DEBUG is_generic_function: {} is NOT generic", func_def.name.name);
         }
 
         false
@@ -3904,6 +4060,10 @@ impl Lower {
     ) -> HashMap<String, IrType> {
         let mut bindings = HashMap::new();
         
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG extract_concrete_types: func={}, arg_values.len={}", func_def.name.name, arg_values.len());
+        }
+        
                 // Match each argument with its corresponding parameter
         for (i, param) in func_def.params.iter().enumerate() {
             if i >= arg_values.len() {
@@ -3915,17 +4075,33 @@ impl Lower {
             // Get the concrete type of this argument
             let arg_type = match self.get_value_type(arg_value, ir_block, func) {
                 Some(ty) => {
-                                        ty
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG extract_concrete_types: param[{}]={}, arg_value={:?}, arg_type={:?}", 
+                                  i, param.name.name, arg_value, ty);
+                    }
+                    ty
                 }
                 None => {
-                                        continue;
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG extract_concrete_types: param[{}]={}, arg_value={:?}, type NOT FOUND", 
+                                  i, param.name.name, arg_value);
+                    }
+                    continue;
                 }
             };
             
             // Check if this parameter's type contains type parameters
             if let Some(param_ty) = &param.ty {
-                                self.collect_type_bindings(param_ty, &arg_type, &mut bindings);
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG extract_concrete_types: collecting bindings for param_ty={:?}, arg_type={:?}", 
+                              param_ty, arg_type);
+                }
+                self.collect_type_bindings(param_ty, &arg_type, &mut bindings);
             }
+        }
+        
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG extract_concrete_types: func={}, bindings={:?}", func_def.name.name, bindings);
         }
         
                 bindings
@@ -4008,8 +4184,22 @@ impl Lower {
             // Variadic/Array types
             atom_ast::Type::Variadic { element, .. } |
             atom_ast::Type::StaticArray { element, .. } => {
-                if let IrType::Array { element: concrete_elem } = concrete_type {
-                    self.collect_type_bindings(element, concrete_elem, bindings);
+                // Variadic types can be lowered to either Array or Tuple in IR
+                match concrete_type {
+                    IrType::Array { element: concrete_elem } => {
+                        self.collect_type_bindings(element, concrete_elem, bindings);
+                    }
+                    IrType::Tuple(concrete_elems) => {
+                        // Variadic tuple lowered to IR Tuple
+                        // All elements should have the same type, so use the first one
+                        if let Some(first_elem) = concrete_elems.first() {
+                            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                                eprintln!("DEBUG collect_type_bindings: Variadic matched to Tuple, extracting element type from first element: {:?}", first_elem);
+                            }
+                            self.collect_type_bindings(element, first_elem, bindings);
+                        }
+                    }
+                    _ => {}
                 }
             }
             
@@ -4027,7 +4217,24 @@ impl Lower {
                 }
             }
             
-            // Generic types - complex, skip for now
+            // Generic types - handle type parameter extraction from generic instantiations
+            // E.g., Option(t) matched with GenericEnum { name: "Option", type_args: [Int(64)] }
+            atom_ast::Type::Generic { params, .. } => {
+                match concrete_type {
+                    IrType::GenericEnum { type_args: concrete_args, .. } |
+                    IrType::GenericStruct { type_args: concrete_args, .. } => {
+                        // Match each type parameter with its concrete argument
+                        for (param, concrete_arg) in params.iter().zip(concrete_args.iter()) {
+                            if let Some(param_ty) = &param.ty {
+                                self.collect_type_bindings(param_ty, concrete_arg, bindings);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            
+            // Other types - no type parameters to extract
             _ => {}
         }
     }

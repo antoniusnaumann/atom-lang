@@ -478,6 +478,22 @@ impl CodeGenerator {
             IrType::Tuple(elements) => format!("tuple{}", elements.len()),
             IrType::Struct(name) => format!("s{}", name.replace("::", "_")),
             IrType::Enum(name) => format!("e{}", name.replace("::", "_")),
+            IrType::GenericEnum { name, type_args } => {
+                let mut s = format!("e{}", name.replace("::", "_"));
+                for arg in type_args {
+                    s.push('_');
+                    s.push_str(&self.type_to_mangle_string(arg));
+                }
+                s
+            }
+            IrType::GenericStruct { name, type_args } => {
+                let mut s = format!("s{}", name.replace("::", "_"));
+                for arg in type_args {
+                    s.push('_');
+                    s.push_str(&self.type_to_mangle_string(arg));
+                }
+                s
+            }
             IrType::Array { element } => format!("arr{}", self.type_to_mangle_string(element)),
             IrType::Void => "void".to_string(),
         }
@@ -1229,10 +1245,23 @@ impl CodeGenerator {
                             // This is safe because we're just calculating offsets
                             vec![IrType::Int(64); (*index as usize) + 1]
                         }
+                        IrType::GenericEnum { type_args, .. } => {
+                            // For generic enums, the tuple structure is (tag, ...fields)
+                            // where tag is always Int(32)
+                            let mut element_types = vec![IrType::Int(32)]; // Tag
+                            element_types.extend(type_args.clone()); // Payload fields
+                            element_types
+                        }
                         IrType::Struct(struct_name) => {
                             // For structs, look up the struct definition and get field types
                             let struct_def = self.struct_defs.get(struct_name)
                                 .ok_or_else(|| CodegenError::StructNotFound(struct_name.clone()))?;
+                            struct_def.fields.iter().map(|(_name, ty)| ty.clone()).collect()
+                        }
+                        IrType::GenericStruct { name, .. } => {
+                            // For generic structs, look up base struct definition
+                            let struct_def = self.struct_defs.get(name)
+                                .ok_or_else(|| CodegenError::StructNotFound(name.clone()))?;
                             struct_def.fields.iter().map(|(_name, ty)| ty.clone()).collect()
                         }
                         _ => {
@@ -2385,6 +2414,15 @@ impl CodeGenerator {
                     Ok(types::I64)
                 }
             }
+            IrType::GenericEnum { name, .. } => {
+                // Treat generic enums same as base enums - type args only matter for monomorphization
+                if name == "Bool" {
+                    Ok(types::I8)
+                } else {
+                    Ok(types::I64)
+                }
+            }
+            IrType::GenericStruct { .. } => Ok(types::I64), // Same as Struct
             IrType::Function { .. } => Ok(types::I64), // Function pointer
             IrType::Closure { .. } => Ok(types::I64), // Closure as pointer
             IrType::Array { .. } => Ok(types::I64), // Array as fat pointer (will be struct of ptr+len)
@@ -2437,6 +2475,36 @@ impl CodeGenerator {
                     }
                 } else {
                     8 // Default to pointer size
+                }
+            }
+            IrType::GenericEnum { name, .. } => {
+                // Treat generic enums same as base enums - type args don't affect layout
+                if name == "Bool" {
+                    1
+                } else if let Some(enum_def) = self.enum_defs.get(name) {
+                    let has_payload = enum_def
+                        .variants
+                        .iter()
+                        .any(|(_, types)| !types.is_empty());
+                    if has_payload {
+                        8
+                    } else {
+                        4
+                    }
+                } else {
+                    8
+                }
+            }
+            IrType::GenericStruct { name, .. } => {
+                // Treat generic structs same as base structs
+                if let Some(struct_def) = self.struct_defs.get(name) {
+                    struct_def
+                        .fields
+                        .iter()
+                        .map(|(_, ty)| self.type_size(ty))
+                        .sum()
+                } else {
+                    8
                 }
             }
             IrType::Function { .. } | IrType::Closure { .. } => 8, // Function pointer
