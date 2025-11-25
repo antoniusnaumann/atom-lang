@@ -2640,70 +2640,92 @@ impl Lower {
         // This pattern occurs when:
         // 1. Method call has exactly one argument (the index)
         // 2. The "method" name corresponds to a field of the receiver's struct type
+        //
+        // IMPORTANT: We check the type first WITHOUT lowering to avoid double-lowering
+        // the receiver expression. If it's not field indexing, we fall through to the
+        // general method call case which will lower the receiver once.
         if args.len() == 1 {
-            let receiver_value = self.lower_expr(receiver, ir_block, func)?;
+            // First, try to determine if this could be field indexing by checking
+            // if the receiver is a simple identifier we can look up
+            let mut is_field_indexing = false;
+            let mut receiver_type_for_check: Option<IrType> = None;
             
-            // Try to get the receiver's type and check if method_name is a field
-            if let Some(receiver_type) = self.get_value_type(receiver_value, ir_block, func) {
-                match receiver_type {
-                    IrType::Struct(struct_name) => {
-                        // Check if method_name is a field of this struct
-                        if let Some(struct_def) = self.type_env.get_struct(&struct_name) {
-                            if let Some((field_index, field)) = struct_def.fields.iter().enumerate()
-                                .find(|(_, f)| f.name == *method_name) 
-                            {
-                                // It's field access + indexing!
-                                // First, extract the field (which should be an array/pointer)
-                                let field_value = self.fresh_value_id();
-                                
-                                // Get field type - for now use pointer as simplified
-                                let field_type = IrType::Pointer(Box::new(IrType::Int(8)));
-                                
-                                ir_block.add_instruction(IrInstruction {
-                                    result: field_value,
-                                    ty: field_type.clone(),
-                                    kind: IrInstructionKind::TupleExtract {
-                                        tuple: receiver_value,
-                                        index: field_index as u32,
-                                    },
-                                });
-                                
-                                // Now index into the field
-                                let index_value = self.lower_expr(&args[0], ir_block, func)?;
-                                let result_value = self.fresh_value_id();
-                                
-                                // Determine element type based on field type
-                                let element_type = match field_type {
-                                    IrType::Pointer(inner) => *inner,
-                                    IrType::Array { element } => *element,
-                                    _ => IrType::Int(8), // Fallback
-                                };
-                                
-                                ir_block.add_instruction(IrInstruction {
-                                    result: result_value,
-                                    ty: element_type,
-                                    kind: IrInstructionKind::ArrayIndex {
-                                        array: field_value,
-                                        index: index_value,
-                                    },
-                                });
-                                
-                                return Ok(result_value);
-                            }
+            // Only attempt the optimization if receiver is a simple identifier
+            // This avoids lowering complex expressions twice
+            if let atom_ast::Expr::Ident(ident) = receiver {
+                // Look up the variable type without lowering
+                if let Some(local) = func.locals.iter()
+                    .find(|local| local.name == ident.name) 
+                {
+                    receiver_type_for_check = Some(local.ty.clone());
+                }
+            }
+            
+            // If we found a type, check if method_name is a field
+            if let Some(receiver_type) = receiver_type_for_check {
+                if let IrType::Struct(struct_name) = receiver_type {
+                    if let Some(struct_def) = self.type_env.get_struct(&struct_name) {
+                        if let Some((field_index, field)) = struct_def.fields.iter().enumerate()
+                            .find(|(_, f)| f.name == *method_name) 
+                        {
+                            is_field_indexing = true;
+                            
+                            // NOW we can safely lower the receiver since we know it's field indexing
+                            let receiver_value = self.lower_expr(receiver, ir_block, func)?;
+                            
+                            // It's field access + indexing!
+                            // First, extract the field (which should be an array/pointer)
+                            let field_value = self.fresh_value_id();
+                            
+                            // Get field type - for now use pointer as simplified
+                            let field_type = IrType::Pointer(Box::new(IrType::Int(8)));
+                            
+                            ir_block.add_instruction(IrInstruction {
+                                result: field_value,
+                                ty: field_type.clone(),
+                                kind: IrInstructionKind::TupleExtract {
+                                    tuple: receiver_value,
+                                    index: field_index as u32,
+                                },
+                            });
+                            
+                            // Now index into the field
+                            let index_value = self.lower_expr(&args[0], ir_block, func)?;
+                            let result_value = self.fresh_value_id();
+                            
+                            // Determine element type based on field type
+                            let element_type = match field_type {
+                                IrType::Pointer(inner) => *inner,
+                                IrType::Array { element } => *element,
+                                _ => IrType::Int(8), // Fallback
+                            };
+                            
+                            ir_block.add_instruction(IrInstruction {
+                                result: result_value,
+                                ty: element_type,
+                                kind: IrInstructionKind::ArrayIndex {
+                                    array: field_value,
+                                    index: index_value,
+                                },
+                            });
+                            
+                            return Ok(result_value);
                         }
-                    }
-                    _ => {
-                        // Not a struct, fall through to regular method call
                     }
                 }
             }
-            // If we couldn't detect field+indexing pattern, fall through to regular method call
+            
+            // If we didn't handle it as field indexing, fall through to regular method call
         }
 
         // General method call: convert to function call with receiver as first arg
         // Build a call expression for the method with receiver as first argument
         let mut all_args = vec![receiver.clone()];
         all_args.extend_from_slice(args);
+        
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG lower_method_call: method={}, receiver={:?}", method_name, receiver);
+        }
         
         // Create an identifier expression for the method name
         let func_expr = atom_ast::Expr::Ident(method.clone());

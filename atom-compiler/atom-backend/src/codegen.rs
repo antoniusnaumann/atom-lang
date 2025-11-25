@@ -1111,6 +1111,38 @@ impl CodeGenerator {
                     // Empty tuple = null pointer
                     Ok(builder.ins().iconst(types::I64, 0))
                 } else {
+                    // Get element types from the instruction's result type
+                    // MakeTuple can be used for Tuple, Array, or Enum types
+                    let element_types: Vec<IrType> = match &inst.ty {
+                        IrType::Tuple(types) => types.clone(),
+                        IrType::Array { element } => {
+                            // For arrays, all elements have the same type
+                            vec![(**element).clone(); elements.len()]
+                        }
+                        IrType::Enum(_) => {
+                            // For enums, get element types from the value_types map
+                            elements.iter().map(|elem_id| {
+                                value_types.get(elem_id)
+                                    .cloned()
+                                    .unwrap_or(IrType::Int(64)) // Default to i64 if not found
+                            }).collect()
+                        }
+                        _ => {
+                            return Err(CodegenError::UnsupportedType(
+                                format!("MakeTuple instruction has unsupported type: {:?}", inst.ty)
+                            ));
+                        }
+                    };
+                    
+                    // Calculate actual element sizes and offsets
+                    let mut element_offsets = Vec::new();
+                    let mut current_offset = 8; // Start after length field
+                    for elem_ty in &element_types {
+                        element_offsets.push(current_offset);
+                        current_offset += self.type_size(elem_ty);
+                    }
+                    let total_size = current_offset;
+                    
                     // Declare malloc function (will be imported at link time)
                     let mut malloc_sig = Signature::new(CallConv::SystemV);
                     malloc_sig.params.push(AbiParam::new(types::I64)); // size_t size
@@ -1120,11 +1152,8 @@ impl CodeGenerator {
                         .map_err(|e| CodegenError::ModuleError(e.to_string()))?;
                     let malloc_ref = module.declare_func_in_func(malloc_func_id, builder.func);
                     
-                    // Calculate size: (elements.len() + 1) * 8 bytes
-                    let tuple_size = ((elements.len() + 1) * 8) as i64;
-                    let size_val = builder.ins().iconst(types::I64, tuple_size);
-                    
-                    // Call malloc to allocate heap memory
+                    // Allocate heap memory with actual total size
+                    let size_val = builder.ins().iconst(types::I64, total_size as i64);
                     let malloc_call = builder.ins().call(malloc_ref, &[size_val]);
                     let results = builder.inst_results(malloc_call);
                     let heap_ptr = results[0];
@@ -1133,13 +1162,13 @@ impl CodeGenerator {
                     let len_val = builder.ins().iconst(types::I64, elements.len() as i64);
                     builder.ins().store(MemFlags::new(), len_val, heap_ptr, 0);
                     
-                    // Store each element at offset 8 + (i * 8)
+                    // Store each element at its calculated offset
                     for (i, elem_id) in elements.iter().enumerate() {
                         let elem_val = values
                             .get(elem_id)
                             .copied()
                             .ok_or(CodegenError::InvalidValue(*elem_id))?;
-                        let offset = ((i + 1) * 8) as i32;
+                        let offset = element_offsets[i] as i32;
                         builder.ins().store(MemFlags::new(), elem_val, heap_ptr, offset);
                     }
                     
@@ -1181,13 +1210,44 @@ impl CodeGenerator {
                     }
                 } else {
                     // Normal case: tuple is a pointer to a tuple structure
-                    // Calculate offset: each element is 8 bytes
-                    let offset = (*index * 8) as i32;
+                    // Get the tuple's element types to calculate the correct offset
+                    let tuple_type = value_types
+                        .get(tuple)
+                        .ok_or(CodegenError::InvalidValue(*tuple))?;
                     
-                    // Load from the tuple at the given offset
+                    // Handle Tuple, Array, and Enum types
+                    let element_types: Vec<IrType> = match tuple_type {
+                        IrType::Tuple(types) => types.clone(),
+                        IrType::Array { element } => {
+                            // For arrays, need to know how many elements to generate types for
+                            // Use a reasonable upper bound based on the index
+                            vec![(**element).clone(); (*index as usize) + 1]
+                        }
+                        IrType::Enum(_) => {
+                            // For enums, we can't know the exact types without looking at the MakeTuple
+                            // that created this value. For now, assume all elements are i64 (worst case)
+                            // This is safe because we're just calculating offsets
+                            vec![IrType::Int(64); (*index as usize) + 1]
+                        }
+                        _ => {
+                            return Err(CodegenError::UnsupportedType(
+                                format!("TupleExtract requires tuple/array/enum type, got {:?}", tuple_type)
+                            ));
+                        }
+                    };
+                    
+                    // Calculate offset by summing sizes of all elements before this index
+                    let mut offset = 0;
+                    for i in 0..(*index as usize) {
+                        if i < element_types.len() {
+                            offset += self.type_size(&element_types[i]);
+                        }
+                    }
+                    
+                    // Load from the tuple at the calculated offset
                     // Use the instruction's type to determine what to load
                     let load_type = self.translate_type(&inst.ty)?;
-                    Ok(builder.ins().load(load_type, MemFlags::new(), tuple_val, offset))
+                    Ok(builder.ins().load(load_type, MemFlags::new(), tuple_val, offset as i32))
                 }
             }
 
@@ -1344,7 +1404,7 @@ impl CodeGenerator {
             }
 
             IrInstructionKind::ArrayIndex { array, index } => {
-                // Array is a pointer to stack memory, index is the element index
+                // Array is a pointer to stack/heap memory, index is the element index
                 let array_ptr = values
                     .get(array)
                     .copied()
@@ -1356,11 +1416,53 @@ impl CodeGenerator {
                 
                 // Get the element type from the instruction's result type
                 let elem_cl_type = self.translate_type(&inst.ty)?;
-                let elem_size = self.type_size(&inst.ty);
                 
-                // Compute offset: index * elem_size
-                let size_const = builder.ins().iconst(types::I64, elem_size as i64);
-                let byte_offset = builder.ins().imul(index_val, size_const);
+                // Check if the array is actually a tuple (heterogeneous elements)
+                let array_type = value_types
+                    .get(array)
+                    .ok_or(CodegenError::InvalidValue(*array))?;
+                
+                let byte_offset = if let IrType::Tuple(element_types) = array_type {
+                    // For tuples, we need to calculate cumulative offset based on actual element sizes
+                    // This is a runtime index, so we need to generate code that computes the offset
+                    // For now, we'll use a simplified approach with a switch/select chain
+                    
+                    // Check if index is a constant - if so, we can compute offset at compile time
+                    let index_type = builder.func.dfg.value_type(index_val);
+                    if index_type == types::I64 {
+                        // Generate offset calculation based on cumulative sizes
+                        // For each possible index value, compute its offset
+                        let mut offsets = Vec::new();
+                        let mut current_offset = 0usize;
+                        for elem_ty in element_types {
+                            offsets.push(current_offset);
+                            current_offset += self.type_size(elem_ty);
+                        }
+                        
+                        // Create a switch-like structure using select instructions
+                        // Start with offset 0
+                        let mut result_offset = builder.ins().iconst(types::I64, offsets[0] as i64);
+                        
+                        for (i, offset) in offsets.iter().enumerate().skip(1) {
+                            let index_const = builder.ins().iconst(types::I64, i as i64);
+                            let cond = builder.ins().icmp(IntCC::Equal, index_val, index_const);
+                            let offset_const = builder.ins().iconst(types::I64, *offset as i64);
+                            result_offset = builder.ins().select(cond, offset_const, result_offset);
+                        }
+                        
+                        result_offset
+                    } else {
+                        // Non-I64 index - shouldn't happen, but fall back to simple calculation
+                        let elem_size = self.type_size(&inst.ty);
+                        let size_const = builder.ins().iconst(types::I64, elem_size as i64);
+                        builder.ins().imul(index_val, size_const)
+                    }
+                } else {
+                    // Homogeneous array: use simple index * elem_size
+                    let elem_size = self.type_size(&inst.ty);
+                    let size_const = builder.ins().iconst(types::I64, elem_size as i64);
+                    builder.ins().imul(index_val, size_const)
+                };
                 
                 // Compute element address: array_ptr + byte_offset
                 let elem_ptr = builder.ins().iadd(array_ptr, byte_offset);
@@ -2292,9 +2394,10 @@ impl CodeGenerator {
             IrType::Float(bits) => (bits / 8) as usize,
             IrType::Rune => 4,
             IrType::Pointer(_) => 8,
-            IrType::Tuple(types) => {
-                // Sum of element sizes (simplified, no padding)
-                types.iter().map(|t| self.type_size(t)).sum()
+            IrType::Tuple(_types) => {
+                // Tuples are heap-allocated via MakeTuple, which returns a pointer
+                // So the size is always 8 bytes (pointer size), not the sum of elements
+                8
             }
             IrType::Struct(name) => {
                 if let Some(struct_def) = self.struct_defs.get(name) {
@@ -2312,16 +2415,22 @@ impl CodeGenerator {
                 if name == "Bool" {
                     1 // Bool is just a tag (0 or 1)
                 } else if let Some(enum_def) = self.enum_defs.get(name) {
-                    // Tag (4 bytes) + largest variant
-                    let max_variant_size = enum_def
+                    // Check if any variant has a payload
+                    let has_payload = enum_def
                         .variants
                         .iter()
-                        .map(|(_, types)| types.iter().map(|t| self.type_size(t)).sum())
-                        .max()
-                        .unwrap_or(0);
-                    4 + max_variant_size
+                        .any(|(_, types)| !types.is_empty());
+                    
+                    if has_payload {
+                        // Enums with payloads are heap-allocated tuples (pointers)
+                        // MakeTuple returns an I64 pointer, so the size is 8 bytes
+                        8
+                    } else {
+                        // Simple enums without payloads are just integer tags
+                        4 // Tag is an i32
+                    }
                 } else {
-                    8 // Default
+                    8 // Default to pointer size
                 }
             }
             IrType::Function { .. } | IrType::Closure { .. } => 8, // Function pointer
