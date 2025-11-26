@@ -1686,10 +1686,15 @@ impl TypeChecker {
         }
         match expr {
             Expr::Ident(ident) if ident.name.starts_with('$') => {
-                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                    eprintln!("DEBUG find_implicit_params_in_expr: found ${} ident!", ident.name);
+                // Only treat as implicit param if not already bound in current scope
+                if self.symbols.lookup(&ident.name).is_none() && self.globals.get(&ident.name).is_none() {
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG find_implicit_params_in_expr: found unbound ${} ident - treating as implicit param", ident.name);
+                    }
+                    params.insert(ident.name.clone());
+                } else if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG find_implicit_params_in_expr: found ${} ident but it's already bound - skipping", ident.name);
                 }
-                params.insert(ident.name.clone());
             }
             Expr::Binary { left, right, .. } => {
                 self.find_implicit_params_in_expr(left, params);
@@ -1728,9 +1733,10 @@ impl TypeChecker {
                 // Only direct $0 references in THIS block count as implicit params
             }
             Expr::Match { expr: match_expr, arms, .. } => {
-                self.find_implicit_params_in_expr(match_expr, params);
-                // Don't scan match arm bodies - they have their own scope
-                // Only $0 in the current block counts as implicit params
+                // Don't scan match expressions or their arms
+                // The match expression is evaluated in the parent scope where $0 may already be bound
+                // (e.g., inside a loop body where $0 is the loop variable)
+                // Match arm bodies also have their own scope
             }
             Expr::Closure { body, .. } => {
                 // Don't traverse into nested closures - they have their own scope
