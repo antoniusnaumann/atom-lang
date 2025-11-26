@@ -668,9 +668,35 @@ impl Lower {
                 self.lower_field_access(object, &field.name, ir_block, func)
             }
             atom_ast::Expr::Block(block) => {
-                // Create a new nested block
-                let (value, _) = self.lower_block_to_ir(block, ir_block, func)?;
-                value.ok_or_else(|| LowerError::Internal("Block must produce a value".to_string()))
+                // Check if block uses implicit closure parameters ($0, $1, etc.)
+                let implicit_params = self.has_implicit_params(block);
+                
+                if !implicit_params.is_empty() {
+                    // Block with implicit params is treated as a closure
+                    // Convert implicit params to explicit Param nodes
+                    let params: Vec<atom_ast::Param> = implicit_params
+                        .iter()
+                        .map(|name| atom_ast::Param {
+                            name: atom_ast::Ident {
+                                name: name.clone(),
+                                span: atom_ast::Span { start: 0, end: 0 },
+                            },
+                            ty: Some(Box::new(atom_ast::Type::Named(atom_ast::Ident {
+                                name: "Int".to_string(),
+                                span: atom_ast::Span { start: 0, end: 0 },
+                            }))),
+                            default: None,
+                            span: atom_ast::Span { start: 0, end: 0 },
+                        })
+                        .collect();
+                    
+                    // Lower as a closure
+                    self.lower_closure(&params, &None, block, ir_block, func)
+                } else {
+                    // Regular block - lower inline
+                    let (value, _) = self.lower_block_to_ir(block, ir_block, func)?;
+                    value.ok_or_else(|| LowerError::Internal("Block must produce a value".to_string()))
+                }
             }
             atom_ast::Expr::Match { expr: match_expr, arms, .. } => {
                 self.lower_match(match_expr, arms, ir_block, func)
@@ -706,6 +732,11 @@ impl Lower {
         };
 
         let value_id = self.fresh_value_id();
+        
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG lower_literal: constant={:?}, value_id={:?}", constant, value_id);
+        }
+        
         ir_block.add_instruction(IrInstruction {
             result: value_id,
             ty,
@@ -725,11 +756,22 @@ impl Lower {
         // Clone the binding to avoid borrow checker issues
         let binding = self.variables.get(name).cloned();
         
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && name.starts_with('$') {
+            eprintln!("DEBUG lower_ident: looking up '{}', found: {:?}", name, binding.is_some());
+            eprintln!("DEBUG lower_ident: all variables: {:?}", self.variables.keys().collect::<Vec<_>>());
+        }
+        
         match binding {
             Some(VarBinding::Value(value_id, _)) => {
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && name.starts_with('$') {
+                    eprintln!("DEBUG lower_ident: '{}' found as Value({:?})", name, value_id);
+                }
                 Ok(value_id)
             }
             Some(VarBinding::Local(local_id, ty)) => {
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && name.starts_with('$') {
+                    eprintln!("DEBUG lower_ident: '{}' found as Local({:?})", name, local_id);
+                }
                 // Need to load from local
                 let value_id = self.fresh_value_id();
                 ir_block.add_instruction(IrInstruction {
@@ -757,7 +799,8 @@ impl Lower {
                     return Ok(value_id);
                 }
 
-                // Special handling for $0 (loop iteration variable)
+                // Special handling for $0 (loop iteration variable) - only if not already bound
+                // This is a fallback for when $0 is used but not properly bound by loop
                 if name == "$0" {
                     // Create a dummy value for $0
                     // In a real implementation, this would be bound by the loop construct
@@ -828,6 +871,10 @@ impl Lower {
 
         let left_value = self.lower_expr(left, ir_block, func)?;
         let right_value = self.lower_expr(right, ir_block, func)?;
+
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG lower_binary_op: op={:?}, left_value={:?}, right_value={:?}", op, left_value, right_value);
+        }
 
         // Handle Concat operator specially for String ++ String and String ++ Rune
         if matches!(op, atom_ast::BinOp::Concat) {
@@ -1018,6 +1065,11 @@ impl Lower {
         };
 
         let value_id = self.fresh_value_id();
+        
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG lower_binary_op: creating BinOp {:?}, left={:?}, right={:?}", ir_op, left_value, right_value);
+        }
+        
         ir_block.add_instruction(IrInstruction {
             result: value_id,
             ty: result_type,
@@ -3591,6 +3643,11 @@ impl Lower {
     fn fresh_value_id(&mut self) -> ValueId {
         let id = ValueId(self.next_value_id);
         self.next_value_id += 1;
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            if self.next_value_id < 20 {  // Log first 20
+                eprintln!("DEBUG fresh_value_id: allocated {:?}, next={}", id, self.next_value_id);
+            }
+        }
         id
     }
 
@@ -3682,6 +3739,10 @@ impl Lower {
             self.params.insert(param_name.clone(), param_id);
             self.variables.insert(param_name.clone(), VarBinding::Value(param_id, param_ty.clone()));
         }
+        
+        // Reset value ID counter to start after parameters
+        // This ensures the first value generated in the closure body doesn't conflict with parameter IDs
+        self.next_value_id = lifted_params.len() as u32;
 
         // Create entry block for lifted function
         let entry_block_id = self.fresh_block_id();
@@ -3810,6 +3871,69 @@ impl Lower {
         });
 
         Ok(closure_value_id)
+    }
+
+    /// Detect if a block uses implicit closure parameters ($0, $1, etc.)
+    fn has_implicit_params(&self, block: &atom_ast::Block) -> Vec<String> {
+        let mut params = std::collections::HashSet::new();
+        self.find_implicit_params_in_block(block, &mut params);
+        let mut param_list: Vec<String> = params.into_iter().collect();
+        param_list.sort();
+        param_list
+    }
+    
+    fn find_implicit_params_in_block(&self, block: &atom_ast::Block, params: &mut std::collections::HashSet<String>) {
+        for stmt in &block.stmts {
+            self.find_implicit_params_in_stmt(stmt, params);
+        }
+    }
+    
+    fn find_implicit_params_in_stmt(&self, stmt: &atom_ast::Stmt, params: &mut std::collections::HashSet<String>) {
+        match stmt {
+            atom_ast::Stmt::Expression(expr) => {
+                self.find_implicit_params_in_expr(expr, params);
+            }
+            atom_ast::Stmt::VarDecl(decl) => {
+                if let Some(init) = &decl.init {
+                    self.find_implicit_params_in_expr(init, params);
+                }
+            }
+        }
+    }
+    
+    fn find_implicit_params_in_expr(&self, expr: &atom_ast::Expr, params: &mut std::collections::HashSet<String>) {
+        use atom_ast::Expr;
+        match expr {
+            Expr::Ident(ident) if ident.name.starts_with('$') && ident.name[1..].chars().all(|c| c.is_ascii_digit()) => {
+                params.insert(ident.name.clone());
+            }
+            Expr::Binary { left, right, .. } => {
+                self.find_implicit_params_in_expr(left, params);
+                self.find_implicit_params_in_expr(right, params);
+            }
+            Expr::Unary { expr, .. } => {
+                self.find_implicit_params_in_expr(expr, params);
+            }
+            Expr::Call { func, args, .. } => {
+                // Scan function expression
+                self.find_implicit_params_in_expr(func, params);
+                // Scan arguments, but don't scan into Block or Closure arguments
+                // as they have their own parameter scope
+                for arg in args {
+                    if !matches!(arg, Expr::Block(_) | Expr::Closure { .. }) {
+                        self.find_implicit_params_in_expr(arg, params);
+                    }
+                }
+            }
+            Expr::Block(block) => {
+                // Don't scan into nested blocks - they have their own parameter scope
+            }
+            Expr::Match { expr, arms, .. } => {
+                self.find_implicit_params_in_expr(expr, params);
+                // Don't scan match arm bodies - they have their own scope
+            }
+            _ => {}
+        }
     }
 
     /// Analyze a block to find captured variables (free variables).

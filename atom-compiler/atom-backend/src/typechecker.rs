@@ -1599,6 +1599,27 @@ impl TypeChecker {
             param_types.push(Box::new(param_ty));
         }
 
+        // If closure has no explicit parameters, check if body uses implicit $N parameters
+        if params.is_empty() {
+            let implicit_params = self.find_implicit_params(body);
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("DEBUG check_closure: found implicit params: {:?}", implicit_params);
+            }
+            if !implicit_params.is_empty() {
+                // Add implicit parameters with placeholder types
+                // These will be refined during type inference from context
+                for param_name in &implicit_params {
+                    // Use Int as placeholder type for implicit parameters
+                    // TODO: Ideally this should be inferred from context/usage
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG check_closure: adding implicit param {} with type Int", param_name);
+                    }
+                    self.symbols.add_variable(param_name.clone(), Type::Int(None));
+                    param_types.push(Box::new(Type::Int(None)));
+                }
+            }
+        }
+
         // Check body
         let body_ty = self.check_block(body)?;
 
@@ -1625,9 +1646,137 @@ impl TypeChecker {
             return_type: expected_return.or_else(|| Some(Box::new(body_ty))),
         }))
     }
+    
+    /// Find implicit closure parameters ($0, $1, etc.) used in a block
+    fn find_implicit_params(&self, block: &Block) -> Vec<String> {
+        let mut params = std::collections::HashSet::new();
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG find_implicit_params: scanning block with {} stmts", block.stmts.len());
+        }
+        for stmt in &block.stmts {
+            self.find_implicit_params_in_stmt(stmt, &mut params);
+        }
+        let mut param_list: Vec<String> = params.into_iter().collect();
+        param_list.sort(); // Ensure consistent ordering: $0, $1, $10, $2, ...
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG find_implicit_params: found params: {:?}", param_list);
+        }
+        param_list
+    }
+    
+    fn find_implicit_params_in_stmt(&self, stmt: &Stmt, params: &mut std::collections::HashSet<String>) {
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG find_implicit_params_in_stmt: stmt type={:?}", std::mem::discriminant(stmt));
+        }
+        match stmt {
+            Stmt::Expression(expr) => {
+                self.find_implicit_params_in_expr(expr, params);
+            }
+            Stmt::VarDecl(var_decl) => {
+                if let Some(init) = &var_decl.init {
+                    self.find_implicit_params_in_expr(init, params);
+                }
+            }
+        }
+    }
+    
+    fn find_implicit_params_in_expr(&self, expr: &Expr, params: &mut std::collections::HashSet<String>) {
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG find_implicit_params_in_expr: expr type={:?}", std::mem::discriminant(expr));
+        }
+        match expr {
+            Expr::Ident(ident) if ident.name.starts_with('$') => {
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG find_implicit_params_in_expr: found ${} ident!", ident.name);
+                }
+                params.insert(ident.name.clone());
+            }
+            Expr::Binary { left, right, .. } => {
+                self.find_implicit_params_in_expr(left, params);
+                self.find_implicit_params_in_expr(right, params);
+            }
+            Expr::Unary { expr, .. } => {
+                self.find_implicit_params_in_expr(expr, params);
+            }
+            Expr::Call { func, args, .. } => {
+                // Scan function expression
+                self.find_implicit_params_in_expr(func, params);
+                // Scan arguments, but don't scan into Block or Closure arguments
+                // as they have their own parameter scope
+                for arg in args {
+                    if !matches!(arg, Expr::Block(_) | Expr::Closure { .. }) {
+                        self.find_implicit_params_in_expr(arg, params);
+                    }
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.find_implicit_params_in_expr(receiver, params);
+                for arg in args {
+                    self.find_implicit_params_in_expr(arg, params);
+                }
+            }
+            Expr::FieldAccess { object, .. } => {
+                self.find_implicit_params_in_expr(object, params);
+            }
+            Expr::Tuple(exprs, _) => {
+                for expr in exprs {
+                    self.find_implicit_params_in_expr(expr, params);
+                }
+            }
+            Expr::Block(block) => {
+                // Don't scan into nested blocks - they have their own parameter scope
+                // Only direct $0 references in THIS block count as implicit params
+            }
+            Expr::Match { expr: match_expr, arms, .. } => {
+                self.find_implicit_params_in_expr(match_expr, params);
+                // Don't scan match arm bodies - they have their own scope
+                // Only $0 in the current block counts as implicit params
+            }
+            Expr::Closure { body, .. } => {
+                // Don't traverse into nested closures - they have their own scope
+            }
+            _ => {}
+        }
+    }
 
     fn check_block_expr(&mut self, block: &Block) -> TypeResult<Type> {
         self.symbols.push_scope();
+        
+        // Check if block uses implicit closure parameters ($0, $1, etc.)
+        let implicit_params = self.find_implicit_params(block);
+        if !implicit_params.is_empty() {
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("DEBUG check_block_expr: found implicit params: {:?}", implicit_params);
+                eprintln!("DEBUG check_block_expr: treating block as closure");
+            }
+            // Add implicit parameters to scope
+            // For now, we use Int as a default type - ideally this should be inferred from context
+            // TODO: Implement proper type inference for implicit closure parameters
+            for param_name in &implicit_params {
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG check_block_expr: adding implicit param {} with type Int", param_name);
+                }
+                self.symbols.add_variable(param_name.clone(), Type::Int(None));
+            }
+            
+            // Check the block body
+            let body_ty = self.check_block(block)?;
+            self.symbols.pop_scope();
+            
+            // Return a function type instead of the block's return type
+            // Block with implicit params is treated as a closure
+            let param_types: Vec<Box<Type>> = implicit_params
+                .iter()
+                .map(|_| Box::new(Type::Int(None)))
+                .collect();
+            
+            return Ok(Type::Function(FunctionType {
+                const_params: vec![],
+                params: param_types,
+                return_type: Some(Box::new(body_ty)),
+            }));
+        }
+        
         let result = self.check_block(block);
         self.symbols.pop_scope();
         result
