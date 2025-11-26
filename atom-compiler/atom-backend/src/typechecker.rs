@@ -876,37 +876,37 @@ impl TypeChecker {
             }
             
             if let Some(signatures) = self.functions.get(&func_name).cloned() {
-                // Try to find matching signature
-                let arg_types: Result<Vec<_>, _> =
-                    args.iter().map(|arg| self.check_expr(arg)).collect();
-                let arg_types = arg_types?;
-
-                if func_name == "reduce" {
-                                                            for (i, arg_ty) in arg_types.iter().enumerate() {
-                                            }
-                                        for (sig_idx, sig) in signatures.iter().enumerate() {
-                                                                        for (i, (name, ty, has_def)) in sig.params.iter().enumerate() {
-                                                    }
-                    }
-                }
-
-                for (sig_idx, sig) in signatures.iter().enumerate() {
+                // Try to find matching signature by type-checking args with expected param types
+                // This allows proper type inference for implicit closure parameters
+                
+                for sig in signatures.iter() {
                     // Count required (non-default) parameters
                     let required_params = sig.params.iter()
                         .take_while(|(_, _, has_default)| !has_default)
                         .count();
                     
                     // Check if arg count is valid (between required and total params)
-                    if arg_types.len() >= required_params && arg_types.len() <= sig.params.len() {
-                        // Try to unify type parameters
+                    if args.len() >= required_params && args.len() <= sig.params.len() {
+                        // Type check arguments with expected parameter types for context
+                        let mut arg_types = Vec::new();
                         let mut type_bindings = std::collections::HashMap::new();
                         let mut matches = true;
                         
-                        for (i, (_, param_ty, _)) in sig.params.iter().take(arg_types.len()).enumerate() {
-                            if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
+                        for (i, arg) in args.iter().enumerate() {
+                            let expected_param_ty = &sig.params[i].1;
+                            
+                            // Check if this argument is a block with implicit parameters
+                            let arg_ty = if let Expr::Block(block) = arg {
+                                self.check_block_expr_with_context(block, Some(expected_param_ty))?
+                            } else {
+                                self.check_expr(arg)?
+                            };
+                            
+                            if !self.try_unify_type(&arg_ty, expected_param_ty, &mut type_bindings) {
                                 matches = false;
                                 break;
                             }
+                            arg_types.push(arg_ty);
                         }
 
                         if matches {
@@ -914,19 +914,6 @@ impl TypeChecker {
                             let return_ty = sig.return_type.clone().unwrap_or(Type::Void);
                             let substituted = self.substitute_type_params(&return_ty, &type_bindings);
                             return Ok(substituted);
-                        }
-                    }
-                }
-
-                // Debug: print details if this is reduce (only in debug mode)
-                if func_name == "reduce" && std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                    eprintln!("ERROR: No matching overload for 'reduce' with {} args", args.len());
-                                        for (i, arg_ty) in arg_types.iter().enumerate() {
-                                            }
-                                        for (i, sig) in signatures.iter().enumerate() {
-                        eprintln!("    Signature {}:", i);
-                        for (j, (name, param_ty, has_default)) in sig.params.iter().enumerate() {
-                            eprintln!("      param[{}] {}: {:?} (default: {})", j, name, param_ty, has_default);
                         }
                     }
                 }
@@ -983,26 +970,34 @@ impl TypeChecker {
                 }
             }
             Type::Function(func_type) => {
-                let arg_types: Result<Vec<_>, _> =
-                    args.iter().map(|arg| self.check_expr(arg)).collect();
-                let arg_types = arg_types?;
-
-                if func_type.params.len() != arg_types.len() {
+                // Type check arguments with expected parameter types from function signature
+                if func_type.params.len() != args.len() {
                     return Err(TypeError::Other(format!(
                         "Function expects {} arguments, got {}",
                         func_type.params.len(),
                         args.len()
                     )));
                 }
-
-                for (i, param_ty) in func_type.params.iter().enumerate() {
-                    if !arg_types[i].can_convert_to(param_ty) {
+                
+                let mut arg_types = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    let expected_param_ty = &func_type.params[i];
+                    
+                    // Check if this argument is a block with implicit parameters
+                    let arg_ty = if let Expr::Block(block) = arg {
+                        self.check_block_expr_with_context(block, Some(expected_param_ty))?
+                    } else {
+                        self.check_expr(arg)?
+                    };
+                    
+                    if !arg_ty.can_convert_to(expected_param_ty) {
                         return Err(TypeError::Incompatible {
-                            expected: param_ty.clone(),
-                            found: Box::new(arg_types[i].clone()),
+                            expected: expected_param_ty.clone(),
+                            found: Box::new(arg_ty.clone()),
                             reason: format!("Function argument {} type mismatch", i + 1),
                         });
                     }
+                    arg_types.push(arg_ty);
                 }
 
                 Ok(func_type.return_type.map(|t| *t).unwrap_or(Type::Void))
@@ -1687,13 +1682,19 @@ impl TypeChecker {
         match expr {
             Expr::Ident(ident) if ident.name.starts_with('$') => {
                 // Only treat as implicit param if not already bound in current scope
-                if self.symbols.lookup(&ident.name).is_none() && self.globals.get(&ident.name).is_none() {
+                let in_symbols = self.symbols.lookup(&ident.name);
+                let in_globals = self.globals.get(&ident.name);
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG find_implicit_params_in_expr: checking '{}' (len={}) - in_symbols={:?}, in_globals={:?}", 
+                              ident.name, ident.name.len(), in_symbols.is_some(), in_globals.is_some());
+                }
+                if in_symbols.is_none() && in_globals.is_none() {
                     if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                        eprintln!("DEBUG find_implicit_params_in_expr: found unbound ${} ident - treating as implicit param", ident.name);
+                        eprintln!("DEBUG find_implicit_params_in_expr: found unbound '{}' ident - treating as implicit param", ident.name);
                     }
                     params.insert(ident.name.clone());
                 } else if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                    eprintln!("DEBUG find_implicit_params_in_expr: found ${} ident but it's already bound - skipping", ident.name);
+                    eprintln!("DEBUG find_implicit_params_in_expr: found '{}' ident but it's already bound - skipping", ident.name);
                 }
             }
             Expr::Binary { left, right, .. } => {
@@ -1746,23 +1747,55 @@ impl TypeChecker {
     }
 
     fn check_block_expr(&mut self, block: &Block) -> TypeResult<Type> {
+        self.check_block_expr_with_context(block, None)
+    }
+    
+    /// Check a block expression with optional expected type context for implicit parameters
+    /// 
+    /// When expected_type is provided and is a function type, implicit parameters ($0, $1, etc.)
+    /// will be typed according to the function's parameter types instead of defaulting to Int.
+    fn check_block_expr_with_context(&mut self, block: &Block, expected_type: Option<&Type>) -> TypeResult<Type> {
         self.symbols.push_scope();
         
         // Check if block uses implicit closure parameters ($0, $1, etc.)
         let implicit_params = self.find_implicit_params(block);
         if !implicit_params.is_empty() {
             if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                eprintln!("DEBUG check_block_expr: found implicit params: {:?}", implicit_params);
-                eprintln!("DEBUG check_block_expr: treating block as closure");
+                eprintln!("DEBUG check_block_expr_with_context: found implicit params: {:?}", implicit_params);
+                eprintln!("DEBUG check_block_expr_with_context: expected_type={:?}", expected_type);
             }
-            // Add implicit parameters to scope
-            // For now, we use Int as a default type - ideally this should be inferred from context
-            // TODO: Implement proper type inference for implicit closure parameters
-            for param_name in &implicit_params {
+            
+            // Determine types for implicit parameters from context
+            let param_types: Vec<Type> = if let Some(Type::Function(func_type)) = expected_type {
+                // Extract parameter types from the expected function type
                 if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
-                    eprintln!("DEBUG check_block_expr: adding implicit param {} with type Int", param_name);
+                    eprintln!("DEBUG check_block_expr_with_context: inferring from function type with {} params", func_type.params.len());
                 }
-                self.symbols.add_variable(param_name.clone(), Type::Int(None));
+                implicit_params
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, _)| {
+                        if idx < func_type.params.len() {
+                            (*func_type.params[idx]).clone()
+                        } else {
+                            Type::Int(None) // Fallback for extra params
+                        }
+                    })
+                    .collect()
+            } else {
+                // No context or non-function context: default to Int
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG check_block_expr_with_context: no function type context, defaulting to Int");
+                }
+                vec![Type::Int(None); implicit_params.len()]
+            };
+            
+            // Add implicit parameters to scope with inferred types
+            for (param_name, param_ty) in implicit_params.iter().zip(param_types.iter()) {
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG check_block_expr_with_context: adding implicit param {} with type {:?}", param_name, param_ty);
+                }
+                self.symbols.add_variable(param_name.clone(), param_ty.clone());
             }
             
             // Check the block body
@@ -1771,14 +1804,14 @@ impl TypeChecker {
             
             // Return a function type instead of the block's return type
             // Block with implicit params is treated as a closure
-            let param_types: Vec<Box<Type>> = implicit_params
-                .iter()
-                .map(|_| Box::new(Type::Int(None)))
+            let boxed_param_types: Vec<Box<Type>> = param_types
+                .into_iter()
+                .map(Box::new)
                 .collect();
             
             return Ok(Type::Function(FunctionType {
                 const_params: vec![],
-                params: param_types,
+                params: boxed_param_types,
                 return_type: Some(Box::new(body_ty)),
             }));
         }

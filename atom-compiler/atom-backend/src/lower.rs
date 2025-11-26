@@ -606,6 +606,10 @@ impl Lower {
                 // Mutable variable - allocate a local (stack slot) and store the initial value
                 let local_id = self.fresh_local_id();
                 
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG lower_var_decl: '{}' is_const=false, creating Local({:?})", var_name, local_id);
+                }
+                
                 func.locals.push(IrLocal {
                     id: local_id,
                     name: var_name.clone(),
@@ -627,6 +631,9 @@ impl Lower {
                     .insert(var_name, VarBinding::Local(local_id, var_type));
             } else {
                 // Immutable variable - bind directly to the SSA value
+                if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                    eprintln!("DEBUG lower_var_decl: '{}' is_const=true, creating Value({:?})", var_name, init_value);
+                }
                 self.variables
                     .insert(var_name, VarBinding::Value(init_value, var_type));
             }
@@ -672,6 +679,9 @@ impl Lower {
                 let implicit_params = self.has_implicit_params(block);
                 
                 if !implicit_params.is_empty() {
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG lower_expr Block: treating as closure, implicit_params={:?}", implicit_params);
+                    }
                     // Block with implicit params is treated as a closure
                     // Convert implicit params to explicit Param nodes
                     let params: Vec<atom_ast::Param> = implicit_params
@@ -693,6 +703,9 @@ impl Lower {
                     // Lower as a closure
                     self.lower_closure(&params, &None, block, ir_block, func)
                 } else {
+                    if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG lower_expr Block: lowering as regular inline block");
+                    }
                     // Regular block - lower inline
                     let (value, _) = self.lower_block_to_ir(block, ir_block, func)?;
                     value.ok_or_else(|| LowerError::Internal("Block must produce a value".to_string()))
@@ -2404,9 +2417,15 @@ impl Lower {
         };
         
         // Check if this is array iteration or condition loop
-        // Array iteration: loop(arr) where arr is an identifier bound to array
+        // Array iteration: loop(expr) where expr evaluates to an array/variadic
         // Condition loop: loop(expr) where expr is a boolean expression
-        let is_array_iter = matches!(first_arg, Expr::Ident(_));
+        // For now, we use a simple heuristic: if the first arg is an Ident or MethodCall,
+        // we treat it as array iteration; otherwise it's a condition loop
+        let is_array_iter = match first_arg {
+            Expr::Ident(_) => true,
+            Expr::MethodCall { .. } => true,
+            _ => false,
+        };
         
         if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
             if debug == "1" {
@@ -2622,6 +2641,10 @@ impl Lower {
             // Bind $0 to the local variable (not the SSA value)
             let old_dollar0 = self.variables.get("$0").cloned();
             self.variables.insert("$0".to_string(), VarBinding::Local(dollar0_local, element_type.clone()));
+            
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("DEBUG loop: bound $0 as Local({:?}), all variables: {:?}", dollar0_local, self.variables.keys().collect::<Vec<_>>());
+            }
             
             // Execute loop body
             let (_body_result, _) = self.lower_block_to_ir(body_block, &mut loop_body_ir, func)?;
@@ -3731,6 +3754,9 @@ impl Lower {
 
         // Clear parameter state for new function
         self.params.clear();
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("DEBUG lower_closure: clearing variables (was {:?})", self.variables.keys().collect::<Vec<_>>());
+        }
         self.variables.clear();
 
         // Set up parameter bindings for the lifted function
@@ -3877,8 +3903,25 @@ impl Lower {
     fn has_implicit_params(&self, block: &atom_ast::Block) -> Vec<String> {
         let mut params = std::collections::HashSet::new();
         self.find_implicit_params_in_block(block, &mut params);
-        let mut param_list: Vec<String> = params.into_iter().collect();
+        
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && !params.is_empty() {
+            eprintln!("DEBUG has_implicit_params: found params {:?} before filtering", params);
+            eprintln!("DEBUG has_implicit_params: current variables: {:?}", self.variables.keys().collect::<Vec<_>>());
+        }
+        
+        // Filter out parameters that are already bound in the current scope
+        // This prevents treating blocks that reference already-bound variables (like $0 in a loop)
+        // as closures with implicit parameters
+        let mut param_list: Vec<String> = params
+            .into_iter()
+            .filter(|param_name| !self.variables.contains_key(param_name))
+            .collect();
         param_list.sort();
+        
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && !param_list.is_empty() {
+            eprintln!("DEBUG has_implicit_params: after filtering: {:?}", param_list);
+        }
+        
         param_list
     }
     
