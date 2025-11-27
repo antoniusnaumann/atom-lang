@@ -143,10 +143,11 @@
 +trim_start(s String) String {
     rune_arr := s.runes()
     start := 0
-    loop(start < len(rune_arr)) {
+    break := False
+    loop(start < len(rune_arr) && !break) {
         match(is_whitespace(rune_arr(start))) {
             True { start += 1 }
-            False { break }
+            False { break = True }
         }
     }
     
@@ -164,11 +165,12 @@
     rune_arr := s.runes()
     arr_len := len(rune_arr)
     end := arr_len
+    break := False
     
-    loop(end > 0) {
+    loop(end > 0 && !break) {
         match(is_whitespace(rune_arr(end - 1))) {
             True { end -= 1 }
-            False { break }
+            False { break = True }
         }
     }
     
@@ -185,17 +187,18 @@
 +starts_with(s String, prefix String) Bool {
     s_len := len(s)
     p_len := len(prefix)
+    break := False
     
     match(p_len > s_len) {
         True { False }
         False {
             i := 0
             result := True
-            loop(i < p_len) {
+            loop(i < p_len && !break) {
                 match(s.bytes(i) == prefix.bytes(i)) {
                     False {
                         result = False
-                        break
+                        break = True
                     }
                     True { }
                 }
@@ -210,6 +213,7 @@
 +ends_with(s String, suffix String) Bool {
     s_len := len(s)
     suf_len := len(suffix)
+    break := False
     
     match(suf_len > s_len) {
         True { False }
@@ -217,11 +221,11 @@
             offset := s_len - suf_len
             i := 0
             result := True
-            loop(i < suf_len) {
+            loop(i < suf_len && !break) {
                 match(s.bytes(offset + i) == suffix.bytes(i)) {
                     False {
                         result = False
-                        break
+                        break = True
                     }
                     True { }
                 }
@@ -236,8 +240,9 @@
 +contains(s String, substring String) Bool {
     s_len := len(s)
     sub_len := len(substring)
+    break := False
     
-    match(sub_len > s_len) {
+    match(sub_len > s_len && !break) {
         True { False }
         False {
             i := 0
@@ -246,24 +251,23 @@
                 // Check if substring matches at position i
                 found := True
                 j := 0
-                loop(j < sub_len) {
+                break_inner := False
+                loop(j < sub_len && !break_inner) {
                     match(s.bytes(i + j) == substring.bytes(j)) {
                         False {
                             found = False
-                            break
+                            break_inner = True
                         }
-                        True { }
+                        True { j += 1 }
                     }
-                    j += 1
                 }
                 match(found) {
                     True { 
                         result = True
-                        break
+                        break = True
                     }
-                    False { }
+                    False { i += 1 }
                 }
-                i += 1
             }
             result
         }
@@ -274,6 +278,17 @@
 +replace(s String, from String, to String) String {
     s_len := len(s)
     from_len := len(from)
+
+    match(request) {
+        Loading {}
+        Error(e) {}
+    } -> Success(paylod)
+
+    do_something(payload)
+
+    result.map() -> ok_value
+    do_something(ok_value)
+    
     
     match(from_len == 0 || from_len > s_len) {
         True { s }

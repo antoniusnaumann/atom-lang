@@ -264,6 +264,13 @@ Cat (
   cat Void
 )
 
+Human (
+  name String
+  age Int
+
+  human Void
+)
+
 main() {
   meow: Cat = (name: "Meow", age: 3) // error: Cannot convert (name: String, age: Int) to (name: String, age: Int, **cat: Void**)   
 }
