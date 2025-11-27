@@ -80,6 +80,10 @@ pub enum Type {
         args: Vec<ConstArg>,
     },
 
+    /// Reference type: &T (only valid for function parameters)
+    /// Used for pass-by-reference semantics
+    Reference(Box<Type>),
+
     /// Unknown/inferred type (used during type checking)
     Infer(InferType),
 
@@ -579,6 +583,8 @@ impl Type {
                 a.structurally_equal(b) && a_args == b_args
             }
 
+            (Type::Reference(a), Type::Reference(b)) => a.structurally_equal(b),
+
             (Type::Infer(a), Type::Infer(b)) => a.id == b.id,
 
             // Different type constructors are never equal
@@ -802,6 +808,10 @@ impl Type {
             (Type::UInt(None), Type::UInt(Some(64))) => true,
             (Type::UInt(Some(64)), Type::UInt(None)) => true,
 
+            // References: only exact match allowed (via structural_equal at the top)
+            // No implicit conversions for reference types
+            (Type::Reference(_), _) | (_, Type::Reference(_)) => false,
+
             // No other implicit conversions
             _ => false,
         }
@@ -831,6 +841,7 @@ impl Type {
             Type::TypeMeta => false,
             Type::TypeParam(_) => false, // Depends on the actual type
             Type::Generic { base, .. } => base.has_zero_value(),
+            Type::Reference(inner) => inner.has_zero_value(),
             Type::Infer(_) => false,
             Type::Error => false,
         }
@@ -890,6 +901,7 @@ impl Type {
             }
 
             Type::Function(_) => Some(8), // Function pointer
+            Type::Reference(_) => Some(8), // References are pointers
             Type::TypeParam(_) => None,   // Unknown until instantiated
             Type::Generic { base, .. } => base.size_bytes(), // Simplified
             Type::Infer(_) => None,
@@ -932,6 +944,7 @@ impl Type {
             Type::Enum(_) => Some(8), // Align to largest field + tag
 
             Type::Function(_) => Some(8),
+            Type::Reference(_) => Some(8), // References are pointers
             Type::TypeParam(_) => None,
             Type::Generic { base, .. } => base.alignment(),
             Type::Infer(_) => None,
@@ -1151,6 +1164,8 @@ impl fmt::Display for Type {
                 }
                 write!(f, ")")
             }
+
+            Type::Reference(inner) => write!(f, "&{}", inner),
 
             Type::Infer(inf) => write!(f, "?{}", inf.id),
             Type::Error => write!(f, "<error>"),

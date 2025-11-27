@@ -1536,6 +1536,25 @@ impl CodeGenerator {
                     ))
                 }
             }
+
+            IrInstructionKind::AddressOf { location } => {
+                // Take the address of a memory location (for references)
+                // TODO: Implement proper address-of operation
+                // For now, return a dummy pointer value
+                Err(CodegenError::UnsupportedInstruction(
+                    "AddressOf operation not yet implemented".to_string(),
+                ))
+            }
+
+            IrInstructionKind::Deref { pointer } => {
+                // Dereference a pointer (for references)
+                // TODO: Implement proper dereference operation
+                // For now, return the pointer value as-is
+                values
+                    .get(pointer)
+                    .copied()
+                    .ok_or(CodegenError::InvalidValue(*pointer))
+            }
         }
     }
 

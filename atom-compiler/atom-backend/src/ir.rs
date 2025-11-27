@@ -214,6 +214,14 @@ pub enum IrInstructionKind {
     Phi {
         incoming: Vec<(BlockId, ValueId)>,
     },
+    /// Take the address of a memory location (lvalue)
+    AddressOf {
+        location: IrMemoryLocation,
+    },
+    /// Dereference a pointer
+    Deref {
+        pointer: ValueId,
+    },
 }
 
 /// Memory location for load/store operations.
@@ -661,6 +669,12 @@ impl fmt::Display for IrInstruction {
                     write!(f, "[{}: {}]", block, value)?;
                 }
                 write!(f, ")")
+            }
+            IrInstructionKind::AddressOf { location } => {
+                write!(f, "address_of {}", location)
+            }
+            IrInstructionKind::Deref { pointer } => {
+                write!(f, "deref {}", pointer)
             }
         }?;
         write!(f, " : {}", self.ty)

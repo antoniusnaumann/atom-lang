@@ -1070,6 +1070,17 @@ impl FromSExpr for Type {
                     span,
                 })
             }
+            "reference" => {
+                if filtered.len() < 2 {
+                    return Err(ParseError {
+                        message: "Reference type requires inner type".to_string(),
+                    });
+                }
+                Ok(Type::Reference {
+                    inner: Box::new(Type::from_sexpr(filtered[1])?),
+                    span,
+                })
+            }
             _ => Err(ParseError {
                 message: format!("Unknown type: {}", head),
             }),
@@ -1283,6 +1294,10 @@ impl FromSExpr for Expr {
                 })
             }
             "comptime" => Ok(Expr::Comptime {
+                expr: Box::new(Expr::from_sexpr(filtered[1])?),
+                span,
+            }),
+            "reference" => Ok(Expr::Reference {
                 expr: Box::new(Expr::from_sexpr(filtered[1])?),
                 span,
             }),

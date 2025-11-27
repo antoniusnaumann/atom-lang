@@ -729,10 +729,7 @@ impl Lower {
                 self.lower_expr(expr, ir_block, func)
             }
             atom_ast::Expr::Reference { expr, .. } => {
-                // TODO: Implement proper reference semantics
-                // For now, treat reference as the value itself (pointer/address)
-                // This is a placeholder until full reference implementation
-                self.lower_expr(expr, ir_block, func)
+                self.lower_reference(expr, ir_block, func)
             }
         }
     }
@@ -784,10 +781,37 @@ impl Lower {
         }
         
         match binding {
-            Some(VarBinding::Value(value_id, _)) => {
+            Some(VarBinding::Value(value_id, ty)) => {
                 if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && name.starts_with('$') {
                     eprintln!("DEBUG lower_ident: '{}' found as Value({:?})", name, value_id);
                 }
+                
+                // Check if this is a reference type (pointer) that needs dereferencing
+                // Reference parameters are stored as pointers, but when accessed they should
+                // be automatically dereferenced to get the actual value
+                if matches!(ty, IrType::Pointer(_)) {
+                    // Check if this is a reference parameter (not just any pointer)
+                    // We dereference if it's a function parameter with pointer type
+                    if self.params.contains_key(name) {
+                        // This is a reference parameter - dereference it
+                        let inner_ty = if let IrType::Pointer(inner) = ty {
+                            *inner
+                        } else {
+                            unreachable!()
+                        };
+                        
+                        let deref_id = self.fresh_value_id();
+                        ir_block.add_instruction(IrInstruction {
+                            result: deref_id,
+                            ty: inner_ty,
+                            kind: IrInstructionKind::Deref {
+                                pointer: value_id,
+                            },
+                        });
+                        return Ok(deref_id);
+                    }
+                }
+                
                 Ok(value_id)
             }
             Some(VarBinding::Local(local_id, ty)) => {
@@ -1371,6 +1395,190 @@ impl Lower {
         });
 
         Ok(value_id)
+    }
+
+    /// Lower a reference expression (&expr) to IR.
+    /// This creates an address-of operation for pass-by-reference semantics.
+    fn lower_reference(
+        &mut self,
+        expr: &atom_ast::Expr,
+        ir_block: &mut IrBlock,
+        func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        // Determine what kind of lvalue we're taking the address of
+        match expr {
+            // Simple identifier: take address of the variable
+            atom_ast::Expr::Ident(ident) => {
+                let var_name = &ident.name;
+                
+                // Look up the variable to determine if it's a local or parameter
+                if let Some(binding) = self.variables.get(var_name).cloned() {
+                    match binding {
+                        VarBinding::Local(local_id, ty) => {
+                            // Taking address of a local variable
+                            let value_id = self.fresh_value_id();
+                            let ptr_ty = IrType::Pointer(Box::new(ty));
+                            
+                            ir_block.add_instruction(IrInstruction {
+                                result: value_id,
+                                ty: ptr_ty,
+                                kind: IrInstructionKind::AddressOf {
+                                    location: IrMemoryLocation::Local(local_id),
+                                },
+                            });
+                            
+                            Ok(value_id)
+                        }
+                        VarBinding::Value(value_id, ty) => {
+                            // For parameters or immutable values, we need to spill to a local first
+                            // This is necessary because SSA values don't have addresses
+                            let local_id = self.fresh_local_id();
+                            func.locals.push(IrLocal {
+                                id: local_id,
+                                name: format!("&{}", var_name),
+                                ty: ty.clone(),
+                            });
+                            
+                            // Store the value to the local
+                            ir_block.add_instruction(IrInstruction {
+                                result: self.fresh_value_id(),
+                                ty: IrType::Void,
+                                kind: IrInstructionKind::Store {
+                                    destination: IrMemoryLocation::Local(local_id),
+                                    value: value_id,
+                                },
+                            });
+                            
+                            // Take address of the local
+                            let addr_id = self.fresh_value_id();
+                            let ptr_ty = IrType::Pointer(Box::new(ty));
+                            
+                            ir_block.add_instruction(IrInstruction {
+                                result: addr_id,
+                                ty: ptr_ty,
+                                kind: IrInstructionKind::AddressOf {
+                                    location: IrMemoryLocation::Local(local_id),
+                                },
+                            });
+                            
+                            Ok(addr_id)
+                        }
+                    }
+                } else {
+                    Err(LowerError::UndefinedVariable(var_name.to_string()))
+                }
+            }
+            
+            // Array indexing: &arr(i) - take address of array element
+            atom_ast::Expr::Call { func: func_expr, args, .. } if args.len() == 1 => {
+                if let atom_ast::Expr::Ident(ident) = func_expr.as_ref() {
+                    let var_name = &ident.name;
+                    
+                    // Check if this is an array variable
+                    if let Some(binding) = self.variables.get(var_name).cloned() {
+                        let (array_value, array_ty) = match binding {
+                            VarBinding::Value(val, ty) => (val, ty),
+                            VarBinding::Local(local_id, ty) => {
+                                // Load from local first
+                                let loaded = self.fresh_value_id();
+                                ir_block.add_instruction(IrInstruction {
+                                    result: loaded,
+                                    ty: ty.clone(),
+                                    kind: IrInstructionKind::Load {
+                                        source: IrMemoryLocation::Local(local_id),
+                                    },
+                                });
+                                (loaded, ty)
+                            }
+                        };
+                        
+                        // Check if it's an array type
+                        if matches!(array_ty, IrType::Array { .. } | IrType::Pointer(_)) {
+                            // Lower the index expression
+                            let index_value = self.lower_expr(&args[0], ir_block, func)?;
+                            
+                            // Get element type
+                            let element_ty = match array_ty {
+                                IrType::Array { element } => *element,
+                                IrType::Pointer(inner) => *inner,
+                                _ => IrType::Int(64), // Fallback
+                            };
+                            
+                            // For pointer arithmetic: ptr + index
+                            // This gives us the address of the element
+                            // For now, we'll use a simplified approach: calculate offset
+                            let value_id = self.fresh_value_id();
+                            let ptr_ty = IrType::Pointer(Box::new(element_ty));
+                            
+                            // Use BinOp Add for pointer arithmetic
+                            // array_value is already a pointer (or can be treated as one)
+                            ir_block.add_instruction(IrInstruction {
+                                result: value_id,
+                                ty: ptr_ty,
+                                kind: IrInstructionKind::BinOp {
+                                    op: IrBinOp::Add,
+                                    left: array_value,
+                                    right: index_value,
+                                },
+                            });
+                            
+                            return Ok(value_id);
+                        }
+                    }
+                }
+                
+                // Fall through to general case
+                Err(LowerError::Unsupported(
+                    "Can only take address of simple lvalues or array elements".to_string()
+                ))
+            }
+            
+            // Field access: &obj.field
+            atom_ast::Expr::FieldAccess { object, field, .. } => {
+                // First lower the object
+                let object_value = self.lower_expr(object, ir_block, func)?;
+                
+                // Get the object's type to find field index
+                let object_ty = self.get_value_type(object_value, ir_block, func)
+                    .ok_or_else(|| LowerError::Internal(
+                        "Cannot determine type for field access in reference".to_string()
+                    ))?;
+                
+                if let IrType::Struct(struct_name) = object_ty {
+                    if let Some(struct_def) = self.type_env.get_struct(&struct_name) {
+                        if let Some((field_index, field_def)) = struct_def.fields.iter().enumerate()
+                            .find(|(_, f)| f.name == field.name) 
+                        {
+                            // Get field type - convert from backend Type to IrType
+                            let field_ty = self.backend_type_to_ir(&field_def.ty)?;
+                            let ptr_ty = IrType::Pointer(Box::new(field_ty));
+                            
+                            let value_id = self.fresh_value_id();
+                            ir_block.add_instruction(IrInstruction {
+                                result: value_id,
+                                ty: ptr_ty,
+                                kind: IrInstructionKind::AddressOf {
+                                    location: IrMemoryLocation::StructField {
+                                        base: object_value,
+                                        field_index: field_index as u32,
+                                    },
+                                },
+                            });
+                            
+                            return Ok(value_id);
+                        }
+                    }
+                }
+                
+                Err(LowerError::Internal(
+                    "Cannot take address of non-struct field".to_string()
+                ))
+            }
+            
+            _ => Err(LowerError::Unsupported(
+                "Can only take address of variables, array elements, or struct fields".to_string()
+            ))
+        }
     }
 
     /// Lower a function call to IR.
@@ -3577,6 +3785,12 @@ impl Lower {
                     element: Box::new(elem_type),
                 })
             }
+            atom_ast::Type::Reference { inner, .. } => {
+                // Reference types (&T) are lowered to pointer types (Pointer(T))
+                // This allows pass-by-reference semantics
+                let inner_ty = self.lower_type(inner)?;
+                Ok(IrType::Pointer(Box::new(inner_ty)))
+            }
             _ => Err(LowerError::Unsupported(format!(
                 "Type conversion: {:?}",
                 ty
@@ -3663,6 +3877,11 @@ impl Lower {
                 // For generic instantiations, convert the base type
                 // TODO: Handle type arguments properly for full monomorphization
                 self.backend_type_to_ir(base)
+            }
+            Type::Reference(inner) => {
+                // References are represented as pointers in IR
+                let inner_type = self.backend_type_to_ir(inner)?;
+                Ok(IrType::Pointer(Box::new(inner_type)))
             }
             Type::Infer(_) | Type::Error => {
                 // Inference types should be resolved by now
@@ -4018,6 +4237,9 @@ impl Lower {
             Expr::Match { expr,  .. } => {
                 self.find_implicit_params_in_expr(expr, params);
                 // Don't scan match arm bodies - they have their own scope
+            }
+            Expr::Reference { expr, .. } => {
+                self.find_implicit_params_in_expr(expr, params);
             }
             _ => {}
         }

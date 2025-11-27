@@ -519,7 +519,7 @@ impl ToSExpr for Type {
                 write!(f, ")")
             }
             Type::Reference { inner, span } => {
-                write!(f, "(reference-type ")?;
+                write!(f, "(reference ")?;
                 inner.write_sexpr(f, 0)?;
                 write_span(f, *span)?;
                 write!(f, ")")

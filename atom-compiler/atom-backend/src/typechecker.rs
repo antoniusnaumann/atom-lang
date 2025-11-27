@@ -153,6 +153,14 @@ impl TypeChecker {
                 .name
                 .clone();
 
+            // Validate that the field type is not a reference type
+            if let atom_ast::Type::Reference { .. } = &*field.ty {
+                return Err(TypeError::Other(format!(
+                    "Reference types are not allowed in struct fields (field '{}' in struct '{}')",
+                    field_name, struct_def.name.name
+                )));
+            }
+
             let field_type = self.resolve_ast_type(&field.ty)?;
 
             fields.push(StructField {
@@ -299,12 +307,28 @@ impl TypeChecker {
                     param_name
                 )));
             };
-            self.symbols.add_variable(param_name, param_ty);
+            
+            // When adding to scope, unwrap reference types since variables hold values
+            let scope_ty = match &param_ty {
+                Type::Reference(inner) => (**inner).clone(),
+                _ => param_ty.clone(),
+            };
+            self.symbols.add_variable(param_name, scope_ty);
         }
 
-        // Set current return type
+        // Set current return type and validate it doesn't contain references
         let return_type = if let Some(ret_ty_ast) = &func_def.return_type {
-            Some(self.resolve_ast_type(ret_ty_ast)?)
+            let resolved = self.resolve_ast_type(ret_ty_ast)?;
+            
+            // Validate return type doesn't contain reference types
+            if self.contains_reference_type(&resolved) {
+                return Err(TypeError::Other(format!(
+                    "Reference types are not allowed in return types (function '{}')",
+                    func_def.name.name
+                )));
+            }
+            
+            Some(resolved)
         } else {
             None
         };
@@ -565,8 +589,14 @@ impl TypeChecker {
             }
 
             Expr::Reference { expr, .. } => {
-                // TODO: Implement proper reference type checking
-                // For now, a reference has the same type as the referenced expression
+                // Validate that & is only applied to lvalues
+                if !self.is_lvalue(expr) {
+                    return Err(TypeError::Other(
+                        "The & operator can only be applied to lvalues (variables, array elements, or struct fields)".to_string()
+                    ));
+                }
+                
+                // A reference has the same type as the referenced expression
                 // The reference semantics (pass-by-reference) are handled in lowering/codegen
                 self.check_expr(expr)
             }
@@ -905,6 +935,25 @@ impl TypeChecker {
                         for (i, arg) in args.iter().enumerate() {
                             let expected_param_ty = &sig.params[i].1;
                             
+                            // Validate reference parameter usage
+                            if let Type::Reference(_) = expected_param_ty {
+                                // Parameter expects a reference, ensure arg uses &
+                                if !matches!(arg, Expr::Reference { .. }) {
+                                    return Err(TypeError::Other(format!(
+                                        "Function '{}' parameter {} expects a reference. Use '&' at the call site",
+                                        func_name, i + 1
+                                    )));
+                                }
+                            } else {
+                                // Parameter expects a value, ensure arg doesn't use &
+                                if matches!(arg, Expr::Reference { .. }) {
+                                    return Err(TypeError::Other(format!(
+                                        "Function '{}' parameter {} does not expect a reference. Remove '&' from the argument",
+                                        func_name, i + 1
+                                    )));
+                                }
+                            }
+                            
                             // Check if this argument is a block with implicit parameters
                             let arg_ty = if let Expr::Block(block) = arg {
                                 self.check_block_expr_with_context(block, Some(expected_param_ty))?
@@ -992,6 +1041,25 @@ impl TypeChecker {
                 let mut arg_types = Vec::new();
                 for (i, arg) in args.iter().enumerate() {
                     let expected_param_ty = &func_type.params[i];
+                    
+                    // Validate reference parameter usage
+                    if let Type::Reference(_) = **expected_param_ty {
+                        // Parameter expects a reference, ensure arg uses &
+                        if !matches!(arg, Expr::Reference { .. }) {
+                            return Err(TypeError::Other(format!(
+                                "Function parameter {} expects a reference. Use '&' at the call site",
+                                i + 1
+                            )));
+                        }
+                    } else {
+                        // Parameter expects a value, ensure arg doesn't use &
+                        if matches!(arg, Expr::Reference { .. }) {
+                            return Err(TypeError::Other(format!(
+                                "Function parameter {} does not expect a reference. Remove '&' from the argument",
+                                i + 1
+                            )));
+                        }
+                    }
                     
                     // Check if this argument is a block with implicit parameters
                     let arg_ty = if let Expr::Block(block) = arg {
@@ -1155,9 +1223,12 @@ impl TypeChecker {
 
         // Try to find matching function
         if let Some(signatures) = self.functions.get(&method_name).cloned() {
-            let arg_types: Result<Vec<_>, _> =
-                all_args.iter().map(|arg| self.check_expr(arg)).collect();
-            let arg_types = arg_types?;
+            // Type check arguments
+            let mut arg_exprs_and_types = Vec::new();
+            for arg in &all_args {
+                let ty = self.check_expr(arg)?;
+                arg_exprs_and_types.push((arg, ty));
+            }
 
             for sig in &signatures {
                 // Count required (non-default) parameters
@@ -1166,16 +1237,48 @@ impl TypeChecker {
                     .count();
                 
                 // Check if arg count is valid (between required and total params)
-                if arg_types.len() >= required_params && arg_types.len() <= sig.params.len() {
-                    // Try to unify type parameters
+                if arg_exprs_and_types.len() >= required_params && arg_exprs_and_types.len() <= sig.params.len() {
+                    // Validate reference parameter usage and try to unify type parameters
                     let mut type_bindings = std::collections::HashMap::new();
                     let mut matches = true;
                     
-                    for (i, (_, param_ty, _)) in sig.params.iter().take(arg_types.len()).enumerate() {
-                        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && method_name == "unwrap" {
-                            eprintln!("DEBUG unify param {}: actual={:?}, param={:?}", i, arg_types[i], param_ty);
+                    for (i, (_, param_ty, _)) in sig.params.iter().take(arg_exprs_and_types.len()).enumerate() {
+                        let (arg_expr, arg_ty) = &arg_exprs_and_types[i];
+                        
+                        // Validate reference parameter usage
+                        if let Type::Reference(_) = param_ty {
+                            // Parameter expects a reference, ensure arg uses &
+                            if !matches!(arg_expr, Expr::Reference { .. }) {
+                                // For method calls, the first parameter is the receiver
+                                let param_desc = if i == 0 {
+                                    "receiver".to_string()
+                                } else {
+                                    format!("parameter {}", i)
+                                };
+                                return Err(TypeError::Other(format!(
+                                    "Method '{}' {} expects a reference. Use '&' at the call site",
+                                    method_name, param_desc
+                                )));
+                            }
+                        } else {
+                            // Parameter expects a value, ensure arg doesn't use &
+                            if matches!(arg_expr, Expr::Reference { .. }) {
+                                let param_desc = if i == 0 {
+                                    "receiver".to_string()
+                                } else {
+                                    format!("parameter {}", i)
+                                };
+                                return Err(TypeError::Other(format!(
+                                    "Method '{}' {} does not expect a reference. Remove '&' from the argument",
+                                    method_name, param_desc
+                                )));
+                            }
                         }
-                        if !self.try_unify_type(&arg_types[i], param_ty, &mut type_bindings) {
+                        
+                        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && method_name == "unwrap" {
+                            eprintln!("DEBUG unify param {}: actual={:?}, param={:?}", i, arg_ty, param_ty);
+                        }
+                        if !self.try_unify_type(arg_ty, param_ty, &mut type_bindings) {
                             matches = false;
                             break;
                         }
@@ -2220,6 +2323,67 @@ impl TypeChecker {
     }
 
     // ========================================================================
+    // Helper Methods
+    // ========================================================================
+
+    /// Check if a type contains any reference types (recursively)
+    fn contains_reference_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Reference(_) => true,
+            Type::Tuple(tuple_ty) => {
+                tuple_ty.fields.iter().any(|f| self.contains_reference_type(&f.ty))
+                    || tuple_ty.variadic.as_ref().map_or(false, |(t, _)| self.contains_reference_type(t))
+            }
+            Type::Struct(struct_ty) => {
+                struct_ty.fields.iter().any(|f| self.contains_reference_type(&f.ty))
+            }
+            Type::Function(func_ty) => {
+                func_ty.params.iter().any(|p| self.contains_reference_type(p))
+                    || func_ty.return_type.as_ref().map_or(false, |r| self.contains_reference_type(r))
+            }
+            Type::Generic { base, args } => {
+                self.contains_reference_type(base)
+                    || args.iter().any(|arg| {
+                        if let ConstArg::Type(t) = arg {
+                            self.contains_reference_type(t)
+                        } else {
+                            false
+                        }
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if an expression is an lvalue (can be referenced with &)
+    /// Lvalues are: variables, array/tuple elements, struct fields
+    fn is_lvalue(&self, expr: &Expr) -> bool {
+        match expr {
+            // Variables are lvalues
+            Expr::Ident(_) => true,
+            
+            // Array/tuple indexing is an lvalue: arr(i), tuple(0)
+            Expr::Call { func, .. } => {
+                // Check if func is a variable or field access (not a function call)
+                // This handles cases like: arr(i), obj.field(i)
+                match func.as_ref() {
+                    Expr::Ident(_) | Expr::FieldAccess { .. } => true,
+                    _ => false,
+                }
+            }
+            
+            // Field access is an lvalue: obj.field
+            Expr::FieldAccess { .. } => true,
+            
+            // Method calls that return lvalues (for chaining)
+            Expr::MethodCall { .. } => false,
+            
+            // All other expressions are not lvalues
+            _ => false,
+        }
+    }
+
+    // ========================================================================
     // Type Resolution
     // ========================================================================
 
@@ -2373,10 +2537,9 @@ impl TypeChecker {
             }
 
             atom_ast::Type::Reference { inner, .. } => {
-                // TODO: Implement proper reference type support
-                // For now, treat reference types the same as their inner type
-                // The reference semantics (pass-by-reference) are handled in lowering/codegen
-                self.resolve_ast_type(inner)
+                // Parse the reference type properly
+                let inner_type = self.resolve_ast_type(inner)?;
+                Ok(Type::Reference(Box::new(inner_type)))
             }
         }
     }
