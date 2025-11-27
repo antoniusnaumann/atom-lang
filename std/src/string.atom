@@ -279,17 +279,6 @@
     s_len := len(s)
     from_len := len(from)
 
-    match(request) {
-        Loading {}
-        Error(e) {}
-    } -> Success(paylod)
-
-    do_something(payload)
-
-    result.map() -> ok_value
-    do_something(ok_value)
-    
-    
     match(from_len == 0 || from_len > s_len) {
         True { s }
         False {
