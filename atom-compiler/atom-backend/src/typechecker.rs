@@ -1,3 +1,6 @@
+#![allow(unused)]
+#![allow(clippy::all)]
+
 //! Type checker for the Atom language compiler backend.
 //!
 //! This module performs type checking and type inference on Atom ASTs,
@@ -1739,7 +1742,7 @@ impl TypeChecker {
                 // (e.g., inside a loop body where $0 is the loop variable)
                 // Match arm bodies also have their own scope
             }
-            Expr::Closure { body, .. } => {
+            Expr::Closure {  .. } => {
                 // Don't traverse into nested closures - they have their own scope
             }
             _ => {}

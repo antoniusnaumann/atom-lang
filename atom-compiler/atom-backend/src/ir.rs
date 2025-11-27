@@ -1,3 +1,6 @@
+#![allow(unused)]
+#![allow(clippy::all)]
+
 //! Intermediate Representation (IR) for the Atom compiler.
 //!
 //! This module defines a simple, SSA-like IR that sits between the AST and

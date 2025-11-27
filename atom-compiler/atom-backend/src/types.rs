@@ -1,3 +1,6 @@
+#![allow(unused)]
+#![allow(clippy::all)]
+
 //! Type system for the Atom language compiler backend.
 //!
 //! This module provides the type representation and type checking infrastructure for Atom,
@@ -277,8 +280,70 @@ impl TypeEnvironment {
             visibility: Visibility::Public,
         });
 
-        // Option and Result are now defined in the stdlib (result.atom)
-        // so we don't need to add them here
+        // Add String struct: String(bytes UInt(8)*)
+        env.add_struct(StructType {
+            name: "String".to_string(),
+            params: vec![],
+            fields: vec![
+                StructField {
+                    name: "bytes".to_string(),
+                    ty: Box::new(Type::Tuple(TupleType {
+                        fields: vec![],
+                        variadic: Some((Box::new(Type::UInt(Some(8))), false)),
+                    })),
+                },
+            ],
+            visibility: Visibility::Public,
+        });
+
+        // Add Option enum: Option(t; Some(t), None)
+        env.add_enum(EnumType {
+            name: "Option".to_string(),
+            params: vec![TypeParameter {
+                name: "t".to_string(),
+                constraint: Some(Box::new(Type::TypeMeta)),
+                default: None,
+            }],
+            cases: vec![
+                EnumCase {
+                    name: "Some".to_string(),
+                    fields: vec![Box::new(Type::TypeParam("t".to_string()))],
+                },
+                EnumCase {
+                    name: "None".to_string(),
+                    fields: vec![],
+                },
+            ],
+            visibility: Visibility::Public,
+        });
+
+        // Add Result enum: Result(t, e; Ok(t), Err(e))
+        env.add_enum(EnumType {
+            name: "Result".to_string(),
+            params: vec![
+                TypeParameter {
+                    name: "t".to_string(),
+                    constraint: Some(Box::new(Type::TypeMeta)),
+                    default: None,
+                },
+                TypeParameter {
+                    name: "e".to_string(),
+                    constraint: Some(Box::new(Type::TypeMeta)),
+                    default: None,
+                },
+            ],
+            cases: vec![
+                EnumCase {
+                    name: "Ok".to_string(),
+                    fields: vec![Box::new(Type::TypeParam("t".to_string()))],
+                },
+                EnumCase {
+                    name: "Err".to_string(),
+                    fields: vec![Box::new(Type::TypeParam("e".to_string()))],
+                },
+            ],
+            visibility: Visibility::Public,
+        });
 
         env
     }
@@ -931,7 +996,14 @@ impl Type {
     fn supports_arithmetic(&self) -> bool {
         match self {
             Type::Int(_) | Type::UInt(_) | Type::Float(_) | Type::Void => true,
-            Type::Struct(s) => s.fields.iter().all(|f| f.ty.supports_arithmetic()),
+            Type::Struct(s) => {
+                // String struct does not support arithmetic operators
+                if s.name == "String" {
+                    false
+                } else {
+                    s.fields.iter().all(|f| f.ty.supports_arithmetic())
+                }
+            }
             Type::Tuple(t) => t.fields.iter().all(|f| f.ty.supports_arithmetic()),
             Type::TypeParam(_) => true, // Type params are assumed to support ops (constraint checking TODO)
             Type::Generic { base, .. } => base.supports_arithmetic(),

@@ -1,3 +1,6 @@
+#![allow(unused)]
+#![allow(clippy::all)]
+
 //! Cranelift code generation backend for the Atom compiler.
 //!
 //! This module provides a code generator that translates Atom IR to native machine code
@@ -228,10 +231,8 @@ impl CodeGenerator {
         for func in &ir.functions {
             let mangled_name = self.mangle_function_name(func);
             let func_id = func_ids[&mangled_name];
-            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                if debug == "1" {
-                                    }
-            }
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                                }
             
             // Try to compile the function, but make errors non-fatal
             if let Err(e) = self.compile_function(&mut module, func, func_id, &func_ids) {
@@ -264,7 +265,7 @@ impl CodeGenerator {
     
     /// Collect all external C function references from a function
     fn collect_external_functions(
-        &self,
+        &mut self,
         func: &IrFunction,
         external_funcs: &mut HashMap<String, Signature>,
     ) {
@@ -432,7 +433,7 @@ impl CodeGenerator {
     }
 
     /// Generate a mangled name for a function to support overloading
-    fn mangle_function_name(&self, func: &IrFunction) -> String {
+    fn mangle_function_name(&mut self, func: &IrFunction) -> String {
         // For main function, don't mangle
         if func.name == "main" {
             return func.name.clone();
@@ -465,7 +466,7 @@ impl CodeGenerator {
     }
 
     /// Convert a type to a string for name mangling
-    fn type_to_mangle_string(&self, ty: &IrType) -> String {
+    fn type_to_mangle_string(&mut self, ty: &IrType) -> String {
         match ty {
             IrType::Bool => "bool".to_string(),
             IrType::Int(bits) => format!("i{}", bits),
@@ -501,7 +502,7 @@ impl CodeGenerator {
 
     /// Declare a function in the module
     fn declare_function(
-        &self,
+        &mut self,
         module: &mut ObjectModule,
         func: &IrFunction,
     ) -> CodegenResult<FuncId> {
@@ -566,32 +567,24 @@ impl CodeGenerator {
                             }
         }
         if let Some(ret_ty) = &func.return_type {
-            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                if debug == "1" {
-                                    }
-            }
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                                }
             let cl_type = self.translate_type(ret_ty)?;
-            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                if debug == "1" {
-                                    }
-            }
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                                }
             ctx.func.signature.returns.push(AbiParam::new(cl_type));
-            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                if debug == "1" {
-                                    }
-            }
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                                }
         }
 
         // Build the function body
         {
             // Debug: Print IR blocks for find function before codegen
-            if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                if debug == "1" && func.name == "find" {
-                                        for (idx, block) in func.blocks.iter().enumerate() {
-                                                for (inst_idx, inst) in block.instructions.iter().enumerate() {
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") && func.name == "find" {
+                                        for (_idx, block) in func.blocks.iter().enumerate() {
+                                                for (_inst_idx, _inst) in block.instructions.iter().enumerate() {
                                                     }
                                             }
-                }
             }
 
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fn_builder_ctx);
@@ -630,8 +623,7 @@ impl CodeGenerator {
             };
             
             // If we have tail calls, add parameters to the loop header
-            if has_tail_calls && loop_header.is_some() {
-                let loop_hdr = loop_header.unwrap();
+            if let (true, Some(loop_hdr)) = (has_tail_calls, loop_header) {
                 for (_, param_ty) in &func.params {
                     let cl_type = self.translate_type(param_ty)?;
                     builder.append_block_param(loop_hdr, cl_type);
@@ -644,7 +636,7 @@ impl CodeGenerator {
                 
                 // Check if this block has phi nodes and needs block parameters
                 for inst in &block.instructions {
-                    if let IrInstructionKind::Phi { incoming } = &inst.kind {
+                    if let IrInstructionKind::Phi { incoming: _ } = &inst.kind {
                         // This block needs a parameter for the phi node
                         let param_type = self.translate_type(&inst.ty)?;
                         builder.append_block_param(cl_block, param_type);
@@ -685,8 +677,7 @@ impl CodeGenerator {
             }
             
             // If we have a loop header, immediately jump to it from the entry block
-            if loop_header.is_some() {
-                let loop_hdr = loop_header.unwrap();
+            if let Some(loop_hdr) = loop_header {
                 if has_tail_calls {
                     // Jump with parameters (for tail call optimization)
                     builder.ins().jump(loop_hdr, &param_values);
@@ -995,10 +986,8 @@ impl CodeGenerator {
                             });
                             if !types_match {
                                 need_better_match = true;
-                                if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                                    if debug == "1" {
-                                                                                                                                                            }
-                                }
+            if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                                    }
                             }
                         }
                     }
@@ -1013,10 +1002,8 @@ impl CodeGenerator {
                                         param.value_type == *arg_ty
                                     });
                                     if types_match {
-                                        if let Some(debug) = std::env::var("ATOM_DEBUG").ok() {
-                                            if debug == "1" {
-                                                                                            }
-                                        }
+        if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
+                            }
                                         func_id = Some(*candidate_id);
                                         break;
                                     }

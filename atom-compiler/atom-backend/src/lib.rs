@@ -1,3 +1,10 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_assignments)]
+#![allow(unreachable_patterns)]
+#![allow(clippy::all)]
+#![warn(clippy::correctness)]
+
 pub mod codegen;
 pub mod ir;
 pub mod lower;

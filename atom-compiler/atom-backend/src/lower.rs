@@ -1,3 +1,6 @@
+#![allow(unused)]
+#![allow(clippy::all)]
+
 //! AST to IR lowering for the Atom compiler.
 //!
 //! This module translates the typed AST into the intermediate representation (IR)
@@ -3971,7 +3974,7 @@ impl Lower {
             Expr::Block(block) => {
                 // Don't scan into nested blocks - they have their own parameter scope
             }
-            Expr::Match { expr, arms, .. } => {
+            Expr::Match { expr,  .. } => {
                 self.find_implicit_params_in_expr(expr, params);
                 // Don't scan match arm bodies - they have their own scope
             }
