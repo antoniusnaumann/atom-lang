@@ -771,6 +771,15 @@ impl ToSExpr for Pattern {
                 write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
+            Pattern::Alternative(patterns, span) => {
+                writeln!(f, "(pattern-alternative")?;
+                for pattern in patterns {
+                    pattern.write_sexpr(f, indent + 1)?;
+                }
+                write_indent(f, indent)?;
+                write_span(f, *span)?;
+                writeln!(f, ")")?;
+            }
             Pattern::Expr(expr) => {
                 writeln!(f, "(pattern-expr")?;
                 expr.write_sexpr(f, indent + 1)?;

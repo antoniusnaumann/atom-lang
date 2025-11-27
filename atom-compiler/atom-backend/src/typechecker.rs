@@ -2102,6 +2102,14 @@ impl TypeChecker {
                 )))
             }
 
+            Pattern::Alternative(patterns, _) => {
+                // All alternatives must match the expected type
+                for pattern in patterns {
+                    self.check_pattern(pattern, expected_ty)?;
+                }
+                Ok(())
+            }
+
             Pattern::Expr(_expr) => {
                 // Expression patterns (guards) must evaluate to Bool
                 // For now, we just accept them
@@ -2160,6 +2168,41 @@ impl TypeChecker {
                             self.add_pattern_bindings(pattern, &field_ty)?;
                         }
                         break;
+                    }
+                }
+                Ok(())
+            }
+
+            Pattern::Alternative(patterns, _) => {
+                // Alternative patterns cannot bind variables
+                // Ensure all alternatives produce the same bindings
+                // For simplicity, we check that none of them bind variables
+                for pattern in patterns {
+                    // We only allow alternatives that don't introduce bindings
+                    // (e.g., enum cases, literals, wildcards)
+                    match pattern {
+                        Pattern::Wildcard(_) | Pattern::Literal(_, _) => {}
+                        Pattern::Ident(ident) => {
+                            // Check if this is an enum case (zero-field constructor)
+                            if self.type_env.find_enum_case(&ident.name).is_none() {
+                                return Err(TypeError::Other(
+                                    "Alternative patterns cannot bind variables".to_string()
+                                ));
+                            }
+                        }
+                        Pattern::Enum { fields, .. } => {
+                            // Recursively check nested patterns
+                            self.add_pattern_bindings(pattern, ty)?;
+                        }
+                        Pattern::Alternative(_, _) => {
+                            // Nested alternatives
+                            self.add_pattern_bindings(pattern, ty)?;
+                        }
+                        Pattern::Tuple(_, _) | Pattern::Expr(_) => {
+                            return Err(TypeError::Other(
+                                "Alternative patterns cannot contain bindings".to_string()
+                            ));
+                        }
                     }
                 }
                 Ok(())

@@ -282,6 +282,8 @@ pub enum Pattern {
         fields: Vec<Pattern>,
         span: Span,
     },
+    /// Alternative patterns: `pattern1 | pattern2 | pattern3`
+    Alternative(Vec<Pattern>, Span),
     /// Expression (guard): `x > 5`, `a && b`
     /// Used in guard-style matches like: match(True) { x > 5 { ... } }
     Expr(Box<Expr>),

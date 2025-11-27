@@ -3059,6 +3059,55 @@ impl Lower {
         Ok(value_id)
     }
 
+    /// Extract tag values from a pattern, handling alternative patterns.
+    /// Returns a vector of tag values - most patterns return a single value,
+    /// but alternative patterns return multiple values.
+    fn extract_tag_values(&self, pattern: &atom_ast::Pattern, fallback_index: usize) -> LowerResult<Vec<u32>> {
+        match pattern {
+            atom_ast::Pattern::Literal(lit, _) => {
+                // For literal patterns, use the actual literal value
+                let tag = match lit {
+                    atom_ast::Literal::Integer(val) => *val as u32,
+                    atom_ast::Literal::Bool(b) => if *b { 1 } else { 0 },
+                    atom_ast::Literal::Rune(r) => *r as u32,
+                    _ => fallback_index as u32, // Fallback for other literal types
+                };
+                Ok(vec![tag])
+            }
+            atom_ast::Pattern::Enum { name, .. } => {
+                // For enum patterns, look up the actual tag value from the enum definition
+                if let Some((_, _, idx)) = self.type_env.find_enum_case(&name.name) {
+                    Ok(vec![idx as u32])
+                } else {
+                    // Fallback if not found
+                    Ok(vec![fallback_index as u32])
+                }
+            }
+            atom_ast::Pattern::Ident(name) => {
+                // For ident patterns (enum cases without fields), look up the tag value
+                if let Some((_, _, idx)) = self.type_env.find_enum_case(&name.name) {
+                    Ok(vec![idx as u32])
+                } else {
+                    // Not an enum case, use fallback
+                    Ok(vec![fallback_index as u32])
+                }
+            }
+            atom_ast::Pattern::Alternative(patterns, _) => {
+                // For alternative patterns, collect all tag values from all alternatives
+                let mut tags = Vec::new();
+                for pattern in patterns {
+                    let mut pattern_tags = self.extract_tag_values(pattern, fallback_index)?;
+                    tags.append(&mut pattern_tags);
+                }
+                Ok(tags)
+            }
+            _ => {
+                // For non-enum/non-literal patterns, use fallback index
+                Ok(vec![fallback_index as u32])
+            }
+        }
+    }
+
     /// Lower a match expression to IR (switch statement).
     fn lower_match(
         &mut self,
@@ -3142,28 +3191,9 @@ impl Lower {
             case_block_ids.push(arm_block_id);
             let mut arm_block = IrBlock::new(arm_block_id);
 
-            // Determine the tag value for this pattern
-            let tag_value = match &arm.pattern {
-                atom_ast::Pattern::Literal(lit, _) => {
-                    // For literal patterns, use the actual literal value
-                    match lit {
-                        atom_ast::Literal::Integer(val) => *val as u32,
-                        atom_ast::Literal::Bool(b) => if *b { 1 } else { 0 },
-                        atom_ast::Literal::Rune(r) => *r as u32,
-                        _ => i as u32, // Fallback for other literal types
-                    }
-                }
-                atom_ast::Pattern::Enum { name, .. } => {
-                    // For enum patterns, look up the actual tag value from the enum definition
-                    if let Some((_, _, idx)) = self.type_env.find_enum_case(&name.name) {
-                        idx as u32
-                    } else {
-                        // Fallback if not found
-                        i as u32
-                    }
-                }
-                _ => i as u32, // For non-enum/non-literal patterns, use arm index
-            };
+            // Determine the tag values for this pattern
+            // Alternative patterns can produce multiple tag values
+            let tag_values = self.extract_tag_values(&arm.pattern, i)?;
 
             // Handle pattern bindings
             // For enum patterns like Some(inner), bind the payload to the variable
@@ -3271,7 +3301,7 @@ impl Lower {
             // nested merge block (if the body contained match expressions). We need to use
             // arm_block.label (the actual current label) for the phi node, not arm_block_id.
             let actual_predecessor_id = arm_block.label;
-            case_blocks.push((tag_value, arm_block_id, arm_block, actual_predecessor_id, is_diverging));
+            case_blocks.push((tag_values, arm_block_id, arm_block, actual_predecessor_id, is_diverging));
         }
 
         // Create switch terminator on current block
@@ -3283,19 +3313,24 @@ impl Lower {
         let (cases, default_block_id) = if last_is_wildcard {
             // Last pattern is wildcard: use it as default, all others as cases
             let default_block_id = case_blocks.last().unwrap().1;
-            let cases: Vec<(u32, BlockId)> = case_blocks
-                .iter()
-                .take(case_blocks.len() - 1)
-                .map(|(tag, block_id, _, _, _)| (*tag, *block_id))
-                .collect();
+            let mut cases: Vec<(u32, BlockId)> = Vec::new();
+            for (tags, block_id, _, _, _) in case_blocks.iter().take(case_blocks.len() - 1) {
+                // Expand alternative patterns: each tag value becomes a separate case
+                for tag in tags {
+                    cases.push((*tag, *block_id));
+                }
+            }
             (cases, default_block_id)
         } else {
             // No wildcard: all patterns are explicit cases, use first as default (will be overridden by cases)
             let default_block_id = case_blocks.first().unwrap().1;
-            let cases: Vec<(u32, BlockId)> = case_blocks
-                .iter()
-                .map(|(tag, block_id, _, _, _)| (*tag, *block_id))
-                .collect();
+            let mut cases: Vec<(u32, BlockId)> = Vec::new();
+            for (tags, block_id, _, _, _) in case_blocks.iter() {
+                // Expand alternative patterns: each tag value becomes a separate case
+                for tag in tags {
+                    cases.push((*tag, *block_id));
+                }
+            }
             (cases, default_block_id)
         };
 

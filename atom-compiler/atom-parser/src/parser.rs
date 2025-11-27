@@ -837,6 +837,26 @@ impl Parser {
     fn parse_pattern(&mut self) -> ParseResult<Pattern> {
         let start = self.current_span();
         
+        // Parse the first (base) pattern
+        let base_pattern = self.parse_base_pattern()?;
+        
+        // Check for alternative patterns (|)
+        if self.check(&TokenKind::Or) {
+            let mut alternatives = vec![base_pattern];
+            
+            while self.match_token(&TokenKind::Or) {
+                alternatives.push(self.parse_base_pattern()?);
+            }
+            
+            Ok(Pattern::Alternative(alternatives, start.merge(self.previous_span())))
+        } else {
+            Ok(base_pattern)
+        }
+    }
+
+    fn parse_base_pattern(&mut self) -> ParseResult<Pattern> {
+        let start = self.current_span();
+        
         // Wildcard: _
         if self.check(&TokenKind::ValueIdent) {
             let is_wildcard = self.peek().text == "_";
@@ -3071,6 +3091,68 @@ fib(nth Int) Int {
                 }
             },
             _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_alternatives() {
+        // Test pattern alternatives with | operator
+        let code = "match(token) { LBrace | RBrace | LParen | RParen { True } _ { False } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                
+                // First arm should have alternative pattern with 4 patterns
+                match &arms[0].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 4);
+                        // Check that all patterns are enum patterns
+                        for pat in patterns {
+                            assert!(matches!(pat, Pattern::Enum { .. }));
+                        }
+                    }
+                    _ => panic!("Expected alternative pattern, got {:?}", arms[0].pattern),
+                }
+                
+                // Second arm should be wildcard
+                assert!(matches!(arms[1].pattern, Pattern::Wildcard(_)));
+            }
+            _ => panic!("Expected match expression, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_pattern_alternatives_literals() {
+        // Test pattern alternatives with literal values
+        let code = "match(x) { 1 | 2 | 3 { \"small\" } 10 | 20 | 30 { \"big\" } _ { \"other\" } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 3);
+                
+                // First arm: 1 | 2 | 3
+                match &arms[0].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 3);
+                        for pat in patterns {
+                            assert!(matches!(pat, Pattern::Literal(Literal::Integer(_), _)));
+                        }
+                    }
+                    _ => panic!("Expected alternative pattern"),
+                }
+                
+                // Second arm: 10 | 20 | 30
+                match &arms[1].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 3);
+                    }
+                    _ => panic!("Expected alternative pattern"),
+                }
+            }
+            _ => panic!("Expected match expression"),
         }
     }
 }

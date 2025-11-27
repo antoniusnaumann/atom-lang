@@ -1411,6 +1411,13 @@ impl FromSExpr for Pattern {
                     span,
                 })
             }
+            "pattern-alternative" => {
+                let mut patterns = Vec::new();
+                for pattern_sexpr in &filtered[1..] {
+                    patterns.push(Pattern::from_sexpr(pattern_sexpr)?);
+                }
+                Ok(Pattern::Alternative(patterns, span))
+            }
             "pattern-expr" => Ok(Pattern::Expr(Box::new(Expr::from_sexpr(filtered[1])?))),
             _ => Err(ParseError {
                 message: format!("Unknown pattern: {}", head),
