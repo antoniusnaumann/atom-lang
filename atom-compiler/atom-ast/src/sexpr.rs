@@ -610,13 +610,21 @@ impl ToSExpr for Expr {
             }
             Expr::Tuple(exprs, span) => {
                 write_indent(f, indent)?;
-                writeln!(f, "(tuple")?;
-                for expr in exprs {
-                    expr.write_sexpr(f, indent + 1)?;
+                if exprs.is_empty() && indent == 0 {
+                    // Empty tuple in inline mode - keep completely inline
+                    write!(f, "(tuple")?;
+                    write_span(f, *span)?;
+                    write!(f, ")")?;
+                } else {
+                    // Non-empty tuple or indented mode - use multi-line format
+                    writeln!(f, "(tuple")?;
+                    for expr in exprs {
+                        expr.write_sexpr(f, indent + 1)?;
+                    }
+                    write_indent(f, indent)?;
+                    write_span(f, *span)?;
+                    writeln!(f, ")")?;
                 }
-                write_indent(f, indent)?;
-                write_span(f, *span)?;
-                writeln!(f, ")")?;
             }
             Expr::StructInit { ty, fields, span } => {
                 write_indent(f, indent)?;

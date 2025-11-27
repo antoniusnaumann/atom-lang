@@ -1571,10 +1571,20 @@ impl Parser {
             if self.check(&TokenKind::LBrace) || self.check(&TokenKind::Arrow) {
                 // Parameterless closure: () { body } or () -> Type { body }
                 return self.parse_closure_body(Vec::new(), start);
-            } else {
-                // Empty tuple
-                return Ok(Expr::Tuple(Vec::new(), start.merge(self.previous_span())));
+            } else if self.check(&TokenKind::TypeIdent) {
+                // Check if it's () Type { body } pattern
+                let checkpoint = self.pos;
+                self.advance(); // Skip the type identifier
+                if self.check(&TokenKind::LBrace) {
+                    // It's a closure with return type!
+                    self.pos = checkpoint; // Rewind to parse the type properly
+                    return self.parse_closure_body(Vec::new(), start);
+                }
+                // Not a closure, rewind
+                self.pos = checkpoint;
             }
+            // Empty tuple
+            return Ok(Expr::Tuple(Vec::new(), start.merge(self.previous_span())));
         }
         
         // Try to parse as closure parameters first
@@ -1585,6 +1595,17 @@ impl Parser {
             if self.check(&TokenKind::LBrace) || self.check(&TokenKind::Arrow) {
                 // It's a closure!
                 return self.parse_closure_body(params, start);
+            } else if self.check(&TokenKind::TypeIdent) {
+                // Check if it's (params) Type { body } pattern
+                let checkpoint2 = self.pos;
+                self.advance(); // Skip the type identifier
+                if self.check(&TokenKind::LBrace) {
+                    // It's a closure with return type!
+                    self.pos = checkpoint2; // Rewind to parse the type properly
+                    return self.parse_closure_body(params, start);
+                }
+                // Not a closure, rewind
+                self.pos = checkpoint2;
             }
         }
         
@@ -1629,8 +1650,11 @@ impl Parser {
     }
 
     fn parse_closure_body(&mut self, params: Vec<Param>, start: Span) -> ParseResult<Expr> {
-        // Parse optional return type
+        // Parse optional return type (with or without arrow)
         let return_type = if self.match_token(&TokenKind::Arrow) {
+            Some(Box::new(self.parse_type()?))
+        } else if self.check(&TokenKind::TypeIdent) {
+            // Return type without arrow: (params) Type { body }
             Some(Box::new(self.parse_type()?))
         } else {
             None
