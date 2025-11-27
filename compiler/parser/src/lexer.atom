@@ -1,0 +1,86 @@
+LexerError (
+    msg String
+    span Span
+)
+
+Lexer (
+    source String
+    errors LexerError*
+)
+
+// TODO: implement refs 
+lex(&self Lexer) Token* {
+    index := 0
+    runes := self.source.runes()
+        
+    loop(index > runes.len()) {
+        ch := runes(index)
+        index += 1
+        token := match(ch) {
+            '+' {
+                match(runes(index)) {
+                    '=' {
+                        index += 1
+                        PlusAssign
+                    }
+                    '+' {
+                        index += 1
+                        match(runes(index)) {
+                            '=' {
+                                index += 1
+                                PlusPlusAssign
+                            }
+                            _ { PlusPlus }
+                        }
+                    }
+                    _ { Plus }
+                }
+            }
+            '-' {
+                match(runes(index)) {
+                    '=' {
+                        index += 1
+                        MinusAssign
+                    }
+                    _ { Minus }
+                }
+            }
+            '*' {
+                match(runes(index)) {
+                    '=' {
+                        index += 1
+                        StarAssign
+                    }
+                    _ { Star }
+                }
+            }
+            '/' {
+                match(runes(index)) {
+                    '=' {
+                        index += 1
+                        SlashAssign
+                    }
+                    _ { Slash }
+                }
+            }
+            '%' {
+                match(runes(index)) {
+                    '=' {
+                        index += 1
+                        PercentAssign
+                    }
+                    _ { Percent }
+                }
+            }
+            '=' {
+                match(runes(index)) {
+                    '=' {
+                        index += 1
+                        Equal
+                    }
+                    _ { Assign }
+                }
+            }
+        }
+    }
+}

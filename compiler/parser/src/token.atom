@@ -1,0 +1,76 @@
+Token (
+    kind TokenKind
+    span Span
+)
+
+TokenKind (
+    // identifier
+    TypeIdent(String)
+    ValueIdent(String)
+    DollarIdent(UInt)
+
+    // literals
+    IntLit(Int(128)) // TODO: this would not work with unsigned integers larger then 127bit
+    FloatLit(Float(64)) 
+    StringLit(String)
+    RuneLit(Rune)
+
+    // operators
+    Plus       // +
+    Minus      // -
+    Star       // *
+    Slash      // /
+    Percent    // %
+    Assign     // =
+    Lt         // <
+    Gt         // >
+    And        // &
+    Or         // |
+    Not        // !
+    Question   // ?
+    Tilde      // ~
+    Dot        // .
+    Colon      // :
+    Hash       // #
+
+    PlusPlus   // ++
+    PlusAssign // +=
+    MinusAssign// -=
+    StarAssign // *=
+    SlashAssign// /=
+    PercentAssign// %=
+    Equal      // ==
+    NotEq      // !=
+    LtEq       // <=
+    GtEq       // >=
+    AndAnd     // &&
+    OrOr       // ||
+    LShift     // <<
+    RShift     // >>
+    ColonEq    // :=
+    ColonColon // ::
+    Arrow      // ->
+    DotDot     // ..
+    PlusPlusEq // ++=
+
+    // delimiters
+    LParen     // (
+    RParen     // )
+    LBrace     // {
+    RBrace     // }
+    Comma      // ,
+    Semicolon  // ;
+
+    // special
+    Autosemi   // in suitable positions, /n interpreted as , in struct and enum declarations and as ; in function bodies
+    EOF
+)
+
+is_continuation(token Token) Bool {
+    match(token) {
+        Plus | Minus | Star | Slash | Percent
+        | Eq | Lt | Gt | And | Or
+        | Dot | Comma | RParen | RBrace { True }
+        _ { False }
+    }
+}
