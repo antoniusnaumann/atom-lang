@@ -1040,6 +1040,15 @@ impl Parser {
     fn parse_type(&mut self) -> ParseResult<Type> {
         let start = self.current_span();
         
+        // Check for reference type: &T
+        if self.match_token(&TokenKind::And) {
+            let inner = Box::new(self.parse_type()?);
+            return Ok(Type::Reference {
+                inner,
+                span: start.merge(self.previous_span()),
+            });
+        }
+        
         // Base type
         let mut ty = if self.match_token(&TokenKind::LParen) {
             // Tuple type or function type
@@ -1342,6 +1351,13 @@ impl Parser {
 
     fn parse_unary_expression(&mut self) -> ParseResult<Expr> {
         let start = self.current_span();
+        
+        // Check for reference operator: &expr
+        if self.match_token(&TokenKind::And) {
+            let expr = Box::new(self.parse_unary_expression()?);
+            let span = start.merge(expr.span());
+            return Ok(Expr::Reference { expr, span });
+        }
         
         // Check for unary operators
         let op = if self.match_token(&TokenKind::Minus) {

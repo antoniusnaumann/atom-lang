@@ -563,6 +563,13 @@ impl TypeChecker {
                 // Full comptime evaluation would happen in a later stage
                 self.check_expr(expr)
             }
+
+            Expr::Reference { expr, .. } => {
+                // TODO: Implement proper reference type checking
+                // For now, a reference has the same type as the referenced expression
+                // The reference semantics (pass-by-reference) are handled in lowering/codegen
+                self.check_expr(expr)
+            }
         }
     }
 
@@ -2363,6 +2370,13 @@ impl TypeChecker {
                     params: param_types,
                     return_type: ret_ty,
                 }))
+            }
+
+            atom_ast::Type::Reference { inner, .. } => {
+                // TODO: Implement proper reference type support
+                // For now, treat reference types the same as their inner type
+                // The reference semantics (pass-by-reference) are handled in lowering/codegen
+                self.resolve_ast_type(inner)
             }
         }
     }

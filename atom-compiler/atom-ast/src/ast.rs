@@ -178,6 +178,11 @@ pub enum Type {
         return_type: Option<Box<Type>>,
         span: Span,
     },
+    /// Reference type: `&T` (only valid for function parameters)
+    Reference {
+        inner: Box<Type>,
+        span: Span,
+    },
 }
 
 /// Expression
@@ -244,6 +249,11 @@ pub enum Expr {
     },
     /// Comptime expression: `#expr`
     Comptime {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    /// Reference expression: `&expr`
+    Reference {
         expr: Box<Expr>,
         span: Span,
     },
@@ -359,6 +369,7 @@ impl Expr {
             Expr::Block(block) => block.span,
             Expr::Match { span, .. } => *span,
             Expr::Comptime { span, .. } => *span,
+            Expr::Reference { span, .. } => *span,
         }
     }
 }

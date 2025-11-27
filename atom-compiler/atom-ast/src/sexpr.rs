@@ -518,6 +518,12 @@ impl ToSExpr for Type {
                 write_span(f, *span)?;
                 write!(f, ")")
             }
+            Type::Reference { inner, span } => {
+                write!(f, "(reference-type ")?;
+                inner.write_sexpr(f, 0)?;
+                write_span(f, *span)?;
+                write!(f, ")")
+            }
         }
     }
 }
@@ -676,6 +682,14 @@ impl ToSExpr for Expr {
             Expr::Comptime { expr, span } => {
                 write_indent(f, indent)?;
                 writeln!(f, "(comptime")?;
+                expr.write_sexpr(f, indent + 1)?;
+                write_indent(f, indent)?;
+                write_span(f, *span)?;
+                writeln!(f, ")")?;
+            }
+            Expr::Reference { expr, span } => {
+                write_indent(f, indent)?;
+                writeln!(f, "(reference")?;
                 expr.write_sexpr(f, indent + 1)?;
                 write_indent(f, indent)?;
                 write_span(f, *span)?;

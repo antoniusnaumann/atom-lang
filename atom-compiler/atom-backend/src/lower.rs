@@ -728,6 +728,12 @@ impl Lower {
                 // For now, lower the inner expression normally as a placeholder.
                 self.lower_expr(expr, ir_block, func)
             }
+            atom_ast::Expr::Reference { expr, .. } => {
+                // TODO: Implement proper reference semantics
+                // For now, treat reference as the value itself (pointer/address)
+                // This is a placeholder until full reference implementation
+                self.lower_expr(expr, ir_block, func)
+            }
         }
     }
 
@@ -4249,6 +4255,11 @@ impl Lower {
                 }
                 false
             }
+
+            // Reference types: check inner type
+            atom_ast::Type::Reference { inner, .. } => {
+                self.type_contains_type_param(inner)
+            }
         }
     }
 
@@ -4603,6 +4614,15 @@ impl Lower {
                 Ok(atom_ast::Type::Generic {
                     name: name.clone(),
                     params: substituted_params,
+                    span: *span,
+                })
+            }
+
+            // Reference types: substitute inner type
+            atom_ast::Type::Reference { inner, span } => {
+                let substituted_inner = self.substitute_ast_type(inner, type_bindings)?;
+                Ok(atom_ast::Type::Reference {
+                    inner: Box::new(substituted_inner),
                     span: *span,
                 })
             }
