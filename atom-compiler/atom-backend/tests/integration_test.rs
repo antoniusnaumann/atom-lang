@@ -180,7 +180,7 @@ fn test_reference_modifies_original() {
                 (params)
                 (returns Void)
                 (block
-                    (var-decl a (type Int) (init 5))
+                    (var internal a Int 5)
                     (call increment (reference a))
                     (call assert (== a 6))
                 )
@@ -223,7 +223,7 @@ fn test_reference_to_struct_field() {
                 (params)
                 (returns Void)
                 (block
-                    (var-decl point (type Point) (init (struct-init Point (field-init x 10) (field-init y 20))))
+                    (var internal point Point (struct-init Point (field-init x 10) (field-init y 20)))
                     (call move_x (reference point) 5)
                     (call assert (== (field-access point x) 15))
                 )
@@ -255,19 +255,19 @@ fn test_reference_to_array_element() {
     let sexpr_str = r#"
         (program
             (function internal increment_at
-                (params (arr (reference (variadic Int))) (idx Int))
+                (params (arr (reference (variadic* Int))) (idx Int))
                 (returns Void)
                 (block
-                    (= (index-access arr idx) (+ (index-access arr idx) 1))
+                    (= (call arr idx) (+ (call arr idx) 1))
                 )
             )
             (function internal main
                 (params)
                 (returns Void)
                 (block
-                    (var-decl numbers (type (variadic Int)) (init (tuple 1 2 3 4 5)))
+                    (var internal numbers (variadic* Int) (tuple 1 2 3 4 5))
                     (call increment_at (reference numbers) 2)
-                    (call assert (== (index-access numbers 2) 4))
+                    (call assert (== (call numbers 2) 4))
                 )
             )
         )
@@ -304,7 +304,7 @@ fn test_ufcs_with_reference() {
                 (params)
                 (returns Void)
                 (block
-                    (var-decl a (type Int) (init 5))
+                    (var internal a Int 5)
                     (method-call a increment)
                     (call assert (== a 6))
                 )
@@ -335,7 +335,7 @@ fn test_multiple_references() {
                 (params (a (reference Int)) (b (reference Int)))
                 (returns Void)
                 (block
-                    (var-decl tmp (type Int) (init a))
+                    (var internal tmp Int a)
                     (= a b)
                     (= b tmp)
                 )
@@ -344,8 +344,8 @@ fn test_multiple_references() {
                 (params)
                 (returns Void)
                 (block
-                    (var-decl x (type Int) (init 10))
-                    (var-decl y (type Int) (init 20))
+                    (var internal x Int 10)
+                    (var internal y Int 20)
                     (call swap (reference x) (reference y))
                     (call assert (== x 20))
                     (call assert (== y 10))
@@ -389,7 +389,7 @@ fn test_reference_type_mismatch() {
                 (params)
                 (returns Void)
                 (block
-                    (var-decl s (type String) (init "string"))
+                    (var internal s String "string")
                     (call increment (reference s))
                 )
             )
@@ -468,7 +468,7 @@ fn test_missing_ampersand_for_reference_param() {
                 (params)
                 (returns Void)
                 (block
-                    (var-decl a (type Int) (init 5))
+                    (var internal a Int 5)
                     (call increment a)
                 )
             )

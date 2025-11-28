@@ -1332,12 +1332,28 @@ impl Lower {
                 // Assignments return void
                 Ok(store_id)
             }
-            Some(VarBinding::Value(_, _)) => {
-                // Immutable variable - error, cannot assign to immutable variable
-                Err(LowerError::Internal(format!(
-                    "Cannot assign to immutable variable '{}'",
-                    var_name
-                )))
+            Some(VarBinding::Value(value_id, ty)) => {
+                // Check if this is a reference parameter (pointer type)
+                // Reference parameters can be assigned through the pointer
+                if let IrType::Pointer(inner_ty) = ty {
+                    // This is a reference parameter - store through the pointer
+                    let store_id = self.fresh_value_id();
+                    ir_block.add_instruction(IrInstruction {
+                        result: store_id,
+                        ty: IrType::Void,
+                        kind: IrInstructionKind::Store {
+                            destination: IrMemoryLocation::Pointer(value_id),
+                            value: new_value,
+                        },
+                    });
+                    Ok(store_id)
+                } else {
+                    // Immutable variable - error, cannot assign to immutable variable
+                    Err(LowerError::Internal(format!(
+                        "Cannot assign to immutable variable '{}'",
+                        var_name
+                    )))
+                }
             }
             None => Err(LowerError::UndefinedVariable(var_name)),
         }

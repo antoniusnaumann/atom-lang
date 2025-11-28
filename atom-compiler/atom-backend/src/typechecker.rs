@@ -596,9 +596,9 @@ impl TypeChecker {
                     ));
                 }
                 
-                // A reference has the same type as the referenced expression
-                // The reference semantics (pass-by-reference) are handled in lowering/codegen
-                self.check_expr(expr)
+                // Check the inner expression type and wrap it in a Reference type
+                let inner_ty = self.check_expr(expr)?;
+                Ok(Type::Reference(Box::new(inner_ty)))
             }
         }
     }

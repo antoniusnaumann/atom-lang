@@ -241,6 +241,8 @@ pub enum IrMemoryLocation {
     },
     /// Global variable
     Global(String),
+    /// Indirect pointer (for reference parameters)
+    Pointer(ValueId),
 }
 
 /// Terminator instruction - ends a basic block.
@@ -692,6 +694,7 @@ impl fmt::Display for IrMemoryLocation {
                 write!(f, "element({}, {})", base, index)
             }
             IrMemoryLocation::Global(name) => write!(f, "global {}", name),
+            IrMemoryLocation::Pointer(ptr) => write!(f, "pointer({})", ptr),
         }
     }
 }
