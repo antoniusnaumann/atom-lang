@@ -295,7 +295,6 @@
                             match(s.bytes(i + j) == from.bytes(j)) {
                                 False {
                                     found = False
-                                    break
                                 }
                                 True { }
                             }

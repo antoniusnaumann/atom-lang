@@ -1863,11 +1863,13 @@ impl TypeChecker {
     /// When expected_type is provided and is a function type, implicit parameters ($0, $1, etc.)
     /// will be typed according to the function's parameter types instead of defaulting to Int.
     fn check_block_expr_with_context(&mut self, block: &Block, expected_type: Option<&Type>) -> TypeResult<Type> {
-        self.symbols.push_scope();
-        
         // Check if block uses implicit closure parameters ($0, $1, etc.)
         let implicit_params = self.find_implicit_params(block);
+        
+        // Only push a new scope if we have implicit parameters (making this a closure)
+        // Otherwise, use the current scope to allow access to outer variables
         if !implicit_params.is_empty() {
+            self.symbols.push_scope();
             if std::env::var("ATOM_DEBUG").ok().as_deref() == Some("1") {
                 eprintln!("DEBUG check_block_expr_with_context: found implicit params: {:?}", implicit_params);
                 eprintln!("DEBUG check_block_expr_with_context: expected_type={:?}", expected_type);
@@ -1917,16 +1919,15 @@ impl TypeChecker {
                 .map(Box::new)
                 .collect();
             
-            return Ok(Type::Function(FunctionType {
+            Ok(Type::Function(FunctionType {
                 const_params: vec![],
                 params: boxed_param_types,
                 return_type: Some(Box::new(body_ty)),
-            }));
+            }))
+        } else {
+            // No implicit parameters - check block in current scope
+            self.check_block(block)
         }
-        
-        let result = self.check_block(block);
-        self.symbols.pop_scope();
-        result
     }
 
     fn check_loop(&mut self, args: &[Expr]) -> TypeResult<Type> {
