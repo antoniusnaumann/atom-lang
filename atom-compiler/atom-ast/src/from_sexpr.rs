@@ -1559,6 +1559,24 @@ mod tests {
     }
 
     #[test]
+    fn test_bool_literal_from_sexpr() {
+        // Test that "True" and "False" symbols are converted to Bool literals when parsing expressions
+        let sexpr_true = SExpr::parse("True").unwrap();
+        let expr_true = Expr::from_sexpr(&sexpr_true).unwrap();
+        match expr_true {
+            Expr::Literal(Literal::Bool(true), _) => {},
+            _ => panic!("Expected Bool(true) literal, got {:?}", expr_true),
+        }
+
+        let sexpr_false = SExpr::parse("False").unwrap();
+        let expr_false = Expr::from_sexpr(&sexpr_false).unwrap();
+        match expr_false {
+            Expr::Literal(Literal::Bool(false), _) => {},
+            _ => panic!("Expected Bool(false) literal, got {:?}", expr_false),
+        }
+    }
+
+    #[test]
     fn test_span_preservation() {
         use crate::sexpr::print_ast_with_spans;
         

@@ -491,11 +491,6 @@ impl TypeChecker {
             Expr::Literal(lit, _) => Ok(self.type_of_literal(lit)),
 
             Expr::Ident(ident) => {
-                // Special case: break and continue are loop control keywords
-                if ident.name == "break" || ident.name == "continue" {
-                    return Ok(Type::Void);
-                }
-                
                 // Check for C library function references (e.g., cstdlib::printf, cmath::sin)
                 if ident.name.starts_with('c') && ident.name.contains("::") {
                     // C library functions are treated as function types

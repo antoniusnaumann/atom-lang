@@ -1572,6 +1572,14 @@ impl Parser {
         if self.check(&TokenKind::TypeIdent) {
             let type_name = self.expect_type_ident()?;
             
+            // Check for special identifiers that are actually boolean literals
+            // (True/False are TypeIdents because they start with uppercase)
+            if type_name.name == "True" {
+                return Ok(Expr::Literal(Literal::Bool(true), type_name.span));
+            } else if type_name.name == "False" {
+                return Ok(Expr::Literal(Literal::Bool(false), type_name.span));
+            }
+            
             if self.match_token(&TokenKind::LParen) {
                 // Struct/enum constructor
                 let fields = self.parse_struct_init_fields()?;
@@ -1978,18 +1986,17 @@ mod tests {
 
     #[test]
     fn test_bool_literals() {
-        // Note: True and False are actually TypeIdents (uppercase), not special keywords
-        // They are enum variants of the Bool type
+        // True and False are special TypeIdents that are converted to Bool literals by the parser
         let expr = parse_expr("True").unwrap();
         match expr {
-            Expr::Ident(ident) if ident.name == "True" => {},
-            _ => panic!("Expected True identifier, got {:?}", expr),
+            Expr::Literal(Literal::Bool(true), _) => {},
+            _ => panic!("Expected Bool(true) literal, got {:?}", expr),
         }
 
         let expr = parse_expr("False").unwrap();
         match expr {
-            Expr::Ident(ident) if ident.name == "False" => {},
-            _ => panic!("Expected False identifier, got {:?}", expr),
+            Expr::Literal(Literal::Bool(false), _) => {},
+            _ => panic!("Expected Bool(false) literal, got {:?}", expr),
         }
     }
 
