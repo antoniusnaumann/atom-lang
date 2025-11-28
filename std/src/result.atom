@@ -1,9 +1,9 @@
-+Option(
++Option(t;
     Some(t)
     None
 )
 
-+Result(t, e = String;
++Result(t, e;
     Ok(t)
     Err(e)
 )
@@ -18,7 +18,7 @@
 +unwrap(res Result(t, e), msg String = "Unwrapped an erroneous result value") t {
     match(res) {
         Ok(inner) { inner }
-        Err(_) { error(msg) }
+        Err(err) { error(msg ++ ": " ++ err.as_string()) }
     }
 }
 

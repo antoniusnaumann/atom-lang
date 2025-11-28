@@ -1,5 +1,5 @@
 # Atom
-[![Parser Tests](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml/badge.svg)](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml)
+[![Compiler Tests](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml/badge.svg)](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml)
 [![Tree-Sitter](https://github.com/antoniusnaumann/atom-lang/actions/workflows/treesitter-tests.yml/badge.svg)](https://github.com/antoniusnaumann/atom-lang/actions/workflows/treesitter-tests.yml)
 
 Atom is a small language with value semantics, providing modern features with a focus on orthogonality, i.e., many small features that generalize and compose well. A key aspect of Atom's syntax is that it has no keywords.
@@ -262,6 +262,13 @@ Cat (
   age Int
 
   cat Void
+)
+
+Human (
+  name String
+  age Int
+
+  human Void
 )
 
 main() {

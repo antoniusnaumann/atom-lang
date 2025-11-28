@@ -585,12 +585,28 @@ impl Parser {
 
     fn parse_param(&mut self) -> ParseResult<Param> {
         let start = self.current_span();
+        
+        // Check for reference prefix: &name Type
+        let is_ref = self.match_token(&TokenKind::And);
+        
         let name = self.expect_value_ident()?;
         
         // Parse type if present
         let ty = if !self.check(&TokenKind::Comma) && !self.check(&TokenKind::RParen) && 
                     !self.check(&TokenKind::Eq) && !self.check(&TokenKind::Semicolon) {
-            Some(Box::new(self.parse_type()?))
+            let inner_ty = self.parse_type()?;
+            if is_ref {
+                // Wrap the type in a Reference type
+                Some(Box::new(Type::Reference {
+                    inner: Box::new(inner_ty),
+                    span: start.merge(self.previous_span()),
+                }))
+            } else {
+                Some(Box::new(inner_ty))
+            }
+        } else if is_ref {
+            // Reference without explicit type - error
+            return Err(self.error("Reference parameter requires an explicit type"));
         } else {
             None
         };
@@ -837,6 +853,26 @@ impl Parser {
     fn parse_pattern(&mut self) -> ParseResult<Pattern> {
         let start = self.current_span();
         
+        // Parse the first (base) pattern
+        let base_pattern = self.parse_base_pattern()?;
+        
+        // Check for alternative patterns (|)
+        if self.check(&TokenKind::Or) {
+            let mut alternatives = vec![base_pattern];
+            
+            while self.match_token(&TokenKind::Or) {
+                alternatives.push(self.parse_base_pattern()?);
+            }
+            
+            Ok(Pattern::Alternative(alternatives, start.merge(self.previous_span())))
+        } else {
+            Ok(base_pattern)
+        }
+    }
+
+    fn parse_base_pattern(&mut self) -> ParseResult<Pattern> {
+        let start = self.current_span();
+        
         // Wildcard: _
         if self.check(&TokenKind::ValueIdent) {
             let is_wildcard = self.peek().text == "_";
@@ -1019,6 +1055,10 @@ impl Parser {
 
     fn parse_type(&mut self) -> ParseResult<Type> {
         let start = self.current_span();
+        
+        // Note: Reference types (&T) are NOT parsed here in parse_type().
+        // References are only created through parameter syntax: &name Type
+        // This is handled in parse_param() which wraps the type in Type::Reference
         
         // Base type
         let mut ty = if self.match_token(&TokenKind::LParen) {
@@ -1323,6 +1363,13 @@ impl Parser {
     fn parse_unary_expression(&mut self) -> ParseResult<Expr> {
         let start = self.current_span();
         
+        // Check for reference operator: &expr
+        if self.match_token(&TokenKind::And) {
+            let expr = Box::new(self.parse_unary_expression()?);
+            let span = start.merge(expr.span());
+            return Ok(Expr::Reference { expr, span });
+        }
+        
         // Check for unary operators
         let op = if self.match_token(&TokenKind::Minus) {
             Some(UnOp::Neg)
@@ -1536,6 +1583,14 @@ impl Parser {
         if self.check(&TokenKind::TypeIdent) {
             let type_name = self.expect_type_ident()?;
             
+            // Check for special identifiers that are actually boolean literals
+            // (True/False are TypeIdents because they start with uppercase)
+            if type_name.name == "True" {
+                return Ok(Expr::Literal(Literal::Bool(true), type_name.span));
+            } else if type_name.name == "False" {
+                return Ok(Expr::Literal(Literal::Bool(false), type_name.span));
+            }
+            
             if self.match_token(&TokenKind::LParen) {
                 // Struct/enum constructor
                 let fields = self.parse_struct_init_fields()?;
@@ -1571,10 +1626,20 @@ impl Parser {
             if self.check(&TokenKind::LBrace) || self.check(&TokenKind::Arrow) {
                 // Parameterless closure: () { body } or () -> Type { body }
                 return self.parse_closure_body(Vec::new(), start);
-            } else {
-                // Empty tuple
-                return Ok(Expr::Tuple(Vec::new(), start.merge(self.previous_span())));
+            } else if self.check(&TokenKind::TypeIdent) {
+                // Check if it's () Type { body } pattern
+                let checkpoint = self.pos;
+                self.advance(); // Skip the type identifier
+                if self.check(&TokenKind::LBrace) {
+                    // It's a closure with return type!
+                    self.pos = checkpoint; // Rewind to parse the type properly
+                    return self.parse_closure_body(Vec::new(), start);
+                }
+                // Not a closure, rewind
+                self.pos = checkpoint;
             }
+            // Empty tuple
+            return Ok(Expr::Tuple(Vec::new(), start.merge(self.previous_span())));
         }
         
         // Try to parse as closure parameters first
@@ -1585,6 +1650,17 @@ impl Parser {
             if self.check(&TokenKind::LBrace) || self.check(&TokenKind::Arrow) {
                 // It's a closure!
                 return self.parse_closure_body(params, start);
+            } else if self.check(&TokenKind::TypeIdent) {
+                // Check if it's (params) Type { body } pattern
+                let checkpoint2 = self.pos;
+                self.advance(); // Skip the type identifier
+                if self.check(&TokenKind::LBrace) {
+                    // It's a closure with return type!
+                    self.pos = checkpoint2; // Rewind to parse the type properly
+                    return self.parse_closure_body(params, start);
+                }
+                // Not a closure, rewind
+                self.pos = checkpoint2;
             }
         }
         
@@ -1629,8 +1705,11 @@ impl Parser {
     }
 
     fn parse_closure_body(&mut self, params: Vec<Param>, start: Span) -> ParseResult<Expr> {
-        // Parse optional return type
+        // Parse optional return type (with or without arrow)
         let return_type = if self.match_token(&TokenKind::Arrow) {
+            Some(Box::new(self.parse_type()?))
+        } else if self.check(&TokenKind::TypeIdent) {
+            // Return type without arrow: (params) Type { body }
             Some(Box::new(self.parse_type()?))
         } else {
             None
@@ -1918,18 +1997,17 @@ mod tests {
 
     #[test]
     fn test_bool_literals() {
-        // Note: True and False are actually TypeIdents (uppercase), not special keywords
-        // They are enum variants of the Bool type
+        // True and False are special TypeIdents that are converted to Bool literals by the parser
         let expr = parse_expr("True").unwrap();
         match expr {
-            Expr::Ident(ident) if ident.name == "True" => {},
-            _ => panic!("Expected True identifier, got {:?}", expr),
+            Expr::Literal(Literal::Bool(true), _) => {},
+            _ => panic!("Expected Bool(true) literal, got {:?}", expr),
         }
 
         let expr = parse_expr("False").unwrap();
         match expr {
-            Expr::Ident(ident) if ident.name == "False" => {},
-            _ => panic!("Expected False identifier, got {:?}", expr),
+            Expr::Literal(Literal::Bool(false), _) => {},
+            _ => panic!("Expected Bool(false) literal, got {:?}", expr),
         }
     }
 
@@ -3047,6 +3125,68 @@ fib(nth Int) Int {
                 }
             },
             _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_alternatives() {
+        // Test pattern alternatives with | operator
+        let code = "match(token) { LBrace | RBrace | LParen | RParen { True } _ { False } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                
+                // First arm should have alternative pattern with 4 patterns
+                match &arms[0].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 4);
+                        // Check that all patterns are enum patterns
+                        for pat in patterns {
+                            assert!(matches!(pat, Pattern::Enum { .. }));
+                        }
+                    }
+                    _ => panic!("Expected alternative pattern, got {:?}", arms[0].pattern),
+                }
+                
+                // Second arm should be wildcard
+                assert!(matches!(arms[1].pattern, Pattern::Wildcard(_)));
+            }
+            _ => panic!("Expected match expression, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_pattern_alternatives_literals() {
+        // Test pattern alternatives with literal values
+        let code = "match(x) { 1 | 2 | 3 { \"small\" } 10 | 20 | 30 { \"big\" } _ { \"other\" } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 3);
+                
+                // First arm: 1 | 2 | 3
+                match &arms[0].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 3);
+                        for pat in patterns {
+                            assert!(matches!(pat, Pattern::Literal(Literal::Integer(_), _)));
+                        }
+                    }
+                    _ => panic!("Expected alternative pattern"),
+                }
+                
+                // Second arm: 10 | 20 | 30
+                match &arms[1].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 3);
+                    }
+                    _ => panic!("Expected alternative pattern"),
+                }
+            }
+            _ => panic!("Expected match expression"),
         }
     }
 }

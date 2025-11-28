@@ -1,0 +1,23 @@
+[package]
+name = "atom-backend"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "atom-compile"
+path = "src/main.rs"
+
+[dependencies]
+# NOTE: This backend intentionally does NOT depend on atom-parser.
+# It only accepts pre-parsed S-Expression AST files (via atom-ast).
+# This allows the parser to be swapped out with alternative implementations.
+# The `atomc` script handles invoking the parser to convert .atom source files to S-expressions.
+atom-ast = { path = "../atom-ast" }
+cranelift = "0.114"
+cranelift-module = "0.114"
+cranelift-jit = "0.114"
+cranelift-object = "0.114"
+cranelift-native = "0.114"
+target-lexicon = "0.12"
+
+[dev-dependencies]

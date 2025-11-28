@@ -178,6 +178,11 @@ pub enum Type {
         return_type: Option<Box<Type>>,
         span: Span,
     },
+    /// Reference type: `&T` (only valid for function parameters)
+    Reference {
+        inner: Box<Type>,
+        span: Span,
+    },
 }
 
 /// Expression
@@ -247,6 +252,11 @@ pub enum Expr {
         expr: Box<Expr>,
         span: Span,
     },
+    /// Reference expression: `&expr`
+    Reference {
+        expr: Box<Expr>,
+        span: Span,
+    },
 }
 
 /// Field initialization in struct literal: `name: value` or just `value`
@@ -282,6 +292,8 @@ pub enum Pattern {
         fields: Vec<Pattern>,
         span: Span,
     },
+    /// Alternative patterns: `pattern1 | pattern2 | pattern3`
+    Alternative(Vec<Pattern>, Span),
     /// Expression (guard): `x > 5`, `a && b`
     /// Used in guard-style matches like: match(True) { x > 5 { ... } }
     Expr(Box<Expr>),
@@ -357,6 +369,7 @@ impl Expr {
             Expr::Block(block) => block.span,
             Expr::Match { span, .. } => *span,
             Expr::Comptime { span, .. } => *span,
+            Expr::Reference { span, .. } => *span,
         }
     }
 }

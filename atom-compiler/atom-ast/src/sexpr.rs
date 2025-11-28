@@ -518,6 +518,12 @@ impl ToSExpr for Type {
                 write_span(f, *span)?;
                 write!(f, ")")
             }
+            Type::Reference { inner, span } => {
+                write!(f, "(reference ")?;
+                inner.write_sexpr(f, 0)?;
+                write_span(f, *span)?;
+                write!(f, ")")
+            }
         }
     }
 }
@@ -610,13 +616,21 @@ impl ToSExpr for Expr {
             }
             Expr::Tuple(exprs, span) => {
                 write_indent(f, indent)?;
-                writeln!(f, "(tuple")?;
-                for expr in exprs {
-                    expr.write_sexpr(f, indent + 1)?;
+                if exprs.is_empty() && indent == 0 {
+                    // Empty tuple in inline mode - keep completely inline
+                    write!(f, "(tuple")?;
+                    write_span(f, *span)?;
+                    write!(f, ")")?;
+                } else {
+                    // Non-empty tuple or indented mode - use multi-line format
+                    writeln!(f, "(tuple")?;
+                    for expr in exprs {
+                        expr.write_sexpr(f, indent + 1)?;
+                    }
+                    write_indent(f, indent)?;
+                    write_span(f, *span)?;
+                    writeln!(f, ")")?;
                 }
-                write_indent(f, indent)?;
-                write_span(f, *span)?;
-                writeln!(f, ")")?;
             }
             Expr::StructInit { ty, fields, span } => {
                 write_indent(f, indent)?;
@@ -668,6 +682,14 @@ impl ToSExpr for Expr {
             Expr::Comptime { expr, span } => {
                 write_indent(f, indent)?;
                 writeln!(f, "(comptime")?;
+                expr.write_sexpr(f, indent + 1)?;
+                write_indent(f, indent)?;
+                write_span(f, *span)?;
+                writeln!(f, ")")?;
+            }
+            Expr::Reference { expr, span } => {
+                write_indent(f, indent)?;
+                writeln!(f, "(reference")?;
                 expr.write_sexpr(f, indent + 1)?;
                 write_indent(f, indent)?;
                 write_span(f, *span)?;
@@ -763,6 +785,15 @@ impl ToSExpr for Pattern {
                 write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
+            Pattern::Alternative(patterns, span) => {
+                writeln!(f, "(pattern-alternative")?;
+                for pattern in patterns {
+                    pattern.write_sexpr(f, indent + 1)?;
+                }
+                write_indent(f, indent)?;
+                write_span(f, *span)?;
+                writeln!(f, ")")?;
+            }
             Pattern::Expr(expr) => {
                 writeln!(f, "(pattern-expr")?;
                 expr.write_sexpr(f, indent + 1)?;
@@ -784,7 +815,15 @@ impl ToSExpr for Literal {
     fn write_sexpr(&self, f: &mut impl Write, _indent: usize) -> fmt::Result {
         match self {
             Literal::Integer(n) => write!(f, "{}", n),
-            Literal::Float(n) => write!(f, "{}", n),
+            Literal::Float(n) => {
+                // Always include decimal point for floats, even for whole numbers like 0.0
+                let s = n.to_string();
+                if s.contains('.') || s.contains('e') || s.contains('E') {
+                    write!(f, "{}", s)
+                } else {
+                    write!(f, "{}.0", s)
+                }
+            }
             Literal::String(s) => write!(f, "\"{}\"", escape_string(s)),
             Literal::Rune(c) => write!(f, "(rune '{}')", escape_rune(*c)),
             Literal::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),

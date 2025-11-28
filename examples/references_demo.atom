@@ -1,0 +1,53 @@
+// Demonstrates practical use of references for in-place mutation
+
+// Swap two integers in-place
+swap(&a Int, &b Int) {
+    temp := a
+    a = b
+    b = temp
+}
+
+// Increment a value by reference
+increment(&counter Int) {
+    counter = counter + 1
+}
+
+// Decrement a value by reference
+decrement(&counter Int) {
+    counter = counter - 1
+}
+
+// Double a value in-place
+double(&value Int) {
+    value = value * 2
+}
+
++main() Int {
+    // Example 1: Swap two variables
+    x := 10
+    y := 20
+    swap(&x, &y)
+    // Now x=20, y=10
+    
+    // Example 2: Increment and decrement counter
+    count := 5
+    increment(&count)
+    increment(&count)
+    decrement(&count)
+    // Now count=6
+    
+    // Example 3: Double a value
+    num := 7
+    double(&num)
+    // Now num=14
+    
+    // Example 4: Multiple swaps
+    a := 100
+    b := 200
+    c := 300
+    swap(&a, &b)  // a=200, b=100
+    swap(&b, &c)  // b=300, c=100
+    swap(&a, &c)  // a=100, c=200
+    
+    x + count + num + a  // Returns 140 (20 + 6 + 14 + 100)
+}

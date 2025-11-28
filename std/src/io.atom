@@ -14,14 +14,22 @@
 /// Prints to stdout, except for levels above error which print to stderr
 /// Messages below the specified log_level() are not printed
 +print(
-    msg String
+    msg t
     level LogLevel = Info
     delimiter Rune = '\n'
 ) {
     // TODO: Explain enum comparison in README
-    match(level >= log_level) {
-        True { cstdlib::printf(as_cstring(msg ++ delimiter)) }
-        False {}
+    match(level >= log_level()) {
+        True { 
+            // Build the string to print (this allocates memory)
+            str := msg.as_string() ++ delimiter
+            // Print it (strings are already null-terminated, no need for as_cstring)
+            cstdlib::printf(str)
+            // Free the memory to avoid leaks
+            cstdlib::free(str)
+            ()  // Return unit
+        }
+        False { () }  // Return unit
     }
 }
 
