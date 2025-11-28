@@ -289,6 +289,21 @@ MaybeInt (
 
 Atom is rather strict with casing: Enum cases and type names always start with an upper case letter, variables and functions always start with a lower case letter.
 
+If you have an enum case, where the case name is the same as the associated type, you can use `_` instead of repeating the type name.
+
+```atom
+Number {
+  Int(Int)
+  Float(Float)
+}
+
+// can be written as
+Number {
+  Int(_)
+  Float(_)
+}
+```
+
 ### Variables
 Variables can either be declared with inferred type `a := 5` or with explicit type annotation `a: Int = 5`.
 When no type is given, variables are automatically initialized with their zero values, like in *Go*: `a: MyStruct`. For enums, this is the first listed case with all associated values being set to their zero value, for structs this is the struct with all fields set to their zero value. For strings and variadic tuples, this is an empty string/empty tuple respectively. Unlike in Go, constructors cannot implicitly leave out fields that have not explicit default value.
@@ -500,6 +515,27 @@ sum(values Int*) Int {
 
 main() {
   assert(sum(1, 2, 3) == 6)
+}
+```
+
+By default, function arguments are passed by value (and deeply immutable, i.e., a caller cannot modify the elements of a passed struct or (variadic) tuple). To pass an argument as (mutable) reference, write `&` in front of the parameter. The caller has to acknowledge the pass-by-reference, by prefixing the argument with `&`.
+
+```atom
+double_in_place(&a Int) {
+  a *= 2
+}
+
+main() {
+  a := 5
+
+  double_in_place(&a)
+  // this would be an error: double_in_place(a)
+  assert(a == 10)
+  
+  // or in UFCS
+  &a.double_in_place()
+  // this would be an error: a.double_in_place()
+  assert(a == 20)
 }
 ```
 
