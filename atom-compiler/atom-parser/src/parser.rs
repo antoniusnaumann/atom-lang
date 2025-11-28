@@ -585,12 +585,28 @@ impl Parser {
 
     fn parse_param(&mut self) -> ParseResult<Param> {
         let start = self.current_span();
+        
+        // Check for reference prefix: &name Type
+        let is_ref = self.match_token(&TokenKind::And);
+        
         let name = self.expect_value_ident()?;
         
         // Parse type if present
         let ty = if !self.check(&TokenKind::Comma) && !self.check(&TokenKind::RParen) && 
                     !self.check(&TokenKind::Eq) && !self.check(&TokenKind::Semicolon) {
-            Some(Box::new(self.parse_type()?))
+            let inner_ty = self.parse_type()?;
+            if is_ref {
+                // Wrap the type in a Reference type
+                Some(Box::new(Type::Reference {
+                    inner: Box::new(inner_ty),
+                    span: start.merge(self.previous_span()),
+                }))
+            } else {
+                Some(Box::new(inner_ty))
+            }
+        } else if is_ref {
+            // Reference without explicit type - error
+            return Err(self.error("Reference parameter requires an explicit type"));
         } else {
             None
         };
@@ -1040,14 +1056,9 @@ impl Parser {
     fn parse_type(&mut self) -> ParseResult<Type> {
         let start = self.current_span();
         
-        // Check for reference type: &T
-        if self.match_token(&TokenKind::And) {
-            let inner = Box::new(self.parse_type()?);
-            return Ok(Type::Reference {
-                inner,
-                span: start.merge(self.previous_span()),
-            });
-        }
+        // Note: Reference types (&T) are NOT parsed here in parse_type().
+        // References are only created through parameter syntax: &name Type
+        // This is handled in parse_param() which wraps the type in Type::Reference
         
         // Base type
         let mut ty = if self.match_token(&TokenKind::LParen) {

@@ -1,24 +1,24 @@
 // Demonstrates practical use of references for in-place mutation
 
 // Swap two integers in-place
-swap(a &Int, b &Int) {
+swap(&a Int, &b Int) {
     temp := a
     a = b
     b = temp
 }
 
 // Increment a value by reference
-increment(counter &Int) {
+increment(&counter Int) {
     counter = counter + 1
 }
 
 // Decrement a value by reference
-decrement(counter &Int) {
+decrement(&counter Int) {
     counter = counter - 1
 }
 
 // Double a value in-place
-double(value &Int) {
+double(&value Int) {
     value = value * 2
 }
 
