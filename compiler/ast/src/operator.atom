@@ -20,22 +20,21 @@
     Mod
 
     // Comparison
-    Eq
-    Ne
-    Lt
-    Le
-    Gt
-    Ge
+    Eq  // ==
+    Ne  // !=
+    Lt  // <
+    Le  // <=
+    Gt  // >
+    Ge  // >=
 
-    // Logical
-    And
-    Or
-
-    // Bitwise
-    BitAnd
-    BitOr
-    LShift
-    RShift
+    // Logical & Bitwise
+    And  // &
+    Or   // |
+    Xor  // ^
+    ShortCircAnd  // &&
+    ShortCircOr   // ||
+    LShift        // <<
+    RShift        // >>
 
     // Collection
     Concat      // ++
@@ -47,10 +46,17 @@
     MulAssign     // *=
     DivAssign     // /=
     ModAssign     // %=
-    ConcatAssign, // ++=
+    
+    AndAssign     // &=
+    OrAssign      // |=
+    XorAssign     // ^=
+    LShiftAssign  // <<=
+    RShiftAssign  // >>=
+    
+    ConcatAssign  // ++=
 )
 
 +UnOp(
-    Neg,
-    Not, // !, works as bitwise not and logical not
+    Neg
+    Not  // !, works as bitwise not and logical not
 )

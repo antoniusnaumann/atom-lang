@@ -3,20 +3,46 @@ LexerError (
     span Span
 )
 
-Lexer (
-    source String
-    errors LexerError*
-)
-
-// TODO: implement refs 
-lex(&self Lexer) Token* {
+// PERF: Migrate to looking at the next few characters, instead of converting to runes and then lexing everything in one go
+/// Lexes the whole soure in one go 
+lex(source String) Token*, LexerError* {
     index := 0
-    runes := self.source.runes()
+    runes := source.runes()
         
-    loop(index > runes.len()) {
+    loop(index < runes.len()) {
         ch := runes(index)
+        loop(ch.is_whitespace() && !ch.is_linebreak() && index < runes.len()) {
+            index += 1
+            ch = runes(index)
+        }
+        start = index
         index += 1
         token := match(ch) {
+            'a' <= $0 <= 'z' {
+                ident: String = "" ++ ch
+                loop(runes(index).is_ident_char()) {
+                    ident ++= runes(index)
+                    index += 1
+                }
+                ValueIdent(ident)
+            }
+            'A' <= $0 <= 'Z' {
+                ident: String = "" ++ ch
+                loop(runes(index).is_type_ident_char()) {
+                    ident ++= runes(index)
+                    index += 1
+                }
+                TypeIdent(ident)
+            }
+            '$' {
+                ident: UInt
+                loop('0' <= runes(index) <= '9') {
+                    ident *= 10
+                    ident += runes(index).parse_numeric()
+                    index += 1
+                }
+                DollarIdent(ident)
+            }
             '+' {
                 match(runes(index)) {
                     '=' {
@@ -41,6 +67,10 @@ lex(&self Lexer) Token* {
                     '=' {
                         index += 1
                         MinusAssign
+                    }
+                    '>' {
+                        index += 1
+                        Arrow
                     }
                     _ { Minus }
                 }
@@ -81,6 +111,83 @@ lex(&self Lexer) Token* {
                     _ { Assign }
                 }
             }
+            '<' {
+                match(runes(index)) {
+                    '<' {
+                        index += 1
+                        match(runes(index)) {
+                            '=' {
+                                index += 1
+                                LShiftAssign
+                            }
+                            _ { LShift }
+                        }
+                    }
+                }
+            }
+            '>' {
+                match(runes(index)) {
+                    '>' {
+                        index += 1
+                        match(runes(index)) {
+                            '=' {
+                                index += 1
+                                RShiftAssign
+                            }
+                            _ { RShift }
+                        }
+                    }
+                }
+            }
+            '!' {
+                match(runes(index)) {
+                    '=' {
+                        index += 1
+                        NotEq
+                    }
+                    _ {
+                        Not
+                    }
+                }
+            }
+            ':' {
+                match(runes(index)) {
+                    ':' {
+                        index += 1
+                        ColonColon
+                    }
+                    // := is parsed as two separate Tokens
+                    _ {
+                        Colon
+                    }
+                }
+            }
         }
+
+        span 
+        tokens ++= Token(kind: token, span: span)
+    }
+}
+
+-is_ident_char(ch: Rune) Bool {
+    'a' <= ch <= 'z' || ch == '_'    
+}
+
+-is_type_ident_char(ch: Rune) Bool {
+    'a' <= ch <= 'z' || ch == '_' || 'A' <= ch <= 'Z'    
+}
+
+-parse_numeric(ch: Rune) UInt {
+    match(ch) {
+        '0' { 0 }
+        '1' { 1 } 
+        '2' { 2 } 
+        '3' { 3 } 
+        '4' { 4 } 
+        '5' { 5 } 
+        '6' { 6 } 
+        '7' { 7 } 
+        '8' { 8 } 
+        '9' { 9 } 
     }
 }

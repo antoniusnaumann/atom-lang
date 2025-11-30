@@ -26,6 +26,7 @@ TokenKind (
     Gt         // >
     And        // &
     Or         // |
+    Xor        // ^
     Not        // !
     Question   // ?
     Tilde      // ~
@@ -47,7 +48,8 @@ TokenKind (
     OrOr       // ||
     LShift     // <<
     RShift     // >>
-    ColonEq    // :=
+    LShiftAssign // <<=
+    RShiftAssign // >>==
     ColonColon // ::
     Arrow      // ->
     DotDot     // ..
