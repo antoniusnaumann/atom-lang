@@ -3,57 +3,52 @@ LexerError (
     span Span
 )
 
-// PERF: Migrate to looking at the next few characters, instead of converting to runes and then lexing everything in one go
-/// Lexes the whole soure in one go 
+-Lexer (
+    runes Rune*
+    errors LexerError*
+    index UInt
+)
+
+// PERF: migrate to looking at the next few characters, instead of converting to runes and then lexing everything in one go
+/// lexes the whole soure in one go 
 lex(source String) Token*, LexerError* {
-    index := 0
-    runes := source.runes()
-        
-    loop(index < runes.len()) {
-        ch := runes(index)
-        loop(ch.is_whitespace() && !ch.is_linebreak() && index < runes.len()) {
-            index += 1
-            ch = runes(index)
-        }
-        start = index
-        index += 1
+    lexer := Lexer(runes: source.runes(), index: 0, errors: ())
+    
+    loop(lexer.has_next()) {
+        &lexer.skip_whitespace()
+        ch := lexer.curr()
+        start := lexer.index
+
+        &lexer.next()
         token := match(ch) {
             'a' <= $0 <= 'z' {
-                ident: String = "" ++ ch
-                loop(runes(index).is_ident_char()) {
-                    ident ++= runes(index)
-                    index += 1
-                }
+                ident := &lexer.parse_ident()
                 ValueIdent(ident)
             }
             'A' <= $0 <= 'Z' {
-                ident: String = "" ++ ch
-                loop(runes(index).is_type_ident_char()) {
-                    ident ++= runes(index)
-                    index += 1
-                }
+                ident := &lexer.parse_ident()
                 TypeIdent(ident)
             }
             '$' {
-                ident: UInt
-                loop('0' <= runes(index) <= '9') {
-                    ident *= 10
-                    ident += runes(index).parse_numeric()
-                    index += 1
-                }
-                DollarIdent(ident)
+                id: UInt = &lexer.parse_int()
+                DollarIdent(id)
+            }
+            '1' <= $0 <= '9' {
+                num := &lexer.parse_int()
+                IntLit(num)
+                // TODO: handle floats
             }
             '+' {
                 match(runes(index)) {
                     '=' {
-                        index += 1
+                        &lexer.next()
                         PlusAssign
                     }
                     '+' {
-                        index += 1
-                        match(runes(index)) {
+                        &lexer.next()
+                        match(lexer.curr()) {
                             '=' {
-                                index += 1
+                                &lexer.next()
                                 PlusPlusAssign
                             }
                             _ { PlusPlus }
@@ -65,11 +60,11 @@ lex(source String) Token*, LexerError* {
             '-' {
                 match(runes(index)) {
                     '=' {
-                        index += 1
+                        &lexer.next()
                         MinusAssign
                     }
                     '>' {
-                        index += 1
+                        &lexer.next()
                         Arrow
                     }
                     _ { Minus }
@@ -78,7 +73,7 @@ lex(source String) Token*, LexerError* {
             '*' {
                 match(runes(index)) {
                     '=' {
-                        index += 1
+                        &lexer.next()
                         StarAssign
                     }
                     _ { Star }
@@ -87,7 +82,7 @@ lex(source String) Token*, LexerError* {
             '/' {
                 match(runes(index)) {
                     '=' {
-                        index += 1
+                        &lexer.next()
                         SlashAssign
                     }
                     _ { Slash }
@@ -96,7 +91,7 @@ lex(source String) Token*, LexerError* {
             '%' {
                 match(runes(index)) {
                     '=' {
-                        index += 1
+                        &lexer.next()
                         PercentAssign
                     }
                     _ { Percent }
@@ -105,7 +100,7 @@ lex(source String) Token*, LexerError* {
             '=' {
                 match(runes(index)) {
                     '=' {
-                        index += 1
+                        &lexer.next()
                         Equal
                     }
                     _ { Assign }
@@ -114,10 +109,10 @@ lex(source String) Token*, LexerError* {
             '<' {
                 match(runes(index)) {
                     '<' {
-                        index += 1
+                        &lexer.next()
                         match(runes(index)) {
                             '=' {
-                                index += 1
+                                &lexer.next()
                                 LShiftAssign
                             }
                             _ { LShift }
@@ -128,10 +123,10 @@ lex(source String) Token*, LexerError* {
             '>' {
                 match(runes(index)) {
                     '>' {
-                        index += 1
+                        &lexer.next()
                         match(runes(index)) {
                             '=' {
-                                index += 1
+                                &lexer.next()
                                 RShiftAssign
                             }
                             _ { RShift }
@@ -142,7 +137,7 @@ lex(source String) Token*, LexerError* {
             '!' {
                 match(runes(index)) {
                     '=' {
-                        index += 1
+                        &lexer.next()
                         NotEq
                     }
                     _ {
@@ -153,7 +148,7 @@ lex(source String) Token*, LexerError* {
             ':' {
                 match(runes(index)) {
                     ':' {
-                        index += 1
+                        &lexer.next()
                         ColonColon
                     }
                     // := is parsed as two separate Tokens
@@ -162,22 +157,69 @@ lex(source String) Token*, LexerError* {
                     }
                 }
             }
+            _ {
+                span := Span(start: start, end: lexer.index)
+                errors ++= LexerError(msg: "Unknown Token: " ++ ch, span: span)
+            }
         }
 
-        span 
+        span := Span(start: start, end: lexer.index)
         tokens ++= Token(kind: token, span: span)
     }
 }
 
--is_ident_char(ch: Rune) Bool {
+/// has the underlying source file runes left?
+-has_next(self Lexer) Bool {
+    self.index < self.runes.len()
+}
+
+-curr(self Lexer) Rune {
+    match(self.has_next()) {
+        True { self.runes(self.index) }
+        False { '\0' }
+    }
+}
+
+/// increments to the next rune
+-next(&self Lexer) {
+    self.index += 1
+}
+
+/// skips non-newline whitespace runes
+-skip_whitespace(&self Lexer) {
+    loop(self.curr().is_whitespace() && !self.curr().is_linebreak() && self.has_next()) {
+        &self.next()
+    }
+}
+
+-parse_ident(&self Lexer) String {    
+    ident: String = "" ++ ch
+    loop(self.curr().is_ident_char()) {
+        ident ++= self.curr()
+        &self.next()
+    }
+    ident
+}
+
+-parse_int(&self Lexer) UInt {
+    id: UInt 
+    loop('0' <= runes(index) <= '9') {
+        id *= 10
+        id += lexer.curr().parse_numeric()
+        &lexer.next()
+    }
+    id
+}
+
+-is_ident_char(ch Rune) Bool {
     'a' <= ch <= 'z' || ch == '_'    
 }
 
--is_type_ident_char(ch: Rune) Bool {
+-is_type_ident_char(ch Rune) Bool {
     'a' <= ch <= 'z' || ch == '_' || 'A' <= ch <= 'Z'    
 }
 
--parse_numeric(ch: Rune) UInt {
+-parse_numeric(ch Rune) UInt {
     match(ch) {
         '0' { 0 }
         '1' { 1 } 
