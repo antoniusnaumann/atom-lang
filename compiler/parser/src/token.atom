@@ -10,7 +10,7 @@ TokenKind (
     DollarIdent(UInt)
 
     // literals
-    IntLit(Int(128)) // TODO: this would not work with unsigned integers larger then 127bit
+    IntLit(UInt(64)) // TODO: allow larger integers as well
     FloatLit(Float(64)) 
     StringLit(String)
     RuneLit(Rune)
