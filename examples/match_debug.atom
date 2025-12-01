@@ -1,0 +1,26 @@
+// Simple match test to debug
+
+main() Int {
+    x := 10
+    
+    // Simple binary comparison in pattern (this should work)
+    result1 := match(x) {
+        $0 <= 15 { 1 }
+        _ { 0 }
+    }
+    
+    // Simple >= comparison 
+    result2 := match(x) {
+        5 <= $0 { 2 }
+        _ { 0 }
+    }
+    
+    // Multi-way comparison
+    result3 := match(x) {
+        5 <= $0 <= 15 { 3 }
+        _ { 0 }
+    }
+    
+    // Return result3 (should be 3 if multi-way works, 0 if not)
+    result3
+}

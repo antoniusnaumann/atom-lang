@@ -1,5 +1,5 @@
 # Atom
-[![Parser Tests](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml/badge.svg)](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml)
+[![Compiler Tests](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml/badge.svg)](https://github.com/antoniusnaumann/atom-lang/actions/workflows/parser-tests.yml)
 [![Tree-Sitter](https://github.com/antoniusnaumann/atom-lang/actions/workflows/treesitter-tests.yml/badge.svg)](https://github.com/antoniusnaumann/atom-lang/actions/workflows/treesitter-tests.yml)
 
 Atom is a small language with value semantics, providing modern features with a focus on orthogonality, i.e., many small features that generalize and compose well. A key aspect of Atom's syntax is that it has no keywords.
@@ -38,7 +38,7 @@ Additionally, single file Atom programs without dependencies can be run with `at
 ## Basics
 
 ### Structs & Tuples
-Structs are declared by listing all its fields. Visibility for types (and functions) is done by prefixing the name with `+` for types exported from the package and `-` for types private to the file where they are declared in, following UML notation. The default visibility is internal, so that declared types are visible to all other files in the same package. 
+Structs are declared by listing all their fields. Visibility for types (and functions) is done by prefixing the name with `+` for types exported from the package and `-` for types private to the file where they are declared in, following UML notation. The default visibility is internal, so that declared types are visible to all other files in the same package. 
 
 ```atom
 InternalStruct (
@@ -74,7 +74,7 @@ Vec2D (
 )
 ```
 
-In declaration lists, line breaks and commas are interchangeable:
+In declaration lists, line breaks and commas are interchangeable (and empty lines are allowed):
 
 `Vec2(x Float, y Float)` is the same as
 ```atom
@@ -103,7 +103,7 @@ main() {
 }
 ```
 
-alternatively field names can be ommitted and instead use positionals
+alternatively field names can be omitted and instead use positionals
 ```atom
 main() {
   a := Pair(5, 7)
@@ -113,7 +113,7 @@ main() {
 Named fields are accessed using dot notation `a.my_field` while tuple elements are accessed using index-notation `a(2)`.
 
 #### Variadic Tuples
-As "arrays", Atom supports variadic tuples and structs:
+As "arrays", Atom supports variadic tuples, post-fixed with `*` after the type:
 
 ```atom
 Values (
@@ -121,12 +121,12 @@ Values (
   values Int*
 )
 
-main {
+main() {
   a: Values = ("Prices", 14, 10, 5)
 }
 ```
 
-Tuples (without named fields) can be accessed by index (using function call syntax):
+Tuples (without named fields) can be accessed by index (0-based, using function call syntax):
 
 ```atom
 main() {
@@ -134,6 +134,7 @@ main() {
   b: (Int, Float) = (5, 27.0) 
 
   assert(a(2) == 17)
+  assert(b(0) == 5)
   assert(b(1) == 27.0)
 }
 ```
@@ -264,6 +265,13 @@ Cat (
   cat Void
 )
 
+Human (
+  name String
+  age Int
+
+  human Void
+)
+
 main() {
   meow: Cat = (name: "Meow", age: 3) // error: Cannot convert (name: String, age: Int) to (name: String, age: Int, **cat: Void**)   
 }
@@ -281,6 +289,21 @@ MaybeInt (
 ```
 
 Atom is rather strict with casing: Enum cases and type names always start with an upper case letter, variables and functions always start with a lower case letter.
+
+If you have an enum case, where the case name is the same as the associated type, you can use `_` instead of repeating the type name.
+
+```atom
+Number (
+  Int(Int)
+  Float(Float)
+)
+
+// can be written as
+Number (
+  Int(_)
+  Float(_)
+)
+```
 
 ### Variables
 Variables can either be declared with inferred type `a := 5` or with explicit type annotation `a: Int = 5`.
@@ -364,6 +387,7 @@ main() {
   assert(sum == 20)
 }
 ```
+Loops are not special, but rather just a standard library function demonstrating some syntactic features of Atom, namely: trailing closure syntax, function overloading and implicit closure parameter access with `$0`, `$1`, `$3` for the first, second and third closure parameter respectively... and so on.
 
 Match and loop are expressions: While `match` evaluates to the expression in the matching arm, `loop` collects the iteration results:
 
@@ -376,7 +400,7 @@ main() {
     $0 * 2
   }
 
-  assert(doubled, (2, 4, 8, 26))
+  assert(doubled == (2, 4, 8, 26))
 }  
 ```
 
@@ -384,29 +408,31 @@ main() {
 There are the following operators:
 - Arithmetic: `+`, `-`, `*`, `/`, `%` along with the corresponding assignment operators
 - Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
-- Logical: `||`, `&&`, `!`
-- Bitwise: `<<`, `>>`, `|`, `&` 
+- Short-Circuiting Logical: `||`, `&&` 
+- Bitwise & Logical: `<<`, `>>`, `|`, `&`, `^` unary `!`
 - Collection: `++` concatenates tuples (and strings), e.g., `"Hello " ++ "World!"` or `(1, 2, 3) ++ (4, 5) == (1, 2, 3, 4, 5)`, variadic tuples and strings also support extending via `++=`. The `++` operator can also concatenate a collection and a matching element such as `"Hello World" ++ '+'` or `(1, 2, 3) ++ 4`
 
-#### Operator Precedence and Associativity
+`!` is also used as the bitwise not operator. `|` and `&` also work on booleans as non-shortcircuiting operators.
 
+#### Operator Precedence and Associativity
 All binary operators are left-associative. Operators are listed from lowest to highest precedence:
 
 | Precedence | Operators | Description |
 |------------|-----------|-------------|
 | 1 | `++` | Concatenation |
-| 2 | `\|\|` | Logical OR |
-| 3 | `&&` | Logical AND |
+| 2 | `\|\|` | Short-circuiting OR |
+| 3 | `&&` | Short-circuiting AND |
 | 4 | `==`, `!=` | Equality |
 | 5 | `<`, `>`, `<=`, `>=` | Comparison |
 | 6 | `\|` | Bitwise OR |
-| 7 | `&` | Bitwise AND |
-| 8 | `<<`, `>>` | Bitwise shift |
-| 9 | `+`, `-` | Addition, Subtraction |
-| 10 | `*`, `/`, `%` | Multiplication, Division, Modulo |
-| 11 | `-`, `!`, `~` | Unary minus, logical NOT, bitwise NOT |
+| 7 | `^` | Bitwise XOR |
+| 8 | `&` | Bitwise AND |
+| 9 | `<<`, `>>` | Bitwise shift |
+| 10 | `+`, `-` | Addition, Subtraction |
+| 11 | `*`, `/`, `%` | Multiplication, Division, Modulo |
+| 12 | `-`, `!` | Unary minus, logical/bitwise NOT |
 
-Higher precedence means the operator binds more tightly. For example, `a + b * c` is parsed as `a + (b * c)` because `*` (precedence 10) binds tighter than `+` (precedence 9).
+Higher precedence means the operator binds more tightly. For example, `a + b * c` is parsed as `a + (b * c)` because `*` (precedence 11) binds tighter than `+` (precedence 10).
 
 ### Builtin Types
 #### Primitives
@@ -496,6 +522,27 @@ main() {
 }
 ```
 
+By default, function arguments are passed by value (and deeply immutable, i.e., a caller cannot modify the elements of a passed struct or (variadic) tuple). To pass an argument as (mutable) reference, write `&` in front of the parameter. The caller has to acknowledge the pass-by-reference, by prefixing the argument with `&`.
+
+```atom
+double_in_place(&a Int) {
+  a *= 2
+}
+
+main() {
+  a := 5
+
+  double_in_place(&a)
+  // this would be an error: double_in_place(a)
+  assert(a == 10)
+  
+  // or in UFCS
+  &a.double_in_place()
+  // this would be an error: a.double_in_place()
+  assert(a == 20)
+}
+```
+
 ### Closures
 Functions are first-class citizens and can be passed as arguments:
 
@@ -533,7 +580,7 @@ maybe.match() {
 ```
 
 ### String Interpolation
-Atom support string interpolation with `\()`
+Atom support string interpolation with `\()`.
 
 ```atom
 main() {
@@ -541,6 +588,8 @@ main() {
   print("I think \(a * 2 + 1) is an odd number")
 }
 ```
+
+This syntax has the advantage of not requiring to escape additional characters, i.e., unlike languages that use `$` which then require users to also escape literal `$` characters. This is because `\(` would be an invalid escape sequence in strings.
 
 ### Testing
 As shown [earlier](#structure), atom locates tests in `.test.atom` files.
@@ -567,6 +616,8 @@ assert(foo + 2 == 7)
   assert(2 + 3 == 5)
 }
 ```
+
+As a rule of thumb, unit tests should be located in the same directory as the tested source file, integration tests should be located in the dedicated test directory.
 
 `atom test` will report this roughly as follows:
 
@@ -643,6 +694,7 @@ Matrix(
   fields (Int*(shape(0) * shape(1)))    
 )
 ```
+As seen above, sized variadic tuples can use expression that are comptime evaluatable, such as multiplying const parameters.
 
 Const parameters can have a default value. The standard library makes use of this by specifying String as the default error type:
 
@@ -681,9 +733,9 @@ Result (
 foo(res std::Result) {}
 ```
 
-Additionally to the Atom standard library, libc can be called from their respective C++ namespaces, e.g., `cstdio::printf()`, `cmath::abs()`.
+Additionally to the Atom standard library, libc can be called from their respective C++ namespaces, e.g., `cstdio::printf()`, `cmath::abs()`, etc.
 
 ### Casing
 The following casing rules are expected (and enforced) by the compiler:
-- Uppercase first letter: Type identifiers (structs and enums), enum variants
+- Uppercase first letter: Type identifiers (structs and enums), enum cases
 - Lowercase first letter: function names, module names, parameters, variables, const parameters (such as generic type parameters), struct fields

@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+#
+# Atom compiler driver script
+#
+# Usage: atomc <path> [-o output]
+#   Where <path> is either:
+#     - A .atom source file to compile
+#     - A directory containing .atom files to compile recursively
+#
+# This script handles the full compilation pipeline:
+#   1. Parse .atom source files to S-Expression AST using atom-parser
+#   2. Invoke atom-compile backend to type check, lower, generate code, and link
+#
+# NOTE: The modular design (parsing → AST → backend) is intentional.
+# It allows the parser to be swapped with alternative implementations
+# while keeping the backend independent of parser specifics.
+
+set -e
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Set up paths to the binaries (they're in the root target dir, not atom-compiler/target)
+PARSER_BIN="${SCRIPT_DIR}/target/release/atom"
+COMPILER_BIN="${SCRIPT_DIR}/target/release/atom-compile"
+
+# If release binaries don't exist, try debug
+if [[ ! -f "$PARSER_BIN" ]]; then
+    PARSER_BIN="${SCRIPT_DIR}/target/debug/atom"
+fi
+if [[ ! -f "$COMPILER_BIN" ]]; then
+    COMPILER_BIN="${SCRIPT_DIR}/target/debug/atom-compile"
+fi
+
+# Check if binaries exist
+if [[ ! -f "$PARSER_BIN" ]]; then
+    echo "Error: atom parser not found" >&2
+    echo "Please build with: cd atom-compiler && cargo build --workspace" >&2
+    exit 1
+fi
+if [[ ! -f "$COMPILER_BIN" ]]; then
+    echo "Error: atom-compile not found" >&2
+    echo "Please build with: cd atom-compiler && cargo build --workspace" >&2
+    exit 1
+fi
+
+# Parse arguments
+if [[ $# -lt 1 ]]; then
+    echo "Usage: atomc <path> [OPTIONS]" >&2
+    echo "" >&2
+    echo "Arguments:" >&2
+    echo "  <path>        A .atom file or directory containing .atom files" >&2
+    echo "" >&2
+    echo "Options:" >&2
+    echo "  -o <output>   Output executable path (default: a.out)" >&2
+    echo "  --no-std      Don't include standard library" >&2
+    echo "  --debug       Enable debug output during compilation" >&2
+    echo "" >&2
+    echo "Environment:" >&2
+    echo "  ATOM_STD      Path to standard library (default: ./std/src)" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  atomc example.atom              # Compile single file" >&2
+    echo "  atomc examples/                 # Compile all .atom files in directory" >&2
+    echo "  atomc src/ -o myprogram         # Compile directory with custom output" >&2
+    echo "  atomc main.atom --no-std        # Compile without standard library" >&2
+    echo "  atomc main.atom --debug         # Compile with debug output" >&2
+    exit 1
+fi
+
+INPUT_PATH="$1"
+OUTPUT_FILE="a.out"
+NO_STD=false
+DEBUG_FLAG=""
+
+# Parse output argument
+shift
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: -o requires an argument" >&2
+                exit 1
+            fi
+            OUTPUT_FILE="$2"
+            shift 2
+            ;;
+        --no-std)
+            NO_STD=true
+            shift
+            ;;
+        --debug)
+            DEBUG_FLAG="--debug"
+            shift
+            ;;
+        *)
+            echo "Error: Unknown argument: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Create temporary directory for AST files
+TMP_DIR=$(mktemp -d -t atom-compile.XXXXXX)
+trap "rm -rf $TMP_DIR" EXIT
+
+# Find standard library files (unless --no-std is passed)
+declare -a STDLIB_FILES
+if [[ "$NO_STD" == false ]]; then
+    STDLIB_PATH="${ATOM_STD:-${SCRIPT_DIR}/std/src}"
+    if [[ -d "$STDLIB_PATH" ]]; then
+        while IFS= read -r -d '' file; do
+            # Exclude test files
+            if [[ ! "$file" =~ \.test\.atom$ ]]; then
+                STDLIB_FILES+=("$file")
+            fi
+        done < <(find "$STDLIB_PATH" -maxdepth 1 -name "*.atom" -type f -print0 | sort -z)
+        echo "Found ${#STDLIB_FILES[@]} standard library file(s)"
+    else
+        echo "Warning: Standard library not found at $STDLIB_PATH" >&2
+    fi
+fi
+
+# Find all .atom files
+declare -a ATOM_FILES
+if [[ -f "$INPUT_PATH" ]]; then
+    # Single file
+    if [[ "$INPUT_PATH" != *.atom ]]; then
+        echo "Error: Input file must have .atom extension" >&2
+        exit 1
+    fi
+    ATOM_FILES=("$INPUT_PATH")
+elif [[ -d "$INPUT_PATH" ]]; then
+    # Directory - find all .atom files recursively
+    echo "Finding .atom files in $INPUT_PATH..."
+    while IFS= read -r -d '' file; do
+        ATOM_FILES+=("$file")
+    done < <(find "$INPUT_PATH" -name "*.atom" -type f -print0 | sort -z)
+    
+    if [[ ${#ATOM_FILES[@]} -eq 0 ]]; then
+        echo "Error: No .atom files found in $INPUT_PATH" >&2
+        exit 1
+    fi
+    echo "Found ${#ATOM_FILES[@]} user .atom file(s)"
+else
+    echo "Error: $INPUT_PATH is neither a file nor a directory" >&2
+    exit 1
+fi
+
+# Parse all .atom files to S-Expression AST (stdlib first, then user files)
+ALL_FILES=("${STDLIB_FILES[@]}" "${ATOM_FILES[@]}")
+echo "Parsing ${#ALL_FILES[@]} file(s) total..."
+declare -a AST_FILES
+FILE_COUNT=0
+
+for atom_file in "${ALL_FILES[@]}"; do
+    FILE_COUNT=$((FILE_COUNT + 1))
+    filename=$(basename "$atom_file" .atom)
+    ast_file="$TMP_DIR/${filename}_${FILE_COUNT}.sexpr"
+    
+    echo "  [$FILE_COUNT/${#ALL_FILES[@]}] Parsing $atom_file..."
+    
+    if ! "$PARSER_BIN" --ast "$atom_file" > "$ast_file" 2>&1; then
+        echo "Error: Failed to parse $atom_file" >&2
+        cat "$ast_file" >&2
+        exit 1
+    fi
+    
+    AST_FILES+=("$ast_file")
+done
+
+echo "Successfully parsed all files"
+echo ""
+
+# Compile all AST files
+echo "Compiling..."
+if ! "$COMPILER_BIN" "${AST_FILES[@]}" -o "$OUTPUT_FILE" $DEBUG_FLAG; then
+    echo "Compilation failed" >&2
+    exit 1
+fi
+
+echo ""
+echo "✓ Compilation complete: $OUTPUT_FILE"

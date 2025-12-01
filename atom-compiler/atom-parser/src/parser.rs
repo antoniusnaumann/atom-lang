@@ -585,12 +585,28 @@ impl Parser {
 
     fn parse_param(&mut self) -> ParseResult<Param> {
         let start = self.current_span();
+        
+        // Check for reference prefix: &name Type
+        let is_ref = self.match_token(&TokenKind::And);
+        
         let name = self.expect_value_ident()?;
         
         // Parse type if present
         let ty = if !self.check(&TokenKind::Comma) && !self.check(&TokenKind::RParen) && 
                     !self.check(&TokenKind::Eq) && !self.check(&TokenKind::Semicolon) {
-            Some(Box::new(self.parse_type()?))
+            let inner_ty = self.parse_type()?;
+            if is_ref {
+                // Wrap the type in a Reference type
+                Some(Box::new(Type::Reference {
+                    inner: Box::new(inner_ty),
+                    span: start.merge(self.previous_span()),
+                }))
+            } else {
+                Some(Box::new(inner_ty))
+            }
+        } else if is_ref {
+            // Reference without explicit type - error
+            return Err(self.error("Reference parameter requires an explicit type"));
         } else {
             None
         };
@@ -837,6 +853,26 @@ impl Parser {
     fn parse_pattern(&mut self) -> ParseResult<Pattern> {
         let start = self.current_span();
         
+        // Parse the first (base) pattern
+        let base_pattern = self.parse_base_pattern()?;
+        
+        // Check for alternative patterns (|)
+        if self.check(&TokenKind::Or) {
+            let mut alternatives = vec![base_pattern];
+            
+            while self.match_token(&TokenKind::Or) {
+                alternatives.push(self.parse_base_pattern()?);
+            }
+            
+            Ok(Pattern::Alternative(alternatives, start.merge(self.previous_span())))
+        } else {
+            Ok(base_pattern)
+        }
+    }
+
+    fn parse_base_pattern(&mut self) -> ParseResult<Pattern> {
+        let start = self.current_span();
+        
         // Wildcard: _
         if self.check(&TokenKind::ValueIdent) {
             let is_wildcard = self.peek().text == "_";
@@ -1019,6 +1055,10 @@ impl Parser {
 
     fn parse_type(&mut self) -> ParseResult<Type> {
         let start = self.current_span();
+        
+        // Note: Reference types (&T) are NOT parsed here in parse_type().
+        // References are only created through parameter syntax: &name Type
+        // This is handled in parse_param() which wraps the type in Type::Reference
         
         // Base type
         let mut ty = if self.match_token(&TokenKind::LParen) {
@@ -1260,8 +1300,73 @@ impl Parser {
     fn parse_binary_expression(&mut self, min_precedence: u8) -> ParseResult<Expr> {
         let mut left = self.parse_unary_expression()?;
         
+        // Check if we're starting a comparison chain
+        if let Some((first_op, precedence)) = self.get_binary_op() {
+            if precedence >= min_precedence && self.is_comparison_op(first_op) {
+                // Potential multi-way comparison - look ahead
+                let start_span = left.span();
+                
+                // Collect all consecutive comparison operators
+                let mut operands = vec![left.clone()];
+                let mut operators = Vec::new();
+                
+                let mut current_op = first_op;
+                let mut current_prec = precedence;
+                
+                while current_prec >= min_precedence && self.is_comparison_op(current_op) {
+                    self.advance(); // Consume operator
+                    operators.push(current_op);
+                    
+                    // Parse the next operand (without allowing more comparisons at this level)
+                    let next_operand = self.parse_binary_expression(current_prec + 1)?;
+                    operands.push(next_operand);
+                    
+                    // Check if there's another comparison operator
+                    if let Some((next_op, next_prec)) = self.get_binary_op() {
+                        if next_prec == current_prec && self.is_comparison_op(next_op) {
+                            // Continue the chain
+                            current_op = next_op;
+                            current_prec = next_prec;
+                        } else {
+                            // Different operator or precedence, stop the chain
+                            break;
+                        }
+                    } else {
+                        // No more operators
+                        break;
+                    }
+                }
+                
+                // If we collected multiple comparisons, create a MultiComparison
+                if operators.len() > 1 {
+                    let end_span = operands.last().unwrap().span();
+                    let span = start_span.merge(end_span);
+                    left = Expr::MultiComparison {
+                        operands,
+                        operators,
+                        span,
+                    };
+                } else {
+                    // Only one comparison, create a regular Binary expression
+                    let span = operands[0].span().merge(operands[1].span());
+                    left = Expr::Binary {
+                        op: operators[0],
+                        left: Box::new(operands[0].clone()),
+                        right: Box::new(operands[1].clone()),
+                        span,
+                    };
+                }
+            }
+        }
+        
+        // Continue parsing non-comparison binary operators
         while let Some((op, precedence)) = self.get_binary_op() {
             if precedence < min_precedence {
+                break;
+            }
+            
+            // Skip if it's a comparison operator (already handled above)
+            if self.is_comparison_op(op) {
                 break;
             }
             
@@ -1278,6 +1383,11 @@ impl Parser {
         }
         
         Ok(left)
+    }
+    
+    /// Check if an operator is a comparison operator
+    fn is_comparison_op(&self, op: BinOp) -> bool {
+        matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
     }
 
     fn get_binary_op(&self) -> Option<(BinOp, u8)> {
@@ -1322,6 +1432,13 @@ impl Parser {
 
     fn parse_unary_expression(&mut self) -> ParseResult<Expr> {
         let start = self.current_span();
+        
+        // Check for reference operator: &expr
+        if self.match_token(&TokenKind::And) {
+            let expr = Box::new(self.parse_unary_expression()?);
+            let span = start.merge(expr.span());
+            return Ok(Expr::Reference { expr, span });
+        }
         
         // Check for unary operators
         let op = if self.match_token(&TokenKind::Minus) {
@@ -1536,6 +1653,14 @@ impl Parser {
         if self.check(&TokenKind::TypeIdent) {
             let type_name = self.expect_type_ident()?;
             
+            // Check for special identifiers that are actually boolean literals
+            // (True/False are TypeIdents because they start with uppercase)
+            if type_name.name == "True" {
+                return Ok(Expr::Literal(Literal::Bool(true), type_name.span));
+            } else if type_name.name == "False" {
+                return Ok(Expr::Literal(Literal::Bool(false), type_name.span));
+            }
+            
             if self.match_token(&TokenKind::LParen) {
                 // Struct/enum constructor
                 let fields = self.parse_struct_init_fields()?;
@@ -1571,10 +1696,20 @@ impl Parser {
             if self.check(&TokenKind::LBrace) || self.check(&TokenKind::Arrow) {
                 // Parameterless closure: () { body } or () -> Type { body }
                 return self.parse_closure_body(Vec::new(), start);
-            } else {
-                // Empty tuple
-                return Ok(Expr::Tuple(Vec::new(), start.merge(self.previous_span())));
+            } else if self.check(&TokenKind::TypeIdent) {
+                // Check if it's () Type { body } pattern
+                let checkpoint = self.pos;
+                self.advance(); // Skip the type identifier
+                if self.check(&TokenKind::LBrace) {
+                    // It's a closure with return type!
+                    self.pos = checkpoint; // Rewind to parse the type properly
+                    return self.parse_closure_body(Vec::new(), start);
+                }
+                // Not a closure, rewind
+                self.pos = checkpoint;
             }
+            // Empty tuple
+            return Ok(Expr::Tuple(Vec::new(), start.merge(self.previous_span())));
         }
         
         // Try to parse as closure parameters first
@@ -1585,6 +1720,17 @@ impl Parser {
             if self.check(&TokenKind::LBrace) || self.check(&TokenKind::Arrow) {
                 // It's a closure!
                 return self.parse_closure_body(params, start);
+            } else if self.check(&TokenKind::TypeIdent) {
+                // Check if it's (params) Type { body } pattern
+                let checkpoint2 = self.pos;
+                self.advance(); // Skip the type identifier
+                if self.check(&TokenKind::LBrace) {
+                    // It's a closure with return type!
+                    self.pos = checkpoint2; // Rewind to parse the type properly
+                    return self.parse_closure_body(params, start);
+                }
+                // Not a closure, rewind
+                self.pos = checkpoint2;
             }
         }
         
@@ -1629,8 +1775,11 @@ impl Parser {
     }
 
     fn parse_closure_body(&mut self, params: Vec<Param>, start: Span) -> ParseResult<Expr> {
-        // Parse optional return type
+        // Parse optional return type (with or without arrow)
         let return_type = if self.match_token(&TokenKind::Arrow) {
+            Some(Box::new(self.parse_type()?))
+        } else if self.check(&TokenKind::TypeIdent) {
+            // Return type without arrow: (params) Type { body }
             Some(Box::new(self.parse_type()?))
         } else {
             None
@@ -1918,18 +2067,17 @@ mod tests {
 
     #[test]
     fn test_bool_literals() {
-        // Note: True and False are actually TypeIdents (uppercase), not special keywords
-        // They are enum variants of the Bool type
+        // True and False are special TypeIdents that are converted to Bool literals by the parser
         let expr = parse_expr("True").unwrap();
         match expr {
-            Expr::Ident(ident) if ident.name == "True" => {},
-            _ => panic!("Expected True identifier, got {:?}", expr),
+            Expr::Literal(Literal::Bool(true), _) => {},
+            _ => panic!("Expected Bool(true) literal, got {:?}", expr),
         }
 
         let expr = parse_expr("False").unwrap();
         match expr {
-            Expr::Ident(ident) if ident.name == "False" => {},
-            _ => panic!("Expected False identifier, got {:?}", expr),
+            Expr::Literal(Literal::Bool(false), _) => {},
+            _ => panic!("Expected Bool(false) literal, got {:?}", expr),
         }
     }
 
@@ -3047,6 +3195,68 @@ fib(nth Int) Int {
                 }
             },
             _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_alternatives() {
+        // Test pattern alternatives with | operator
+        let code = "match(token) { LBrace | RBrace | LParen | RParen { True } _ { False } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                
+                // First arm should have alternative pattern with 4 patterns
+                match &arms[0].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 4);
+                        // Check that all patterns are enum patterns
+                        for pat in patterns {
+                            assert!(matches!(pat, Pattern::Enum { .. }));
+                        }
+                    }
+                    _ => panic!("Expected alternative pattern, got {:?}", arms[0].pattern),
+                }
+                
+                // Second arm should be wildcard
+                assert!(matches!(arms[1].pattern, Pattern::Wildcard(_)));
+            }
+            _ => panic!("Expected match expression, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_pattern_alternatives_literals() {
+        // Test pattern alternatives with literal values
+        let code = "match(x) { 1 | 2 | 3 { \"small\" } 10 | 20 | 30 { \"big\" } _ { \"other\" } }";
+        let expr = parse_expr(code).unwrap();
+        
+        match expr {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 3);
+                
+                // First arm: 1 | 2 | 3
+                match &arms[0].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 3);
+                        for pat in patterns {
+                            assert!(matches!(pat, Pattern::Literal(Literal::Integer(_), _)));
+                        }
+                    }
+                    _ => panic!("Expected alternative pattern"),
+                }
+                
+                // Second arm: 10 | 20 | 30
+                match &arms[1].pattern {
+                    Pattern::Alternative(patterns, _) => {
+                        assert_eq!(patterns.len(), 3);
+                    }
+                    _ => panic!("Expected alternative pattern"),
+                }
+            }
+            _ => panic!("Expected match expression"),
         }
     }
 }

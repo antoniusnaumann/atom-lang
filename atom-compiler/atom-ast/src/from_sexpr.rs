@@ -830,18 +830,39 @@ impl FromSExpr for VarDecl {
                 // Try parsing as expression first since var decls usually have init
                 if let Ok(expr) = Expr::from_sexpr(filtered[3]) {
                     // Check if it can also be parsed as a type
-                    if let Ok(t) = Type::from_sexpr(filtered[3]) {
-                        // Ambiguous: could be either
-                        // Heuristic: if it's an empty tuple, it's more likely an init
-                        // For other cases, prefer type if it's a simple type
-                        match filtered[3].as_list() {
-                            Ok(list) if !list.is_empty() && list[0].as_symbol().ok() == Some("tuple") => {
-                                // It's a tuple - treat as init
-                                init = Some(Box::new(expr));
+                    if let Ok(_t) = Type::from_sexpr(filtered[3]) {
+                        // Ambiguous: could be either type or init
+                        // Heuristic: For variable declarations, init is more common than bare type
+                        // Prefer init unless it looks clearly like a type annotation
+                        match filtered[3] {
+                            // Check if it's a complex type expression (starts with list)
+                            SExpr::List(list) if !list.is_empty() => {
+                                match list[0].as_symbol().ok() {
+                                    Some("tuple") | Some("function-type") | Some("variadic*") | Some("variadic+") => {
+                                        // Complex type syntax - treat as type
+                                        ty = Some(Box::new(Type::from_sexpr(filtered[3])?));
+                                    }
+                                    _ => {
+                                        // Other list forms are more likely expressions
+                                        init = Some(Box::new(expr));
+                                    }
+                                }
+                            }
+                            // Simple symbol: use naming convention to disambiguate
+                            // PascalCase (starts with uppercase) = type name
+                            // snake_case/camelCase = variable/expression
+                            SExpr::Symbol(s) => {
+                                if s.chars().next().is_some_and(|c| c.is_uppercase()) {
+                                    // Starts with uppercase - likely a type (e.g., String, Int, Bool)
+                                    ty = Some(Box::new(Type::from_sexpr(filtered[3])?));
+                                } else {
+                                    // Starts with lowercase - likely a variable reference
+                                    init = Some(Box::new(expr));
+                                }
                             }
                             _ => {
-                                // Prefer type for other cases
-                                ty = Some(Box::new(t));
+                                // Default to init for ambiguous cases
+                                init = Some(Box::new(expr));
                             }
                         }
                     } else {
@@ -1049,6 +1070,17 @@ impl FromSExpr for Type {
                     span,
                 })
             }
+            "reference" => {
+                if filtered.len() < 2 {
+                    return Err(ParseError {
+                        message: "Reference type requires inner type".to_string(),
+                    });
+                }
+                Ok(Type::Reference {
+                    inner: Box::new(Type::from_sexpr(filtered[1])?),
+                    span,
+                })
+            }
             _ => Err(ParseError {
                 message: format!("Unknown type: {}", head),
             }),
@@ -1116,6 +1148,60 @@ impl FromSExpr for Expr {
                     op,
                     left: Box::new(Expr::from_sexpr(filtered[1])?),
                     right: Box::new(Expr::from_sexpr(filtered[2])?),
+                    span,
+                })
+            }
+            "multi-comparison" => {
+                // Parse (multi-comparison (ops op1 op2 ...) expr1 expr2 expr3 ...)
+                if filtered.len() < 3 {
+                    return Err(ParseError {
+                        message: "multi-comparison requires at least (ops ...) and 2 operands".to_string(),
+                    });
+                }
+                
+                // First child should be (ops ...)
+                let ops_sexpr = &filtered[1];
+                let ops_list = if let SExpr::List(ops_elements) = ops_sexpr {
+                    ops_elements
+                } else {
+                    return Err(ParseError {
+                        message: "multi-comparison first element must be (ops ...)".to_string(),
+                    });
+                };
+                
+                if ops_list.is_empty() || !matches!(ops_list[0], SExpr::Symbol(ref s) if s == "ops") {
+                    return Err(ParseError {
+                        message: "multi-comparison first element must be (ops ...)".to_string(),
+                    });
+                }
+                
+                // Parse operators
+                let mut operators = Vec::new();
+                for op_sexpr in &ops_list[1..] {
+                    if let SExpr::Symbol(op_str) = op_sexpr {
+                        operators.push(BinOp::from_str(op_str)?);
+                    } else {
+                        return Err(ParseError {
+                            message: "multi-comparison operators must be symbols".to_string(),
+                        });
+                    }
+                }
+                
+                // Parse operands
+                let mut operands = Vec::new();
+                for operand_sexpr in &filtered[2..] {
+                    operands.push(Expr::from_sexpr(operand_sexpr)?);
+                }
+                
+                if operands.len() != operators.len() + 1 {
+                    return Err(ParseError {
+                        message: "multi-comparison must have n+1 operands for n operators".to_string(),
+                    });
+                }
+                
+                Ok(Expr::MultiComparison {
+                    operands,
+                    operators,
                     span,
                 })
             }
@@ -1265,6 +1351,14 @@ impl FromSExpr for Expr {
                 expr: Box::new(Expr::from_sexpr(filtered[1])?),
                 span,
             }),
+            "reference" => Ok(Expr::Reference {
+                expr: Box::new(Expr::from_sexpr(filtered[1])?),
+                span,
+            }),
+            "rune" => {
+                // Rune literal: (rune 'x')
+                Ok(Expr::Literal(Literal::from_sexpr(sexpr)?, span))
+            }
             _ => Err(ParseError {
                 message: format!("Unknown expression: {}", head),
             }),
@@ -1385,6 +1479,13 @@ impl FromSExpr for Pattern {
                     fields,
                     span,
                 })
+            }
+            "pattern-alternative" => {
+                let mut patterns = Vec::new();
+                for pattern_sexpr in &filtered[1..] {
+                    patterns.push(Pattern::from_sexpr(pattern_sexpr)?);
+                }
+                Ok(Pattern::Alternative(patterns, span))
             }
             "pattern-expr" => Ok(Pattern::Expr(Box::new(Expr::from_sexpr(filtered[1])?))),
             _ => Err(ParseError {
@@ -1509,6 +1610,24 @@ mod tests {
         let sexpr = SExpr::parse(&sexpr_str).unwrap();
         let lit2 = Literal::from_sexpr(&sexpr).unwrap();
         assert_eq!(lit, lit2);
+    }
+
+    #[test]
+    fn test_bool_literal_from_sexpr() {
+        // Test that "True" and "False" symbols are converted to Bool literals when parsing expressions
+        let sexpr_true = SExpr::parse("True").unwrap();
+        let expr_true = Expr::from_sexpr(&sexpr_true).unwrap();
+        match expr_true {
+            Expr::Literal(Literal::Bool(true), _) => {},
+            _ => panic!("Expected Bool(true) literal, got {:?}", expr_true),
+        }
+
+        let sexpr_false = SExpr::parse("False").unwrap();
+        let expr_false = Expr::from_sexpr(&sexpr_false).unwrap();
+        match expr_false {
+            Expr::Literal(Literal::Bool(false), _) => {},
+            _ => panic!("Expected Bool(false) literal, got {:?}", expr_false),
+        }
     }
 
     #[test]
