@@ -1039,7 +1039,7 @@ impl Type {
     }
 
     /// Check if this type supports comparison operators
-    fn supports_comparison(&self) -> bool {
+    pub fn supports_comparison(&self) -> bool {
         match self {
             Type::Void | Type::Int(_) | Type::UInt(_) | Type::Float(_) | Type::Rune => true,
             Type::Enum(_) => true, // Enum comparison by case order

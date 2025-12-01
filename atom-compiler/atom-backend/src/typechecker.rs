@@ -545,6 +545,12 @@ impl TypeChecker {
                 span: _,
             } => self.check_binary(op, left, right),
 
+            Expr::MultiComparison {
+                operands,
+                operators,
+                span: _,
+            } => self.check_multi_comparison(operands, operators),
+
             Expr::Unary { op, expr, span: _ } => self.check_unary(op, expr),
 
             Expr::Call { func, args, span: _ } => self.check_call(func, args),
@@ -807,6 +813,116 @@ impl TypeChecker {
             BinaryOp::Concat => Ok(left_ty), // Concatenation returns same type
             _ => Ok(left_ty),                // Arithmetic returns same type
         }
+    }
+
+    fn check_multi_comparison(
+        &mut self,
+        operands: &[Expr],
+        operators: &[BinOp],
+    ) -> TypeResult<Type> {
+        // Multi-way comparisons like a < b < c or x == y == True
+        // Requirements:
+        // 1. All operators must be comparison operators
+        // 2. All operands must be compatible with the comparison operators
+        // 3. For == and !=, all operands must have the same type (or compatible types)
+        // 4. For ordering comparisons (<, <=, >, >=), all operands must be numeric or orderable
+        
+        if operands.len() < 2 {
+            return Err(TypeError::Other(
+                "Multi-way comparison requires at least 2 operands".to_string(),
+            ));
+        }
+        
+        if operands.len() != operators.len() + 1 {
+            return Err(TypeError::Other(
+                "Multi-way comparison must have n+1 operands for n operators".to_string(),
+            ));
+        }
+        
+        // Check that all operators are comparison operators
+        for op in operators {
+            if !matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+                return Err(TypeError::Other(format!(
+                    "Multi-way comparison can only use comparison operators, found {:?}",
+                    op
+                )));
+            }
+        }
+        
+        // Type-check all operands
+        let mut operand_types = Vec::new();
+        for operand in operands {
+            operand_types.push(self.check_expr(operand)?);
+        }
+        
+        // Check type compatibility based on the operator type
+        let first_op = &operators[0];
+        let is_equality = matches!(first_op, BinOp::Eq | BinOp::Ne);
+        let is_ordering = matches!(first_op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
+        
+        // All operators must be of the same category (all equality or all ordering)
+        for op in operators {
+            let op_is_equality = matches!(op, BinOp::Eq | BinOp::Ne);
+            let op_is_ordering = matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
+            
+            if is_equality && !op_is_equality {
+                return Err(TypeError::Other(
+                    "Cannot mix equality and ordering operators in multi-way comparison".to_string(),
+                ));
+            }
+            if is_ordering && !op_is_ordering {
+                return Err(TypeError::Other(
+                    "Cannot mix equality and ordering operators in multi-way comparison".to_string(),
+                ));
+            }
+        }
+        
+        if is_equality {
+            // For equality comparisons (a == b == c), all operands must have the same type
+            // This implements the requirement that a == b == True means both a and b are True
+            let first_type = &operand_types[0];
+            
+            for (i, operand_type) in operand_types.iter().enumerate().skip(1) {
+                if !operand_type.can_convert_to(first_type) && !first_type.can_convert_to(operand_type) {
+                    return Err(TypeError::Incompatible {
+                        expected: Box::new(first_type.clone()),
+                        found: Box::new(operand_type.clone()),
+                        reason: format!(
+                            "Multi-way equality comparison requires all operands to have matching types (operand {} has incompatible type)",
+                            i
+                        ),
+                    });
+                }
+            }
+        } else if is_ordering {
+            // For ordering comparisons (a < b < c), all operands must support comparison
+            for (i, operand_type) in operand_types.iter().enumerate() {
+                if !operand_type.supports_comparison() {
+                    return Err(TypeError::Other(format!(
+                        "Multi-way ordering comparison requires all operands to support comparison, operand {} has type {}",
+                        i, operand_type
+                    )));
+                }
+            }
+            
+            // Also check that all types are compatible (can be compared)
+            let first_type = &operand_types[0];
+            for (i, operand_type) in operand_types.iter().enumerate().skip(1) {
+                if !operand_type.can_convert_to(first_type) && !first_type.can_convert_to(operand_type) {
+                    return Err(TypeError::Incompatible {
+                        expected: Box::new(first_type.clone()),
+                        found: Box::new(operand_type.clone()),
+                        reason: format!(
+                            "Multi-way ordering comparison requires all operands to have compatible types (operand {} has incompatible type)",
+                            i
+                        ),
+                    });
+                }
+            }
+        }
+        
+        // Multi-way comparison always returns Bool
+        Ok(self.type_env.resolve_type("Bool").unwrap())
     }
 
     fn check_unary(&mut self, op: &UnOp, expr: &Expr) -> TypeResult<Type> {

@@ -1,0 +1,74 @@
+// Test multi-way comparisons
+
+main() Int {
+    // Test 1: Simple multi-way comparison
+    x := 5
+    y := 10
+    z := 15
+    
+    result1 := x < y < z
+    print("Test 1 (5 < 10 < 15): ")
+    print_bool(result1)
+    print("\n")
+    
+    // Test 2: Should be false
+    result2 := x < z < y
+    print("Test 2 (5 < 15 < 10): ")
+    print_bool(result2)
+    print("\n")
+    
+    // Test 3: Equality chain
+    a := 42
+    b := 42
+    c := 42
+    result3 := a == b == c
+    print("Test 3 (42 == 42 == 42): ")
+    print_bool(result3)
+    print("\n")
+    
+    // Test 4: Equality chain (should be false)
+    d := 1
+    e := 2
+    f := 3
+    result4 := d == e == f
+    print("Test 4 (1 == 2 == 3): ")
+    print_bool(result4)
+    print("\n")
+    
+    // Test 5: Range check (common use case)
+    value := 7
+    result5 := 0 <= value <= 10
+    print("Test 5 (0 <= 7 <= 10): ")
+    print_bool(result5)
+    print("\n")
+    
+    // Test 6: Function calls (all execute, no short-circuit)
+    result6 := get_five() < get_ten() < get_fifteen()
+    print("Test 6 (5 < 10 < 15 via functions): ")
+    print_bool(result6)
+    print("\n")
+    
+    0
+}
+
+get_five() Int {
+    print("get_five called\n")
+    5
+}
+
+get_ten() Int {
+    print("get_ten called\n")
+    10
+}
+
+get_fifteen() Int {
+    print("get_fifteen called\n")
+    15
+}
+
+print_bool(b Bool) Void {
+    match(b) {
+        True { print("true") }
+        False { print("false") }
+    }
+}

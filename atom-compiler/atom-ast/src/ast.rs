@@ -257,6 +257,13 @@ pub enum Expr {
         expr: Box<Expr>,
         span: Span,
     },
+    /// Multi-way comparison: `a < b < c` or `x == y == True`
+    /// Stores the operands and operators in order
+    MultiComparison {
+        operands: Vec<Expr>,
+        operators: Vec<BinOp>,
+        span: Span,
+    },
 }
 
 /// Field initialization in struct literal: `name: value` or just `value`
@@ -370,6 +377,7 @@ impl Expr {
             Expr::Match { span, .. } => *span,
             Expr::Comptime { span, .. } => *span,
             Expr::Reference { span, .. } => *span,
+            Expr::MultiComparison { span, .. } => *span,
         }
     }
 }

@@ -1151,6 +1151,60 @@ impl FromSExpr for Expr {
                     span,
                 })
             }
+            "multi-comparison" => {
+                // Parse (multi-comparison (ops op1 op2 ...) expr1 expr2 expr3 ...)
+                if filtered.len() < 3 {
+                    return Err(ParseError {
+                        message: "multi-comparison requires at least (ops ...) and 2 operands".to_string(),
+                    });
+                }
+                
+                // First child should be (ops ...)
+                let ops_sexpr = &filtered[1];
+                let ops_list = if let SExpr::List(ops_elements) = ops_sexpr {
+                    ops_elements
+                } else {
+                    return Err(ParseError {
+                        message: "multi-comparison first element must be (ops ...)".to_string(),
+                    });
+                };
+                
+                if ops_list.is_empty() || !matches!(ops_list[0], SExpr::Symbol(ref s) if s == "ops") {
+                    return Err(ParseError {
+                        message: "multi-comparison first element must be (ops ...)".to_string(),
+                    });
+                }
+                
+                // Parse operators
+                let mut operators = Vec::new();
+                for op_sexpr in &ops_list[1..] {
+                    if let SExpr::Symbol(op_str) = op_sexpr {
+                        operators.push(BinOp::from_str(op_str)?);
+                    } else {
+                        return Err(ParseError {
+                            message: "multi-comparison operators must be symbols".to_string(),
+                        });
+                    }
+                }
+                
+                // Parse operands
+                let mut operands = Vec::new();
+                for operand_sexpr in &filtered[2..] {
+                    operands.push(Expr::from_sexpr(operand_sexpr)?);
+                }
+                
+                if operands.len() != operators.len() + 1 {
+                    return Err(ParseError {
+                        message: "multi-comparison must have n+1 operands for n operators".to_string(),
+                    });
+                }
+                
+                Ok(Expr::MultiComparison {
+                    operands,
+                    operators,
+                    span,
+                })
+            }
             "-" => {
                 // "-" can be either binary or unary
                 if filtered.len() == 2 {

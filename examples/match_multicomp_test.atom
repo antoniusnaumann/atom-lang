@@ -1,0 +1,28 @@
+// Test multi-way comparisons in match patterns
+
+main() Int {
+    test_value := 7
+    
+    // Use multi-way comparison in match pattern
+    result := match(test_value) {
+        5 <= $0 <= 15 { 1 }  // Should match: 5 <= 7 <= 15 is true
+        _ { 0 }
+    }
+    
+    test_value2 := 20
+    
+    result2 := match(test_value2) {
+        5 <= $0 <= 15 { 1 }  // Should NOT match: 5 <= 20 is true but 20 <= 15 is false
+        _ { 0 }
+    }
+    
+    // Test with equality
+    test_value3 := 10
+    
+    result3 := match(test_value3) {
+        5 <= $0 <= 15 { 42 }
+        _ { 99 }
+    }
+    
+    result3  // Should return 42
+}

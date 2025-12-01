@@ -731,6 +731,9 @@ impl Lower {
             atom_ast::Expr::Reference { expr, .. } => {
                 self.lower_reference(expr, ir_block, func)
             }
+            atom_ast::Expr::MultiComparison { operands, operators, .. } => {
+                self.lower_multi_comparison(operands, operators, ir_block, func)
+            }
         }
     }
 
@@ -1214,6 +1217,81 @@ impl Lower {
         });
         
         Ok(result_id)
+    }
+
+    /// Lower multi-way comparisons (e.g., a < b < c).
+    /// Desugars to: _tmp0 = a; _tmp1 = b; _tmp2 = c; (_tmp0 < _tmp1) && (_tmp1 < _tmp2)
+    /// No short-circuiting: all operands are evaluated left-to-right, then comparisons are combined with &&.
+    fn lower_multi_comparison(
+        &mut self,
+        operands: &[atom_ast::Expr],
+        operators: &[atom_ast::BinOp],
+        ir_block: &mut IrBlock,
+        func: &mut IrFunction,
+    ) -> LowerResult<ValueId> {
+        if operands.len() < 2 || operators.len() != operands.len() - 1 {
+            return Err(LowerError::Internal(
+                "Invalid multi-comparison: operands and operators mismatch".to_string(),
+            ));
+        }
+
+        // Step 1: Evaluate all operands and store in temporary variables (SSA values)
+        let mut temp_values = Vec::new();
+        for operand in operands {
+            let value = self.lower_expr(operand, ir_block, func)?;
+            temp_values.push(value);
+        }
+
+        // Step 2: Create binary comparisons from consecutive pairs
+        // For a < b < c, create (a < b) && (b < c)
+        let mut comparison_results = Vec::new();
+        for i in 0..operators.len() {
+            let left_val = temp_values[i];
+            let right_val = temp_values[i + 1];
+            let op = &operators[i];
+
+            // Convert to IR binary operator
+            let ir_op = self.convert_binop(op)?;
+
+            // Create comparison instruction
+            let cmp_result = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: cmp_result,
+                ty: IrType::Bool,
+                kind: IrInstructionKind::BinOp {
+                    op: ir_op,
+                    left: left_val,
+                    right: right_val,
+                },
+            });
+
+            comparison_results.push(cmp_result);
+        }
+
+        // Step 3: Combine all comparisons with && (logical AND)
+        // For a single comparison, just return it
+        if comparison_results.len() == 1 {
+            return Ok(comparison_results[0]);
+        }
+
+        // For multiple comparisons, combine with &&
+        // Note: We use simple && (not short-circuit) since all operands are already evaluated
+        let mut result = comparison_results[0];
+        for &next_cmp in &comparison_results[1..] {
+            let combined = self.fresh_value_id();
+            ir_block.add_instruction(IrInstruction {
+                result: combined,
+                ty: IrType::Bool,
+                kind: IrInstructionKind::BinOp {
+                    op: IrBinOp::And,
+                    left: result,
+                    right: next_cmp,
+                },
+            });
+            result = combined;
+        }
+
+        Ok(result)
     }
 
     /// Lower an assignment operation.

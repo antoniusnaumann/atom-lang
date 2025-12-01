@@ -571,6 +571,25 @@ impl ToSExpr for Expr {
                 write_span(f, *span)?;
                 writeln!(f, ")")?;
             }
+            Expr::MultiComparison { operands, operators, span } => {
+                write_indent(f, indent)?;
+                write!(f, "(multi-comparison")?;
+                writeln!(f)?;
+                // Write operators
+                write_indent(f, indent + 1)?;
+                write!(f, "(ops")?;
+                for op in operators {
+                    write!(f, " {}", op.to_sexpr())?;
+                }
+                writeln!(f, ")")?;
+                // Write operands
+                for operand in operands {
+                    operand.write_sexpr(f, indent + 1)?;
+                }
+                write_indent(f, indent)?;
+                write_span(f, *span)?;
+                writeln!(f, ")")?;
+            }
             Expr::Unary { op, expr, span } => {
                 write_indent(f, indent)?;
                 write!(f, "({}", op.to_sexpr())?;

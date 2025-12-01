@@ -1300,8 +1300,73 @@ impl Parser {
     fn parse_binary_expression(&mut self, min_precedence: u8) -> ParseResult<Expr> {
         let mut left = self.parse_unary_expression()?;
         
+        // Check if we're starting a comparison chain
+        if let Some((first_op, precedence)) = self.get_binary_op() {
+            if precedence >= min_precedence && self.is_comparison_op(first_op) {
+                // Potential multi-way comparison - look ahead
+                let start_span = left.span();
+                
+                // Collect all consecutive comparison operators
+                let mut operands = vec![left.clone()];
+                let mut operators = Vec::new();
+                
+                let mut current_op = first_op;
+                let mut current_prec = precedence;
+                
+                while current_prec >= min_precedence && self.is_comparison_op(current_op) {
+                    self.advance(); // Consume operator
+                    operators.push(current_op);
+                    
+                    // Parse the next operand (without allowing more comparisons at this level)
+                    let next_operand = self.parse_binary_expression(current_prec + 1)?;
+                    operands.push(next_operand);
+                    
+                    // Check if there's another comparison operator
+                    if let Some((next_op, next_prec)) = self.get_binary_op() {
+                        if next_prec == current_prec && self.is_comparison_op(next_op) {
+                            // Continue the chain
+                            current_op = next_op;
+                            current_prec = next_prec;
+                        } else {
+                            // Different operator or precedence, stop the chain
+                            break;
+                        }
+                    } else {
+                        // No more operators
+                        break;
+                    }
+                }
+                
+                // If we collected multiple comparisons, create a MultiComparison
+                if operators.len() > 1 {
+                    let end_span = operands.last().unwrap().span();
+                    let span = start_span.merge(end_span);
+                    left = Expr::MultiComparison {
+                        operands,
+                        operators,
+                        span,
+                    };
+                } else {
+                    // Only one comparison, create a regular Binary expression
+                    let span = operands[0].span().merge(operands[1].span());
+                    left = Expr::Binary {
+                        op: operators[0],
+                        left: Box::new(operands[0].clone()),
+                        right: Box::new(operands[1].clone()),
+                        span,
+                    };
+                }
+            }
+        }
+        
+        // Continue parsing non-comparison binary operators
         while let Some((op, precedence)) = self.get_binary_op() {
             if precedence < min_precedence {
+                break;
+            }
+            
+            // Skip if it's a comparison operator (already handled above)
+            if self.is_comparison_op(op) {
                 break;
             }
             
@@ -1318,6 +1383,11 @@ impl Parser {
         }
         
         Ok(left)
+    }
+    
+    /// Check if an operator is a comparison operator
+    fn is_comparison_op(&self, op: BinOp) -> bool {
+        matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
     }
 
     fn get_binary_op(&self) -> Option<(BinOp, u8)> {
