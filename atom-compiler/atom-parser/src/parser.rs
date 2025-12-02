@@ -1359,14 +1359,9 @@ impl Parser {
             }
         }
         
-        // Continue parsing non-comparison binary operators
+        // Continue parsing binary operators
         while let Some((op, precedence)) = self.get_binary_op() {
             if precedence < min_precedence {
-                break;
-            }
-            
-            // Skip if it's a comparison operator (already handled above)
-            if self.is_comparison_op(op) {
                 break;
             }
             
