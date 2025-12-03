@@ -123,6 +123,10 @@ fi
 
 # Find all .atom files
 declare -a ATOM_FILES
+declare -a ATOM_MODULES  # Module name for each ATOM_FILE (empty string for user files)
+declare -a DEPS_FILES
+declare -a DEPS_MODULES  # Module name for each DEPS_FILE
+
 if [[ -f "$INPUT_PATH" ]]; then
     # Single file
     if [[ "$INPUT_PATH" != *.atom ]]; then
@@ -130,14 +134,56 @@ if [[ -f "$INPUT_PATH" ]]; then
         exit 1
     fi
     ATOM_FILES=("$INPUT_PATH")
+    ATOM_MODULES=("")  # No module for single file
 elif [[ -d "$INPUT_PATH" ]]; then
     # Directory - find all .atom files recursively
     echo "Finding .atom files in $INPUT_PATH..."
-    while IFS= read -r -d '' file; do
-        ATOM_FILES+=("$file")
-    done < <(find "$INPUT_PATH" -name "*.atom" -type f -print0 | sort -z)
     
-    if [[ ${#ATOM_FILES[@]} -eq 0 ]]; then
+    # Find files in src/ directory (follow symlinks)
+    SRC_DIR="$INPUT_PATH"
+    if [[ -d "$INPUT_PATH/src" ]]; then
+        SRC_DIR="$INPUT_PATH/src"
+    fi
+    
+    while IFS= read -r -d '' file; do
+        # Exclude test files from compilation
+        if [[ ! "$file" =~ \.test\.atom$ ]]; then
+            ATOM_FILES+=("$file")
+            ATOM_MODULES+=("")  # No module for user files
+        fi
+    done < <(find -L "$SRC_DIR" -name "*.atom" -print0 | sort -z)
+    
+    # Find files in deps/ directory (follow symlinks)
+    if [[ -d "$INPUT_PATH/deps" ]]; then
+        echo "Finding dependencies in $INPUT_PATH/deps..."
+        
+        # Iterate over each subdirectory in deps/
+        for dep_dir in "$INPUT_PATH/deps"/*; do
+            if [[ -d "$dep_dir" ]]; then
+                dep_name=$(basename "$dep_dir")
+                
+                # Look for src/ directory in the dependency
+                dep_src="$dep_dir/src"
+                if [[ ! -d "$dep_src" ]]; then
+                    dep_src="$dep_dir"
+                fi
+                
+                # Find all .atom files in this dependency (follow symlinks, exclude tests)
+                while IFS= read -r -d '' file; do
+                    if [[ ! "$file" =~ \.test\.atom$ ]]; then
+                        DEPS_FILES+=("$file")
+                        DEPS_MODULES+=("$dep_name")  # Track module name
+                    fi
+                done < <(find -L "$dep_src" -name "*.atom" -print0 | sort -z)
+            fi
+        done
+        
+        if [[ ${#DEPS_FILES[@]} -gt 0 ]]; then
+            echo "Found ${#DEPS_FILES[@]} dependency file(s)"
+        fi
+    fi
+    
+    if [[ ${#ATOM_FILES[@]} -eq 0 && ${#DEPS_FILES[@]} -eq 0 ]]; then
         echo "Error: No .atom files found in $INPUT_PATH" >&2
         exit 1
     fi
@@ -147,18 +193,54 @@ else
     exit 1
 fi
 
-# Parse all .atom files to S-Expression AST (stdlib first, then user files)
-ALL_FILES=("${STDLIB_FILES[@]}" "${ATOM_FILES[@]}")
-echo "Parsing ${#ALL_FILES[@]} file(s) total..."
+# Parse all .atom files to S-Expression AST (stdlib first, then deps, then user files)
+echo "Parsing files..."
 declare -a AST_FILES
 FILE_COUNT=0
 
-for atom_file in "${ALL_FILES[@]}"; do
+# Parse stdlib files (no module)
+for atom_file in "${STDLIB_FILES[@]}"; do
     FILE_COUNT=$((FILE_COUNT + 1))
     filename=$(basename "$atom_file" .atom)
     ast_file="$TMP_DIR/${filename}_${FILE_COUNT}.sexpr"
     
-    echo "  [$FILE_COUNT/${#ALL_FILES[@]}] Parsing $atom_file..."
+    echo "  [$FILE_COUNT] Parsing $atom_file..."
+    
+    if ! "$PARSER_BIN" --ast "$atom_file" > "$ast_file" 2>&1; then
+        echo "Error: Failed to parse $atom_file" >&2
+        cat "$ast_file" >&2
+        exit 1
+    fi
+    
+    AST_FILES+=("$ast_file")
+done
+
+# Parse deps files (with module name)
+for i in "${!DEPS_FILES[@]}"; do
+    FILE_COUNT=$((FILE_COUNT + 1))
+    atom_file="${DEPS_FILES[$i]}"
+    module_name="${DEPS_MODULES[$i]}"
+    filename=$(basename "$atom_file" .atom)
+    ast_file="$TMP_DIR/${filename}_${FILE_COUNT}.sexpr"
+    
+    echo "  [$FILE_COUNT] Parsing $atom_file (module: $module_name)..."
+    
+    if ! "$PARSER_BIN" --ast --module "$module_name" "$atom_file" > "$ast_file" 2>&1; then
+        echo "Error: Failed to parse $atom_file" >&2
+        cat "$ast_file" >&2
+        exit 1
+    fi
+    
+    AST_FILES+=("$ast_file")
+done
+
+# Parse user files (no module)
+for atom_file in "${ATOM_FILES[@]}"; do
+    FILE_COUNT=$((FILE_COUNT + 1))
+    filename=$(basename "$atom_file" .atom)
+    ast_file="$TMP_DIR/${filename}_${FILE_COUNT}.sexpr"
+    
+    echo "  [$FILE_COUNT] Parsing $atom_file..."
     
     if ! "$PARSER_BIN" --ast "$atom_file" > "$ast_file" 2>&1; then
         echo "Error: Failed to parse $atom_file" >&2

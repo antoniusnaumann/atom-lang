@@ -282,10 +282,12 @@ fn filter_metadata(list: &[SExpr]) -> Vec<&SExpr> {
     let mut i = 0;
     while i < list.len() {
         if let Ok(symbol) = list[i].as_symbol()
-            && (symbol == ":span" || symbol == ":spans-enabled") {
+            && (symbol == ":span" || symbol == ":spans-enabled" || symbol == ":module") {
                 // Skip :span and its argument
                 if symbol == ":span" && i + 1 < list.len() {
                     i += 2; // Skip :span and (start end)
+                } else if symbol == ":module" && i + 1 < list.len() {
+                    i += 2; // Skip :module and its string value
                 } else {
                     i += 1; // Skip :spans-enabled
                 }
@@ -295,6 +297,35 @@ fn filter_metadata(list: &[SExpr]) -> Vec<&SExpr> {
         i += 1;
     }
     result
+}
+
+// Helper to extract module name from program metadata
+pub fn extract_module_name(sexpr: &SExpr) -> Result<Option<String>> {
+    let list = sexpr.as_list()?;
+    if list.is_empty() {
+        return Ok(None);
+    }
+
+    let head = list[0].as_symbol()?;
+    if head != "program" {
+        return Ok(None);
+    }
+
+    // Look for :module metadata
+    let mut i = 1;
+    while i < list.len() {
+        if let Ok(symbol) = list[i].as_symbol()
+            && symbol == ":module" {
+                if i + 1 < list.len() {
+                    if let Ok(module_name) = list[i + 1].as_string() {
+                        return Ok(Some(module_name.to_string()));
+                    }
+                }
+            }
+        i += 1;
+    }
+
+    Ok(None)
 }
 
 impl FromSExpr for Vec<TopLevel> {
