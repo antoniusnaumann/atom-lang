@@ -7,6 +7,11 @@
     s.bytes.len()
 }
 
+/// Check if String array is empty (internal helper)
+-is_empty(arr String*) Bool {
+    len(arr) == 0
+}
+
 +as_cstring(s String) String {
     // Strings in Atom are already null-terminated, so just return as-is
     s
@@ -78,7 +83,7 @@
 // Decode a single UTF-8 sequence starting at index i
 // Returns: (decoded_rune, bytes_consumed)
 -decode_utf8_at(s String, i Int, seq_len Int) Rune, Int {
-    byte_len := s.bytes.len()
+    byte_len := len(s)
     
     // Check if we have enough bytes for the sequence
     match((i + seq_len - 1) < byte_len) {
@@ -114,7 +119,7 @@
 +runes(s String) Rune* {
     result: Rune* = ()
     i := 0
-    byte_len := s.bytes.len()
+    byte_len := len(s)
     
     loop(i < byte_len) {
         b := s.bytes(i)

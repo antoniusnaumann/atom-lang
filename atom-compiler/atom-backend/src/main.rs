@@ -90,6 +90,7 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
     // Step 1: Parse all S-Expression input files
     println!("Parsing {} S-Expression file(s)...", input_files.len());
     let mut all_items = Vec::new();
+    let mut file_modules: Vec<Option<String>> = Vec::new();  // Track module for each file
     
     for file_path in input_files {
         let content = fs::read_to_string(file_path)
@@ -98,8 +99,17 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
         let sexpr = SExpr::parse(&content)
             .map_err(|e| format!("Failed to parse S-expression in {}: {}", file_path, e))?;
         
+        // Extract module name if present
+        let module_name = atom_ast::from_sexpr::extract_module_name(&sexpr)
+            .map_err(|e| format!("Failed to extract module from {}: {}", file_path, e))?;
+        
         let items = Vec::<atom_ast::ast::TopLevel>::from_sexpr(&sexpr)
             .map_err(|e| format!("Failed to deserialize AST from {}: {}", file_path, e))?;
+        
+        // Track which module each item belongs to
+        for _ in &items {
+            file_modules.push(module_name.clone());
+        }
         
         all_items.extend(items);
     }
@@ -108,7 +118,7 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
     
     // Step 2: Type check
     println!("Type checking...");
-    let mut type_checker = TypeChecker::new();
+    let mut type_checker = TypeChecker::new_with_modules(file_modules);
     let typed_program = type_checker.check_program(all_items)
         .map_err(|e| format!("Type error: {}", e))?;
     
