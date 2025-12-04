@@ -131,7 +131,7 @@ impl ToSExpr for ImportDecl {
 
     fn write_sexpr(&self, f: &mut impl Write, indent: usize) -> fmt::Result {
         write_indent(f, indent)?;
-        write!(f, "(import {} ", self.namespace.name)?;
+        write!(f, "(import {} {} ", self.visibility.to_sexpr(), self.namespace.name)?;
         self.items.write_sexpr(f, 0)?;
         write_span(f, self.span)?;
         writeln!(f, ")")?;

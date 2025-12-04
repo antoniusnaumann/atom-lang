@@ -393,22 +393,25 @@ impl FromSExpr for Visibility {
 impl FromSExpr for ImportDecl {
     fn from_sexpr(sexpr: &SExpr) -> Result<Self> {
         let list = sexpr.as_list()?;
-        if list.len() < 3 {
+        if list.len() < 4 {
             return Err(ParseError {
-                message: "Import declaration requires at least 3 elements".to_string(),
+                message: "Import declaration requires at least 4 elements (import visibility namespace items)".to_string(),
             });
         }
 
         let span = parse_span(list);
         
+        let visibility = Visibility::from_sexpr(&list[1])?;
+        
         let namespace = Ident {
-            name: list[1].as_symbol()?.to_string(),
+            name: list[2].as_symbol()?.to_string(),
             span: dummy_span(),
         };
 
-        let items = ImportItems::from_sexpr(&list[2])?;
+        let items = ImportItems::from_sexpr(&list[3])?;
 
         Ok(ImportDecl {
+            visibility,
             namespace,
             items,
             span,

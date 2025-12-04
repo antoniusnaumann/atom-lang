@@ -49,6 +49,17 @@ pub struct FunctionSignature {
     pub return_type: Option<Type>,
 }
 
+/// Information about an imported symbol
+#[derive(Debug, Clone)]
+struct ImportInfo {
+    /// Fully qualified name of the imported symbol
+    qualified_name: String,
+    /// Visibility of the import (determines scope and re-export)
+    visibility: atom_ast::Visibility,
+    /// Index of the file where this import was declared (for file-private scoping)
+    file_index: usize,
+}
+
 /// Type checker for Atom programs
 pub struct TypeChecker {
     /// Type environment (tracks structs, enums, type aliases)
@@ -65,8 +76,8 @@ pub struct TypeChecker {
     item_modules: Vec<Option<String>>,
     /// Current item index being processed
     current_item_index: usize,
-    /// Imported symbols: maps unqualified name -> fully qualified name
-    imports: HashMap<String, String>,
+    /// Imported symbols: maps unqualified name -> import information
+    imports: HashMap<String, ImportInfo>,
 }
 
 impl TypeChecker {
@@ -116,36 +127,67 @@ impl TypeChecker {
     /// Process an import declaration
     fn process_import(&mut self, import: &atom_ast::ImportDecl) -> TypeResult<()> {
         let namespace = &import.namespace.name;
+        let visibility = import.visibility;
+        let file_index = self.current_item_index;
         
         match &import.items {
             atom_ast::ImportItems::All => {
                 // Import all public items from the namespace
-                // For now, we'll handle this by allowing lookups to check both qualified and unqualified names
-                // We add a wildcard marker
-                self.imports.insert(format!("*::{}", namespace), namespace.clone());
+                // We add a wildcard marker with visibility information
+                self.imports.insert(
+                    format!("*::{}", namespace),
+                    ImportInfo {
+                        qualified_name: namespace.clone(),
+                        visibility,
+                        file_index,
+                    }
+                );
             }
             atom_ast::ImportItems::Named(items) => {
                 // Import specific items
                 for item in items {
                     let unqualified = item.name.clone();
                     let qualified = format!("{}::{}", namespace, unqualified);
-                    self.imports.insert(unqualified, qualified);
+                    self.imports.insert(
+                        unqualified,
+                        ImportInfo {
+                            qualified_name: qualified,
+                            visibility,
+                            file_index,
+                        }
+                    );
                 }
             }
         }
         Ok(())
     }
 
-    /// Resolve a name, considering imports
+    /// Check if an import is accessible from the current context
+    fn is_import_accessible(&self, import_info: &ImportInfo) -> bool {
+        use atom_ast::Visibility;
+        
+        match import_info.visibility {
+            // File-private: only accessible in the same file
+            Visibility::FilePrivate => import_info.file_index == self.current_item_index,
+            // Internal: accessible throughout the package
+            Visibility::Internal => true,
+            // Public: accessible everywhere (also re-exported)
+            Visibility::Public => true,
+        }
+    }
+
+    /// Resolve a name, considering imports and their visibility
     fn resolve_name(&self, name: &str) -> String {
         // If name is already qualified (contains ::), use it as-is
         if name.contains("::") {
             return name.to_string();
         }
 
-        // Check if this name was explicitly imported
-        if let Some(qualified) = self.imports.get(name) {
-            return qualified.clone();
+        // Check if this name was explicitly imported (and is accessible)
+        if let Some(import_info) = self.imports.get(name) {
+            if self.is_import_accessible(import_info) {
+                return import_info.qualified_name.clone();
+            }
         }
 
         // If we're in a module, check if the name exists in the current module first
@@ -164,9 +206,9 @@ impl TypeChecker {
             }
         }
 
-        // Check if there's a wildcard import that might match
-        for (key, namespace) in &self.imports {
-            if key.starts_with("*::") {
+        // Check if there's a wildcard import that might match (and is accessible)
+        for (key, import_info) in &self.imports {
+            if key.starts_with("*::") && self.is_import_accessible(import_info) {
                 let ns = &key[3..];
                 let qualified_name = format!("{}::{}", ns, name);
                 // Check if this name exists in functions or types

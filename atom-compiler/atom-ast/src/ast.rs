@@ -29,8 +29,10 @@ pub struct Ident {
 }
 
 /// Import declaration: `matrix::*` or `physics::(force, kinematics)`
+/// With visibility: `+matrix::*` (re-export), `-matrix::*` (file-private), or no prefix (package-internal)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportDecl {
+    pub visibility: Visibility,
     pub namespace: Ident,
     pub items: ImportItems,
     pub span: Span,

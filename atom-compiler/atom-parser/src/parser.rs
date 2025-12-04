@@ -76,8 +76,16 @@ impl Parser {
     fn parse_top_level(&mut self) -> ParseResult<TopLevel> {
         let start = self.current_span();
 
-        // Check for import first (no visibility prefix)
-        // Import syntax: valueIdent::* or valueIdent::(item1, item2)
+        // Check for visibility prefix first (+, -, or none)
+        let visibility = if self.match_token(&TokenKind::Plus) {
+            Visibility::Public
+        } else if self.match_token(&TokenKind::Minus) {
+            Visibility::FilePrivate
+        } else {
+            Visibility::Internal
+        };
+
+        // Check for import: [visibility] valueIdent::* or [visibility] valueIdent::(item1, item2)
         // Package names are lowercase (matrix, physics, etc.)
         if self.check(&TokenKind::ValueIdent) {
             // Peek ahead to see if this is an import
@@ -87,18 +95,9 @@ impl Parser {
                 // This is an import
                 let name = self.expect_value_ident()?;
                 self.expect(&TokenKind::ColonColon)?;
-                return self.parse_import(name, start);
+                return self.parse_import(visibility, name, start);
             }
         }
-
-        // Check for visibility prefix
-        let visibility = if self.match_token(&TokenKind::Plus) {
-            Visibility::Public
-        } else if self.match_token(&TokenKind::Minus) {
-            Visibility::FilePrivate
-        } else {
-            Visibility::Internal
-        };
 
         // Next token determines what we're parsing
         if self.check(&TokenKind::TypeIdent) {
@@ -200,8 +199,8 @@ impl Parser {
         parser_copy.check(&TokenKind::TypeIdent)
     }
 
-    fn parse_import(&mut self, namespace: Ident, start: Span) -> ParseResult<TopLevel> {
-        // Already consumed: TypeIdent::
+    fn parse_import(&mut self, visibility: Visibility, namespace: Ident, start: Span) -> ParseResult<TopLevel> {
+        // Already consumed: [visibility] TypeIdent::
         // Now expecting either * or (item1, item2, ...)
         
         let items = if self.match_token(&TokenKind::Star) {
@@ -236,6 +235,7 @@ impl Parser {
         let span = start.merge(self.previous_span());
         
         Ok(TopLevel::Import(ImportDecl {
+            visibility,
             namespace,
             items,
             span,
