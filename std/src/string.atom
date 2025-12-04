@@ -4,29 +4,7 @@
 
 /// The byte length of the string
 +len(s String) Int {
-    count := 0
-    loop(s.bytes) {
-        count += 1
-    }
-    count
-}
-
-/// Length of a Rune array (internal helper)
--len(arr Rune*) Int {
-    count := 0
-    loop(arr) {
-        count += 1
-    }
-    count
-}
-
-/// Length of a String array (internal helper)
--len(arr String*) Int {
-    count := 0
-    loop(arr) {
-        count += 1
-    }
-    count
+    s.bytes.len()
 }
 
 /// Check if String array is empty (internal helper)
@@ -378,31 +356,31 @@
     result
 }
 
-// /// Join array of strings with delimiter
-// +join(arr String*, delimiter String) String {
-//     match(is_empty(arr)) {
-//         True { "" }
-//         False {
-//             result := arr(0)
-//             i := 1
-//             loop(i < len(arr)) {
-//                 result ++= delimiter
-//                 result ++= arr(i)
-//                 i += 1
-//             }
-//             result
-//         }
-//     }
-// }
+/// Join array of strings with delimiter
++join(arr String*, delimiter String) String {
+    match(is_empty(arr)) {
+        True { "" }
+        False {
+            result := arr(0)
+            i := 1
+            loop(i < len(arr)) {
+                result ++= delimiter
+                result ++= arr(i)
+                i += 1
+            }
+            result
+        }
+    }
+}
 
-// /// Get rune at specific index (returns None if out of bounds)
-// +char_at(s String, index Int) Option(Rune) {
-//     rune_arr := s.runes()
-//     match(index >= 0 && index < len(rune_arr)) {
-//         True { Some(rune_arr(index)) }
-//         False { None }
-//     }
-// }
+/// Get rune at specific index (returns None if out of bounds)
++char_at(s String, index Int) Option(Rune) {
+    rune_arr := s.runes()
+    match(index >= 0 && index < len(rune_arr)) {
+        True { Some(rune_arr(index)) }
+        False { None }
+    }
+}
 
 /// Get substring from start index (inclusive) to end index (exclusive)
 +substring(s String, start Int, end Int) String {
