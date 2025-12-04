@@ -315,13 +315,12 @@ pub fn extract_module_name(sexpr: &SExpr) -> Result<Option<String>> {
     let mut i = 1;
     while i < list.len() {
         if let Ok(symbol) = list[i].as_symbol()
-            && symbol == ":module" {
-                if i + 1 < list.len() {
-                    if let Ok(module_name) = list[i + 1].as_string() {
-                        return Ok(Some(module_name.to_string()));
-                    }
-                }
-            }
+            && symbol == ":module"
+            && i + 1 < list.len()
+            && let Ok(module_name) = list[i + 1].as_string()
+        {
+            return Ok(Some(module_name.to_string()));
+        }
         i += 1;
     }
 
