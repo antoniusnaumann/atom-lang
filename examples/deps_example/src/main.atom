@@ -1,0 +1,20 @@
+/// Demonstrates using dependencies from deps/ directory
+/// This example uses the mathlib dependency
+
+// Import all functions from mathlib module (located in deps/mathlib/)
+mathlib::*
+
+main() Int {
+    // Use functions from the imported mathlib dependency
+    sum := add(5, 3)
+    product := multiply(4, 7)
+    fact := factorial(5)
+    
+    // Print results using stdlib print()
+    print("=== Dependency Example ===")
+    print("Using mathlib from deps/mathlib/")
+    print("Successfully imported and used functions from mathlib!")
+    
+    // Return 0 for success
+    0
+}
