@@ -894,21 +894,29 @@ impl UnOp {
 
 /// Print an AST as an S-Expression
 pub fn print_ast(ast: &[TopLevel]) -> String {
-    print_ast_impl(ast, false)
+    print_ast_impl(ast, false, None)
 }
 
 /// Print an AST as an S-Expression with span information
 pub fn print_ast_with_spans(ast: &[TopLevel]) -> String {
-    print_ast_impl(ast, true)
+    print_ast_impl(ast, true, None)
 }
 
-fn print_ast_impl(ast: &[TopLevel], include_spans: bool) -> String {
+/// Print an AST as an S-Expression with module/namespace metadata
+pub fn print_ast_with_module(ast: &[TopLevel], module: &str) -> String {
+    print_ast_impl(ast, false, Some(module))
+}
+
+fn print_ast_impl(ast: &[TopLevel], include_spans: bool, module: Option<&str>) -> String {
     INCLUDE_SPANS.with(|c| c.set(include_spans));
     let mut s = String::new();
     s.push_str("(program");
     if include_spans {
         // Program itself doesn't have a span, but we could add metadata
         s.push_str(" :spans-enabled");
+    }
+    if let Some(mod_name) = module {
+        s.push_str(&format!(" :module \"{}\"", mod_name));
     }
     s.push('\n');
     for item in ast {

@@ -61,6 +61,12 @@ pub struct TypeChecker {
     globals: HashMap<String, Type>,
     /// Current function's return type (for checking returns)
     current_return_type: Option<Type>,
+    /// Module names for each top-level item (None for user code, Some("module") for deps)
+    item_modules: Vec<Option<String>>,
+    /// Current item index being processed
+    current_item_index: usize,
+    /// Imported symbols: maps unqualified name -> fully qualified name
+    imports: HashMap<String, String>,
 }
 
 impl TypeChecker {
@@ -72,13 +78,106 @@ impl TypeChecker {
             functions: HashMap::new(),
             globals: HashMap::new(),
             current_return_type: None,
+            item_modules: Vec::new(),
+            current_item_index: 0,
+            imports: HashMap::new(),
         }
+    }
+
+    /// Create a new type checker with module information for each item
+    pub fn new_with_modules(modules: Vec<Option<String>>) -> Self {
+        Self {
+            type_env: TypeEnvironment::with_stdlib(),
+            symbols: SymbolTable::new(),
+            functions: HashMap::new(),
+            globals: HashMap::new(),
+            current_return_type: None,
+            item_modules: modules,
+            current_item_index: 0,
+            imports: HashMap::new(),
+        }
+    }
+
+    /// Get the current item's module name (if any)
+    fn current_module(&self) -> Option<&str> {
+        self.item_modules.get(self.current_item_index)
+            .and_then(|opt| opt.as_deref())
+    }
+
+    /// Qualify a name with the current module if applicable
+    fn qualify_name(&self, name: &str) -> String {
+        if let Some(module) = self.current_module() {
+            format!("{}::{}", module, name)
+        } else {
+            name.to_string()
+        }
+    }
+
+    /// Process an import declaration
+    fn process_import(&mut self, import: &atom_ast::ImportDecl) -> TypeResult<()> {
+        let namespace = &import.namespace.name;
+        
+        match &import.items {
+            atom_ast::ImportItems::All => {
+                // Import all public items from the namespace
+                // For now, we'll handle this by allowing lookups to check both qualified and unqualified names
+                // We add a wildcard marker
+                self.imports.insert(format!("*::{}", namespace), namespace.clone());
+            }
+            atom_ast::ImportItems::Named(items) => {
+                // Import specific items
+                for item in items {
+                    let unqualified = item.name.clone();
+                    let qualified = format!("{}::{}", namespace, unqualified);
+                    self.imports.insert(unqualified, qualified);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve a name, considering imports
+    fn resolve_name(&self, name: &str) -> String {
+        // If name is already qualified (contains ::), use it as-is
+        if name.contains("::") {
+            return name.to_string();
+        }
+
+        // Check if this name was explicitly imported
+        if let Some(qualified) = self.imports.get(name) {
+            return qualified.clone();
+        }
+
+        // Check if there's a wildcard import that might match
+        for (key, namespace) in &self.imports {
+            if key.starts_with("*::") {
+                let ns = &key[3..];
+                let qualified_name = format!("{}::{}", ns, name);
+                // Check if this name exists in functions or types
+                if self.functions.contains_key(&qualified_name) {
+                    return qualified_name;
+                }
+                // We could also check type_env here but for now this is sufficient
+            }
+        }
+
+        // Otherwise use the unqualified name
+        name.to_string()
     }
 
     /// Type check a complete program (Vec of top-level items)
     pub fn check_program(&mut self, ast: Vec<TopLevel>) -> TypeResult<TypedProgram> {
-        // First pass: collect all type definitions
-        for item in &ast {
+        // First pass: process imports
+        for (index, item) in ast.iter().enumerate() {
+            self.current_item_index = index;
+            if let TopLevel::Import(import_decl) = item {
+                self.process_import(import_decl)?;
+            }
+        }
+
+        // Second pass: collect all type definitions
+        for (index, item) in ast.iter().enumerate() {
+            self.current_item_index = index;
             match item {
                 TopLevel::Struct(struct_def) => {
                     self.collect_struct(struct_def)?;
@@ -90,21 +189,23 @@ impl TypeChecker {
             }
         }
 
-        // Second pass: collect function signatures
-        for item in &ast {
+        // Third pass: collect function signatures
+        for (index, item) in ast.iter().enumerate() {
+            self.current_item_index = index;
             if let TopLevel::Function(func_def) = item {
                 self.collect_function_signature(func_def)?;
             }
         }
 
-        // Third pass: type check all items
-        for item in &ast {
+        // Fourth pass: type check all items
+        for (index, item) in ast.iter().enumerate() {
+            self.current_item_index = index;
             match item {
                 TopLevel::Import(_) => {
-                    // Imports are handled by earlier stages
+                    // Already processed in first pass
                 }
                 TopLevel::Struct(_) | TopLevel::Enum(_) => {
-                    // Already processed in first pass
+                    // Already processed in second pass
                 }
                 TopLevel::Function(func_def) => {
                     self.check_function(func_def)?;
@@ -170,7 +271,7 @@ impl TypeChecker {
         }
 
         let struct_type = StructType {
-            name: struct_def.name.name.clone(),
+            name: self.qualify_name(&struct_def.name.name),
             params: type_params,
             fields,
             visibility: struct_def.visibility,
@@ -215,7 +316,7 @@ impl TypeChecker {
         }
 
         let enum_type = EnumType {
-            name: enum_def.name.name.clone(),
+            name: self.qualify_name(&enum_def.name.name),
             params: type_params,
             cases,
             visibility: enum_def.visibility,
@@ -226,7 +327,7 @@ impl TypeChecker {
     }
 
     fn collect_function_signature(&mut self, func_def: &FunctionDef) -> TypeResult<()> {
-        let func_name = func_def.name.name.clone();
+        let func_name = self.qualify_name(&func_def.name.name);
 
         let mut const_params = Vec::new();
         for param in &func_def.const_params {
@@ -282,9 +383,6 @@ impl TypeChecker {
             .or_default()
             .push(signature);
 
-        if func_name == "reduce" {
-                    }
-
         Ok(())
     }
 
@@ -293,6 +391,11 @@ impl TypeChecker {
     // ========================================================================
 
     fn check_function(&mut self, func_def: &FunctionDef) -> TypeResult<()> {
+        // Skip generic functions - they will be type-checked after monomorphization
+        if self.is_generic_function(func_def) {
+            return Ok(());
+        }
+        
         // Create new scope for function
         self.symbols.push_scope();
 
@@ -491,22 +594,25 @@ impl TypeChecker {
             Expr::Literal(lit, _) => Ok(self.type_of_literal(lit)),
 
             Expr::Ident(ident) => {
+                // Resolve name considering imports
+                let resolved_name = self.resolve_name(&ident.name);
+                
                 // Check for C library function references (e.g., cstdlib::printf, cmath::sin)
-                if ident.name.starts_with('c') && ident.name.contains("::") {
+                if resolved_name.starts_with('c') && resolved_name.contains("::") {
                     // C library functions are treated as function types
                     // For simplicity, we create a generic function type that accepts any args
                     // In a real implementation, we'd have proper signatures for each C function
                     
                     // Determine return type based on function name
-                    let return_type = if ident.name.contains("::exit") {
+                    let return_type = if resolved_name.contains("::exit") {
                         Type::Void
-                    } else if ident.name.starts_with("cmath::") {
-                        if ident.name.ends_with('f') {
+                    } else if resolved_name.starts_with("cmath::") {
+                        if resolved_name.ends_with('f') {
                             Type::Float(Some(32))
                         } else {
                             Type::Float(Some(64))
                         }
-                    } else if ident.name.contains("::printf") {
+                    } else if resolved_name.contains("::printf") {
                         Type::Int(None)
                     } else {
                         Type::Int(None)
@@ -521,12 +627,26 @@ impl TypeChecker {
                     }));
                 }
                 
-                // Look up in symbol table
+                // Look up in symbol table FIRST (variables/parameters shadow functions)
                 if let Some(ty) = self.symbols.lookup(&ident.name) {
-                    Ok(ty.clone())
+                    return Ok(ty.clone());
                 } else if let Some(ty) = self.globals.get(&ident.name) {
-                    Ok(ty.clone())
-                } else if let Some((enum_name, _case, _idx)) = self.type_env.find_enum_case(&ident.name) {
+                    return Ok(ty.clone());
+                }
+                
+                // Check if it's a user-defined function (only if not shadowed by a variable)
+                if self.functions.contains_key(&resolved_name) {
+                    // Return a function type - actual signatures will be resolved at call site
+                    // We return a generic function type here
+                    return Ok(Type::Function(FunctionType {
+                        const_params: vec![],
+                        params: vec![],
+                        return_type: None, // Will be determined at call site
+                    }));
+                }
+                
+                // Check for enum cases
+                if let Some((enum_name, _case, _idx)) = self.type_env.find_enum_case(&ident.name) {
                     // It's an enum case - treat it as a value of that enum type
                     // For now, return the enum type directly
                     // TODO: Handle enum cases with fields (which are constructors)
@@ -967,7 +1087,7 @@ impl TypeChecker {
     fn check_call(&mut self, func: &Expr, args: &[Expr]) -> TypeResult<Type> {
         // Special case: if func is an identifier, check if it's a function
         if let Expr::Ident(ident) = func {
-            let func_name = ident.name.clone();
+            let func_name = self.resolve_name(&ident.name);
             
             // Check for C library function calls (e.g., cstdlib::printf, cmath::sin)
             if func_name.starts_with('c') && func_name.contains("::") {
@@ -1076,6 +1196,7 @@ impl TypeChecker {
                                 matches = false;
                                 break;
                             }
+                            
                             arg_types.push(arg_ty);
                         }
 
@@ -2705,6 +2826,102 @@ impl TypeChecker {
                 // If stdlib is not loaded, fall back to Int(1) (boolean)
                 self.type_env.resolve_type("Bool")
                     .unwrap_or(Type::Int(Some(1)))
+            }
+        }
+    }
+
+    /// Check if a function definition is generic (has type parameters).
+    ///
+    /// A function is considered generic if:
+    /// 1. It has const_params (compile-time parameters), OR
+    /// 2. Any of its parameters have types that contain TypeParam, OR
+    /// 3. Its return type contains TypeParam
+    fn is_generic_function(&self, func_def: &FunctionDef) -> bool {
+        // Check for const parameters
+        if !func_def.const_params.is_empty() {
+            return true;
+        }
+
+        // Check parameter types for type parameters
+        for param in &func_def.params {
+            if let Some(ref ty) = param.ty {
+                if self.ast_type_contains_type_param(ty) {
+                    return true;
+                }
+            }
+        }
+
+        // Check return type for type parameters
+        if let Some(ref return_type) = func_def.return_type {
+            if self.ast_type_contains_type_param(return_type) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if an AST type contains type parameters.
+    ///
+    /// Recursively checks all type constructors for the presence of TypeParam.
+    fn ast_type_contains_type_param(&self, ty: &atom_ast::Type) -> bool {
+        match ty {
+            // Direct type parameter reference
+            atom_ast::Type::Param(_) => true,
+
+            // Named types are not generic unless they resolve to a type parameter
+            atom_ast::Type::Named(_) => false,
+
+            // Tuple types: check if any element contains TypeParam
+            atom_ast::Type::Tuple(types, _) => {
+                types.iter().any(|t| self.ast_type_contains_type_param(t))
+            }
+
+            // Generic types: check type arguments
+            atom_ast::Type::Generic { params, .. } => {
+                params.iter().any(|param| {
+                    // Check both the type constraint and default value
+                    if let Some(ref ty) = param.ty {
+                        if self.ast_type_contains_type_param(ty) {
+                            return true;
+                        }
+                    }
+                    if let Some(ref default) = param.default {
+                        if self.ast_type_contains_type_param(default) {
+                            return true;
+                        }
+                    }
+                    false
+                })
+            }
+
+            // Variadic types: check element type
+            atom_ast::Type::Variadic { element, .. } => {
+                self.ast_type_contains_type_param(element)
+            }
+
+            // Static array types: check element type
+            atom_ast::Type::StaticArray { element, .. } => {
+                self.ast_type_contains_type_param(element)
+            }
+
+            // Function types: check parameters and return type
+            atom_ast::Type::Function { params, return_type, .. } => {
+                // Check parameter types
+                if params.iter().any(|p| self.ast_type_contains_type_param(p)) {
+                    return true;
+                }
+                // Check return type
+                if let Some(ret_ty) = return_type {
+                    self.ast_type_contains_type_param(ret_ty)
+                } else {
+                    false
+                }
+            }
+
+            // Reference types: check inner type
+            atom_ast::Type::Reference { inner, .. } => {
+                self.ast_type_contains_type_param(inner)
             }
         }
     }
