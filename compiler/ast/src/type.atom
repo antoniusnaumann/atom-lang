@@ -3,20 +3,20 @@
     Param(Ident)
     Tuple(TupleType)
     Struct(Field*)
-    Variadic(VariadicType)
+    Variadic(_)
     Closure(ClosureType)
 )
 
 +NamedType(
     name Ident
-    params TypeParam*
+    params Param*
     span Span
 )
 
 +Struct(
     visibility Visibility
     name Ident
-    type_params TypeParam*
+    type_params Param*
     fields Field*
     span Span
 )
@@ -42,7 +42,7 @@
 +Enum(
     visibility Visibility
     name Ident
-    params ConstParam*
+    params Param*
     cases EnumCase
     span Span
 )
@@ -72,5 +72,17 @@
     Static(Expression)
     Dynamic
     NonEmpty
+)
+
++ClosureType(
+    params Param*
+    return Option(TypeItem)
+    body Block
+    span Span
+)
+
++Block(
+    body Statement*
+    span Span
 )
 
