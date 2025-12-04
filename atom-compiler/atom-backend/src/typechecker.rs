@@ -148,6 +148,22 @@ impl TypeChecker {
             return qualified.clone();
         }
 
+        // If we're in a module, check if the name exists in the current module first
+        // This handles intra-module references (files in the same module see each other)
+        if let Some(module) = self.current_module() {
+            let qualified_name = format!("{}::{}", module, name);
+            // Check if this name exists in the current module
+            if self.functions.contains_key(&qualified_name) {
+                return qualified_name;
+            }
+            if self.type_env.get_struct(&qualified_name).is_some() {
+                return qualified_name;
+            }
+            if self.type_env.get_enum(&qualified_name).is_some() {
+                return qualified_name;
+            }
+        }
+
         // Check if there's a wildcard import that might match
         for (key, namespace) in &self.imports {
             if key.starts_with("*::") {
@@ -157,7 +173,13 @@ impl TypeChecker {
                 if self.functions.contains_key(&qualified_name) {
                     return qualified_name;
                 }
-                // We could also check type_env here but for now this is sufficient
+                // Also check type environment for structs and enums
+                if self.type_env.get_struct(&qualified_name).is_some() {
+                    return qualified_name;
+                }
+                if self.type_env.get_enum(&qualified_name).is_some() {
+                    return qualified_name;
+                }
             }
         }
 
@@ -175,15 +197,30 @@ impl TypeChecker {
             }
         }
 
-        // Second pass: collect all type definitions
+        // Second pass: collect all type definitions (two sub-passes for forward references)
+        // Sub-pass 2a: Register all type names first (without fields)
         for (index, item) in ast.iter().enumerate() {
             self.current_item_index = index;
             match item {
                 TopLevel::Struct(struct_def) => {
-                    self.collect_struct(struct_def)?;
+                    self.register_struct_name(struct_def)?;
                 }
                 TopLevel::Enum(enum_def) => {
-                    self.collect_enum(enum_def)?;
+                    self.register_enum_name(enum_def)?;
+                }
+                _ => {}
+            }
+        }
+        
+        // Sub-pass 2b: Now resolve and add fields/cases
+        for (index, item) in ast.iter().enumerate() {
+            self.current_item_index = index;
+            match item {
+                TopLevel::Struct(struct_def) => {
+                    self.collect_struct_fields(struct_def)?;
+                }
+                TopLevel::Enum(enum_def) => {
+                    self.collect_enum_cases(enum_def)?;
                 }
                 _ => {}
             }
@@ -236,10 +273,34 @@ impl TypeChecker {
     // ========================================================================
 
     fn collect_struct(&mut self, struct_def: &StructDef) -> TypeResult<()> {
+        self.register_struct_name(struct_def)?;
+        self.collect_struct_fields(struct_def)
+    }
+
+    fn collect_enum(&mut self, enum_def: &atom_ast::EnumDef) -> TypeResult<()> {
+        self.register_enum_name(enum_def)?;
+        self.collect_enum_cases(enum_def)
+    }
+
+    fn register_struct_name(&mut self, struct_def: &StructDef) -> TypeResult<()> {
+        // Register the struct with empty fields and NO type params (will be filled in later)
+        // This allows forward references and circular dependencies
+        let struct_type = StructType {
+            name: self.qualify_name(&struct_def.name.name),
+            params: Vec::new(), // Empty for now
+            fields: Vec::new(), // Empty for now
+            visibility: struct_def.visibility,
+        };
+
+        self.type_env.add_struct(struct_type);
+        Ok(())
+    }
+
+    fn collect_struct_fields(&mut self, struct_def: &StructDef) -> TypeResult<()> {
         let mut fields = Vec::new();
         let mut type_params = Vec::new();
 
-        // Process type parameters
+        // Process type parameters (now that all types are registered)
         for param in &struct_def.type_params {
             let type_param = self.ast_type_param_to_type_param(param)?;
             type_params.push(type_param);
@@ -270,22 +331,36 @@ impl TypeChecker {
             });
         }
 
-        let struct_type = StructType {
-            name: self.qualify_name(&struct_def.name.name),
-            params: type_params,
-            fields,
-            visibility: struct_def.visibility,
-        };
+        // Update the struct with the resolved fields and type params
+        let qualified_name = self.qualify_name(&struct_def.name.name);
+        if let Some(mut struct_type) = self.type_env.get_struct(&qualified_name).cloned() {
+            struct_type.params = type_params;
+            struct_type.fields = fields;
+            self.type_env.add_struct(struct_type);
+        }
 
-        self.type_env.add_struct(struct_type);
         Ok(())
     }
 
-    fn collect_enum(&mut self, enum_def: &atom_ast::EnumDef) -> TypeResult<()> {
+    fn register_enum_name(&mut self, enum_def: &atom_ast::EnumDef) -> TypeResult<()> {
+        // Register the enum with empty cases and NO type params (will be filled in later)
+        // This allows forward references and circular dependencies
+        let enum_type = EnumType {
+            name: self.qualify_name(&enum_def.name.name),
+            params: Vec::new(), // Empty for now
+            cases: Vec::new(), // Empty for now
+            visibility: enum_def.visibility,
+        };
+
+        self.type_env.add_enum(enum_type);
+        Ok(())
+    }
+
+    fn collect_enum_cases(&mut self, enum_def: &atom_ast::EnumDef) -> TypeResult<()> {
         let mut cases = Vec::new();
         let mut type_params = Vec::new();
 
-        // Process type parameters
+        // Process type parameters (now that all types are registered)
         for param in &enum_def.type_params {
             let type_param = self.ast_type_param_to_type_param(param)?;
             type_params.push(type_param);
@@ -315,14 +390,14 @@ impl TypeChecker {
             });
         }
 
-        let enum_type = EnumType {
-            name: self.qualify_name(&enum_def.name.name),
-            params: type_params,
-            cases,
-            visibility: enum_def.visibility,
-        };
+        // Update the enum with the resolved cases and type params
+        let qualified_name = self.qualify_name(&enum_def.name.name);
+        if let Some(mut enum_type) = self.type_env.get_enum(&qualified_name).cloned() {
+            enum_type.params = type_params;
+            enum_type.cases = cases;
+            self.type_env.add_enum(enum_type);
+        }
 
-        self.type_env.add_enum(enum_type);
         Ok(())
     }
 
@@ -2623,8 +2698,11 @@ impl TypeChecker {
     fn resolve_ast_type(&self, ast_type: &atom_ast::Type) -> TypeResult<Type> {
         match ast_type {
             atom_ast::Type::Named(ident) => {
+                // Resolve name considering imports (handles module::Type and wildcard imports)
+                let resolved_name = self.resolve_name(&ident.name);
+                
                 // Try to resolve as a type first
-                match self.type_env.resolve_type(&ident.name) {
+                match self.type_env.resolve_type(&resolved_name) {
                     Ok(ty) => Ok(ty),
                     Err(_) => {
                         // If resolution fails, check if this looks like a variable name
@@ -2636,7 +2714,7 @@ impl TypeChecker {
                             Ok(Type::TypeParam(ident.name.clone()))
                         } else {
                             // Uppercase - should be a real type, propagate the error
-                            self.type_env.resolve_type(&ident.name)
+                            self.type_env.resolve_type(&resolved_name)
                         }
                     }
                 }

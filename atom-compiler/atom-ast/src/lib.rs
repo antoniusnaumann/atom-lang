@@ -5,5 +5,5 @@ pub mod from_sexpr;
 
 pub use span::Span;
 pub use ast::*;
-pub use sexpr::{ToSExpr, print_ast, print_ast_with_spans};
+pub use sexpr::{ToSExpr, print_ast, print_ast_with_spans, print_ast_with_module};
 pub use from_sexpr::FromSExpr;
