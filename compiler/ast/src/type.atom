@@ -13,7 +13,7 @@
     span Span
 )
 
-+StructDef(
++Struct(
     visibility Visibility
     name Ident
     type_params TypeParam*
@@ -39,7 +39,7 @@
     span Span
 )
 
-+EnumDef(
++Enum(
     visibility Visibility
     name Ident
     params ConstParam*

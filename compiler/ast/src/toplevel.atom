@@ -1,15 +1,14 @@
 +TopLevel(
-    Import(ImportDecl)
-    Struct(StructDef)
-    Enum(EnumDef)
-    Function(FunctionDef)
-    Variable(VarDecl)
-    TestBlock(TestBlock)
+    Import(_)
+    Struct(_)
+    Enum(_)
+    Function(_)
+    TestBlock(_)
     /// Statement (only allowed in .test.atom files)
-    Statement(Stmt)
+    Statement(_)
 )
 
-+ImportDecl(
++Import(
     namespace Ident
     items ImportItems
     span Span
@@ -40,4 +39,17 @@
 +Ident(
     name String
     span Span
+)
+
++Variable(
+    visibility Visibility
+    names Ident*
+    types TypeItem*
+    init Option(Expression)
+    span Span
+)
+
++Statement(
+    Variable(_)
+    Expression(_)
 )
