@@ -40,6 +40,9 @@ TokenKind (
     StarAssign // *=
     SlashAssign// /=
     PercentAssign// %=
+    AndAssign  // &=
+    OrAssign   // |=
+    XorAssign  // ^=
     Equal      // ==
     NotEq      // !=
     LtEq       // <=
@@ -64,8 +67,8 @@ TokenKind (
     Semicolon  // ;
 
     // special
-    Autosemi   // in suitable positions, /n interpreted as , in struct and enum declarations and as ; in function bodies
-    EOF
+    Newline   // in suitable positions, \n interpreted as , in struct and enum declarations and as ; in function bodies
+    Invalid
 )
 
 is_continuation(token Token) Bool {

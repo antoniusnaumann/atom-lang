@@ -118,6 +118,11 @@ lex(source String) Token*, LexerError* {
                             _ { LShift }
                         }
                     }
+                    '=' {
+                        &lexer.next()
+                        LtEq
+                    }
+                    _ { Lt }
                 }
             }
             '>' {
@@ -132,6 +137,11 @@ lex(source String) Token*, LexerError* {
                             _ { RShift }
                         }
                     }
+                    '=' {
+                        &lexer.next()
+                        GtEq
+                    }
+                    _ { Gt }
                 }
             }
             '!' {
@@ -157,9 +167,70 @@ lex(source String) Token*, LexerError* {
                     }
                 }
             }
+            '.' {
+                match(runes(index)) {
+                    '.' {
+                        &lexer.next()
+                        DotDot
+                    }
+                    _ {
+                        Dot
+                    }
+                }
+            }
+            '&' {
+                match(runes(index)) {
+                    '&' {
+                        &lexer.next()
+                        AndAnd
+                    }
+                    '=' {
+                        &lexer.next()
+                        AndAssign
+                    }
+                    _ {
+                        And
+                    }
+                }
+            }
+            '|' {
+                match(runes(index)) {
+                    '|' {
+                        &lexer.next()
+                        OrOr
+                    }
+                    '=' {
+                        &lexer.next()
+                        OrAssign
+                    }
+                    _ {
+                        Or
+                    }
+                }
+            }
+            '^' {
+                match(runes(index)) {
+                    '=' {
+                        &lexer.next()
+                        XorAssign
+                    }
+                    _ {
+                        Xor
+                    }
+                }
+            }
+            '{' { LBrace }
+            '}' { RBrace }
+            '(' { LParen }
+            ')' { RParen }
+            ',' { Comma }
+            ';' { Semicolon }
+            '#' { Hash }
+            '\n' | '\r' { Newline }
             _ {
                 span := Span(start: start, end: lexer.index)
                 errors ++= LexerError(msg: "Unknown Token: " ++ ch, span: span)
+                Invalid
             }
         }
 
