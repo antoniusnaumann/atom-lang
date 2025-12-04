@@ -383,9 +383,6 @@ impl TypeChecker {
             .or_default()
             .push(signature);
 
-        if func_name == "reduce" {
-                    }
-
         Ok(())
     }
 
@@ -394,6 +391,11 @@ impl TypeChecker {
     // ========================================================================
 
     fn check_function(&mut self, func_def: &FunctionDef) -> TypeResult<()> {
+        // Skip generic functions - they will be type-checked after monomorphization
+        if self.is_generic_function(func_def) {
+            return Ok(());
+        }
+        
         // Create new scope for function
         self.symbols.push_scope();
 
@@ -625,7 +627,14 @@ impl TypeChecker {
                     }));
                 }
                 
-                // Check if it's a user-defined function
+                // Look up in symbol table FIRST (variables/parameters shadow functions)
+                if let Some(ty) = self.symbols.lookup(&ident.name) {
+                    return Ok(ty.clone());
+                } else if let Some(ty) = self.globals.get(&ident.name) {
+                    return Ok(ty.clone());
+                }
+                
+                // Check if it's a user-defined function (only if not shadowed by a variable)
                 if self.functions.contains_key(&resolved_name) {
                     // Return a function type - actual signatures will be resolved at call site
                     // We return a generic function type here
@@ -636,12 +645,8 @@ impl TypeChecker {
                     }));
                 }
                 
-                // Look up in symbol table
-                if let Some(ty) = self.symbols.lookup(&ident.name) {
-                    Ok(ty.clone())
-                } else if let Some(ty) = self.globals.get(&ident.name) {
-                    Ok(ty.clone())
-                } else if let Some((enum_name, _case, _idx)) = self.type_env.find_enum_case(&ident.name) {
+                // Check for enum cases
+                if let Some((enum_name, _case, _idx)) = self.type_env.find_enum_case(&ident.name) {
                     // It's an enum case - treat it as a value of that enum type
                     // For now, return the enum type directly
                     // TODO: Handle enum cases with fields (which are constructors)
@@ -1191,6 +1196,7 @@ impl TypeChecker {
                                 matches = false;
                                 break;
                             }
+                            
                             arg_types.push(arg_ty);
                         }
 
@@ -2820,6 +2826,102 @@ impl TypeChecker {
                 // If stdlib is not loaded, fall back to Int(1) (boolean)
                 self.type_env.resolve_type("Bool")
                     .unwrap_or(Type::Int(Some(1)))
+            }
+        }
+    }
+
+    /// Check if a function definition is generic (has type parameters).
+    ///
+    /// A function is considered generic if:
+    /// 1. It has const_params (compile-time parameters), OR
+    /// 2. Any of its parameters have types that contain TypeParam, OR
+    /// 3. Its return type contains TypeParam
+    fn is_generic_function(&self, func_def: &FunctionDef) -> bool {
+        // Check for const parameters
+        if !func_def.const_params.is_empty() {
+            return true;
+        }
+
+        // Check parameter types for type parameters
+        for param in &func_def.params {
+            if let Some(ref ty) = param.ty {
+                if self.ast_type_contains_type_param(ty) {
+                    return true;
+                }
+            }
+        }
+
+        // Check return type for type parameters
+        if let Some(ref return_type) = func_def.return_type {
+            if self.ast_type_contains_type_param(return_type) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if an AST type contains type parameters.
+    ///
+    /// Recursively checks all type constructors for the presence of TypeParam.
+    fn ast_type_contains_type_param(&self, ty: &atom_ast::Type) -> bool {
+        match ty {
+            // Direct type parameter reference
+            atom_ast::Type::Param(_) => true,
+
+            // Named types are not generic unless they resolve to a type parameter
+            atom_ast::Type::Named(_) => false,
+
+            // Tuple types: check if any element contains TypeParam
+            atom_ast::Type::Tuple(types, _) => {
+                types.iter().any(|t| self.ast_type_contains_type_param(t))
+            }
+
+            // Generic types: check type arguments
+            atom_ast::Type::Generic { params, .. } => {
+                params.iter().any(|param| {
+                    // Check both the type constraint and default value
+                    if let Some(ref ty) = param.ty {
+                        if self.ast_type_contains_type_param(ty) {
+                            return true;
+                        }
+                    }
+                    if let Some(ref default) = param.default {
+                        if self.ast_type_contains_type_param(default) {
+                            return true;
+                        }
+                    }
+                    false
+                })
+            }
+
+            // Variadic types: check element type
+            atom_ast::Type::Variadic { element, .. } => {
+                self.ast_type_contains_type_param(element)
+            }
+
+            // Static array types: check element type
+            atom_ast::Type::StaticArray { element, .. } => {
+                self.ast_type_contains_type_param(element)
+            }
+
+            // Function types: check parameters and return type
+            atom_ast::Type::Function { params, return_type, .. } => {
+                // Check parameter types
+                if params.iter().any(|p| self.ast_type_contains_type_param(p)) {
+                    return true;
+                }
+                // Check return type
+                if let Some(ret_ty) = return_type {
+                    self.ast_type_contains_type_param(ret_ty)
+                } else {
+                    false
+                }
+            }
+
+            // Reference types: check inner type
+            atom_ast::Type::Reference { inner, .. } => {
+                self.ast_type_contains_type_param(inner)
             }
         }
     }

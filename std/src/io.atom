@@ -11,54 +11,25 @@
 // TODO: Explain overridable functions in README.md
 +log_level() LogLevel { Info }
 
-/// Print a string to stdout
-+print(msg String, level LogLevel = Info, delimiter Rune = '\n') {
+/// Prints to stdout, except for levels above error which print to stderr
+/// Messages below the specified log_level() are not printed
++print(
+    msg t
+    level LogLevel = Info
+    delimiter Rune = '\n'
+) {
+    // TODO: Explain enum comparison in README
     match(level >= log_level()) {
         True { 
-            cstdlib::printf(msg)
-            cstdlib::printf(&delimiter)
-            ()
+            // Build the string to print (this allocates memory)
+            str := msg.as_string() ++ delimiter
+            // Print it (strings are already null-terminated, no need for as_cstring)
+            cstdlib::printf(str)
+            // Free the memory to avoid leaks
+            cstdlib::free(str)
+            ()  // Return unit
         }
-        False { () }
-    }
-}
-
-/// Print an integer to stdout
-+print(msg Int, level LogLevel = Info, delimiter Rune = '\n') {
-    match(level >= log_level()) {
-        True {
-            cstdlib::printf("%lld", msg)
-            cstdlib::printf(&delimiter)
-            ()
-        }
-        False { () }
-    }
-}
-
-/// Print a float to stdout
-+print(msg Float, level LogLevel = Info, delimiter Rune = '\n') {
-    match(level >= log_level()) {
-        True {
-            cstdlib::printf("%g", msg)
-            cstdlib::printf(&delimiter)
-            ()
-        }
-        False { () }
-    }
-}
-
-/// Print a boolean to stdout
-+print(msg Bool, level LogLevel = Info, delimiter Rune = '\n') {
-    match(level >= log_level()) {
-        True {
-            match(msg) {
-                True { cstdlib::printf("true") }
-                False { cstdlib::printf("false") }
-            }
-            cstdlib::printf(&delimiter)
-            ()
-        }
-        False { () }
+        False { () }  // Return unit
     }
 }
 
