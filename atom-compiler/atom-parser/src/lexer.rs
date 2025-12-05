@@ -77,7 +77,9 @@ impl Lexer {
         let ch = self.current();
         
         // Don't insert semicolon if line starts with continuation character
-        !matches!(ch, '.' | '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '&' | '|' | ',' | ')' | ']' | '}')
+        // Note: '&' is NOT included because it's ambiguous (binary AND vs reference operator)
+        // If you want binary AND across lines, use explicit parentheses or keep it on same line
+        !matches!(ch, '.' | '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '|' | ',' | ')' | ']' | '}')
     }
 
     fn next_token(&mut self) -> ParseResult<Token> {
