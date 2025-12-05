@@ -186,14 +186,14 @@ impl TypeChecker {
                 let import_module = self.item_modules.iter()
                     .zip(&self.item_file_indices)
                     .find(|&(_, &fi)| fi == import_info.file_index)
-                    .map(|(module, _)| module.as_ref());
+                    .and_then(|(module, _)| module.as_ref());
                 
                 // Get module for current item
                 let current_module = self.item_modules.get(self.current_item_index)
                     .and_then(|opt| opt.as_ref());
                 
                 // Same package if both have the same module (or both are user code with None)
-                import_module == Some(current_module)
+                import_module == current_module
             }
             // Public: accessible everywhere (also re-exported)
             Visibility::Public => true,
