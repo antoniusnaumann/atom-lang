@@ -74,6 +74,8 @@ pub struct TypeChecker {
     current_return_type: Option<Type>,
     /// Module names for each top-level item (None for user code, Some("module") for deps)
     item_modules: Vec<Option<String>>,
+    /// File index for each top-level item (which S-expression file it came from)
+    item_file_indices: Vec<usize>,
     /// Current item index being processed
     current_item_index: usize,
     /// Imported symbols: maps unqualified name -> import information
@@ -90,13 +92,14 @@ impl TypeChecker {
             globals: HashMap::new(),
             current_return_type: None,
             item_modules: Vec::new(),
+            item_file_indices: Vec::new(),
             current_item_index: 0,
             imports: HashMap::new(),
         }
     }
 
     /// Create a new type checker with module information for each item
-    pub fn new_with_modules(modules: Vec<Option<String>>) -> Self {
+    pub fn new_with_modules(modules: Vec<Option<String>>, file_indices: Vec<usize>) -> Self {
         Self {
             type_env: TypeEnvironment::with_stdlib(),
             symbols: SymbolTable::new(),
@@ -104,6 +107,7 @@ impl TypeChecker {
             globals: HashMap::new(),
             current_return_type: None,
             item_modules: modules,
+            item_file_indices: file_indices,
             current_item_index: 0,
             imports: HashMap::new(),
         }
@@ -113,6 +117,11 @@ impl TypeChecker {
     fn current_module(&self) -> Option<&str> {
         self.item_modules.get(self.current_item_index)
             .and_then(|opt| opt.as_deref())
+    }
+
+    /// Get the current item's file index
+    fn current_file_index(&self) -> usize {
+        self.item_file_indices.get(self.current_item_index).copied().unwrap_or(0)
     }
 
     /// Qualify a name with the current module if applicable
@@ -128,7 +137,7 @@ impl TypeChecker {
     fn process_import(&mut self, import: &atom_ast::ImportDecl) -> TypeResult<()> {
         let namespace = &import.namespace.name;
         let visibility = import.visibility;
-        let file_index = self.current_item_index;
+        let file_index = self.current_file_index();
         
         match &import.items {
             atom_ast::ImportItems::All => {
@@ -167,10 +176,25 @@ impl TypeChecker {
         use atom_ast::Visibility;
         
         match import_info.visibility {
-            // File-private: only accessible in the same file
-            Visibility::FilePrivate => import_info.file_index == self.current_item_index,
-            // Internal: accessible throughout the package
-            Visibility::Internal => true,
+            // File-private: only accessible in the same source file
+            Visibility::FilePrivate => {
+                import_info.file_index == self.current_file_index()
+            }
+            // Internal: accessible throughout the package (same module/package)
+            Visibility::Internal => {
+                // Get module for the file where import was declared
+                let import_module = self.item_modules.iter()
+                    .zip(&self.item_file_indices)
+                    .find(|&(_, &fi)| fi == import_info.file_index)
+                    .map(|(module, _)| module.as_ref());
+                
+                // Get module for current item
+                let current_module = self.item_modules.get(self.current_item_index)
+                    .and_then(|opt| opt.as_ref());
+                
+                // Same package if both have the same module (or both are user code with None)
+                import_module == Some(current_module)
+            }
             // Public: accessible everywhere (also re-exported)
             Visibility::Public => true,
         }
@@ -208,19 +232,21 @@ impl TypeChecker {
 
         // Check if there's a wildcard import that might match (and is accessible)
         for (key, import_info) in &self.imports {
-            if key.starts_with("*::") && self.is_import_accessible(import_info) {
-                let ns = &key[3..];
-                let qualified_name = format!("{}::{}", ns, name);
-                // Check if this name exists in functions or types
-                if self.functions.contains_key(&qualified_name) {
-                    return qualified_name;
-                }
-                // Also check type environment for structs and enums
-                if self.type_env.get_struct(&qualified_name).is_some() {
-                    return qualified_name;
-                }
-                if self.type_env.get_enum(&qualified_name).is_some() {
-                    return qualified_name;
+            if key.starts_with("*::") {
+                if self.is_import_accessible(import_info) {
+                    let ns = &key[3..];
+                    let qualified_name = format!("{}::{}", ns, name);
+                    // Check if this name exists in functions or types
+                    if self.functions.contains_key(&qualified_name) {
+                        return qualified_name;
+                    }
+                    // Also check type environment for structs and enums
+                    if self.type_env.get_struct(&qualified_name).is_some() {
+                        return qualified_name;
+                    }
+                    if self.type_env.get_enum(&qualified_name).is_some() {
+                        return qualified_name;
+                    }
                 }
             }
         }
@@ -1956,9 +1982,11 @@ impl TypeChecker {
             }
 
             // Named struct initialization
+            // Resolve the struct name considering imports and modules
+            let resolved_struct_name = self.resolve_name(&type_ident.name);
             let struct_type = self
                 .type_env
-                .get_struct(&type_ident.name)
+                .get_struct(&resolved_struct_name)
                 .ok_or_else(|| TypeError::Undefined {
                     name: type_ident.name.clone(),
                 })?

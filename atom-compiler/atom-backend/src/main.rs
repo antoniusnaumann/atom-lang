@@ -90,9 +90,10 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
     // Step 1: Parse all S-Expression input files
     println!("Parsing {} S-Expression file(s)...", input_files.len());
     let mut all_items = Vec::new();
-    let mut file_modules: Vec<Option<String>> = Vec::new();  // Track module for each file
+    let mut item_modules: Vec<Option<String>> = Vec::new();  // Track module for each item
+    let mut item_file_indices: Vec<usize> = Vec::new();  // Track which source file each item came from
     
-    for file_path in input_files {
+    for (file_index, file_path) in input_files.iter().enumerate() {
         let content = fs::read_to_string(file_path)
             .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
         
@@ -106,9 +107,10 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
         let items = Vec::<atom_ast::ast::TopLevel>::from_sexpr(&sexpr)
             .map_err(|e| format!("Failed to deserialize AST from {}: {}", file_path, e))?;
         
-        // Track which module each item belongs to
+        // Track which module and which file each item belongs to
         for _ in &items {
-            file_modules.push(module_name.clone());
+            item_modules.push(module_name.clone());
+            item_file_indices.push(file_index);
         }
         
         all_items.extend(items);
@@ -118,7 +120,7 @@ fn compile(input_files: &[String], output_file: &str) -> Result<(), String> {
     
     // Step 2: Type check
     println!("Type checking...");
-    let mut type_checker = TypeChecker::new_with_modules(file_modules);
+    let mut type_checker = TypeChecker::new_with_modules(item_modules, item_file_indices);
     let typed_program = type_checker.check_program(all_items)
         .map_err(|e| format!("Type error: {}", e))?;
     
