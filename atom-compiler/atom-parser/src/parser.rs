@@ -1302,8 +1302,7 @@ impl Parser {
         
         // Check if we're starting a comparison chain
         if let Some((first_op, precedence)) = self.get_binary_op()
-            && precedence >= min_precedence && self.is_comparison_op(first_op)
-        {
+            && precedence >= min_precedence && self.is_comparison_op(first_op) {
             // Potential multi-way comparison - look ahead
             let start_span = left.span();
             
@@ -1430,9 +1429,7 @@ impl Parser {
         
         // Check for reference operator: &expr
         if self.match_token(&TokenKind::And) {
-            let expr = Box::new(self.parse_unary_expression()?);
-            let span = start.merge(expr.span());
-            return Ok(Expr::Reference { expr, span });
+            return self.parse_reference_expression(start);
         }
         
         // Check for unary operators
@@ -1455,9 +1452,135 @@ impl Parser {
         }
     }
 
-    fn parse_postfix_expression(&mut self) -> ParseResult<Expr> {
-        let mut expr = self.parse_primary_expression()?;
+    fn parse_reference_expression(&mut self, start: Span) -> ParseResult<Expr> {
+        // Parse the base primary expression (without postfix operators)
+        let base = self.parse_primary_expression()?;
         
+        // Use lookahead to find the first method call in the postfix chain (if any)
+        // We need to determine where to split: &(prefix).method_call_suffix
+        // 
+        // Examples:
+        // &a.foo()     => (&a).foo()           split before first .foo(
+        // &a.bar       => &(a.bar)             no method call, wrap everything
+        // &a.b.foo()   => (&(a.b)).foo()       split before first .foo(
+        // &foo()       => &(foo())             no dot, wrap everything
+        
+        let first_method_pos = self.find_first_method_call();
+        
+        if let Some(method_pos) = first_method_pos {
+            // There's a method call in the postfix chain
+            // Parse postfix ops up to (but not including) the method call
+            let expr_before_method = self.parse_postfix_until(base, method_pos)?;
+            
+            // Wrap in reference
+            let ref_expr = Expr::Reference {
+                expr: Box::new(expr_before_method),
+                span: start.merge(self.previous_span()),
+            };
+            
+            // Continue parsing from the method call onwards
+            self.parse_postfix_on_expr(ref_expr)
+        } else {
+            // No method call, parse all postfix ops then wrap in reference
+            let full_expr = self.parse_postfix_on_expr(base)?;
+            let span = start.merge(full_expr.span());
+            Ok(Expr::Reference {
+                expr: Box::new(full_expr),
+                span,
+            })
+        }
+    }
+    
+    /// Find the position of the first method call (`.ident(`) in the upcoming token stream
+    /// Returns None if there's no method call
+    fn find_first_method_call(&self) -> Option<usize> {
+        let mut pos = self.pos;
+        
+        while pos < self.tokens.len() {
+            let token = &self.tokens[pos];
+            
+            // Check for `.ident(`  pattern
+            if token.kind == TokenKind::Dot
+                && pos + 2 < self.tokens.len() 
+                && self.tokens[pos + 1].kind == TokenKind::ValueIdent
+                && self.tokens[pos + 2].kind == TokenKind::LParen {
+                return Some(pos);
+            }
+            
+            // Stop at tokens that end the postfix chain
+            if !matches!(token.kind, TokenKind::Dot | TokenKind::ValueIdent | TokenKind::LParen | TokenKind::RParen | TokenKind::ColonColon | TokenKind::Comma) {
+                // For ( and ), we need to track nesting to skip over function call args
+                break;
+            }
+            
+            // If we hit a ( that's not part of a method call, we need to skip its contents
+            if token.kind == TokenKind::LParen && pos > self.pos {
+                // Check if the previous token is a dot (method call) or not (function call)
+                if pos > 0 && self.tokens[pos - 1].kind != TokenKind::ValueIdent {
+                    break;
+                }
+                // Skip the parentheses
+                let mut depth = 1;
+                pos += 1;
+                while pos < self.tokens.len() && depth > 0 {
+                    if self.tokens[pos].kind == TokenKind::LParen {
+                        depth += 1;
+                    } else if self.tokens[pos].kind == TokenKind::RParen {
+                        depth -= 1;
+                    }
+                    pos += 1;
+                }
+                continue;
+            }
+            
+            pos += 1;
+        }
+        
+        None
+    }
+    
+    /// Parse postfix operators until we reach the specified position
+    fn parse_postfix_until(&mut self, mut expr: Expr, until_pos: usize) -> ParseResult<Expr> {
+        while self.pos < until_pos {
+            if self.match_token(&TokenKind::Dot) {
+                // Field access only (method calls are excluded by until_pos)
+                let field = self.expect_value_ident()?;
+                let span = expr.span().merge(field.span);
+                expr = Expr::FieldAccess {
+                    object: Box::new(expr),
+                    field,
+                    span,
+                };
+            } else if self.match_token(&TokenKind::LParen) {
+                // Regular function call (not a method call since that would be excluded by until_pos)
+                let mut args = Vec::new();
+                while !self.check(&TokenKind::RParen) {
+                    args.push(self.parse_expression()?);
+                    if !self.match_token(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RParen)?;
+                
+                let span = expr.span().merge(self.previous_span());
+                expr = Expr::Call {
+                    func: Box::new(expr),
+                    args,
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+        Ok(expr)
+    }
+
+    fn parse_postfix_expression(&mut self) -> ParseResult<Expr> {
+        let expr = self.parse_primary_expression()?;
+        self.parse_postfix_on_expr(expr)
+    }
+
+    fn parse_postfix_on_expr(&mut self, mut expr: Expr) -> ParseResult<Expr> {
         loop {
             if self.match_token(&TokenKind::LParen) {
                 // Function call
