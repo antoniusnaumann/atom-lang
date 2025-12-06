@@ -39,7 +39,7 @@ lex(source String) Token*, LexerError* {
                 // TODO: handle floats
             }
             '+' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         PlusAssign
@@ -58,7 +58,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '-' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         MinusAssign
@@ -71,7 +71,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '*' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         StarAssign
@@ -80,7 +80,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '/' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         SlashAssign
@@ -89,7 +89,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '%' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         PercentAssign
@@ -98,7 +98,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '=' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         Equal
@@ -107,10 +107,10 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '<' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '<' {
                         &lexer.next()
-                        match(runes(index)) {
+                        match(lexer.curr()) {
                             '=' {
                                 &lexer.next()
                                 LShiftAssign
@@ -126,10 +126,10 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '>' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '>' {
                         &lexer.next()
-                        match(runes(index)) {
+                        match(lexer.curr()) {
                             '=' {
                                 &lexer.next()
                                 RShiftAssign
@@ -145,7 +145,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '!' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         NotEq
@@ -156,7 +156,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             ':' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     ':' {
                         &lexer.next()
                         ColonColon
@@ -168,7 +168,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '.' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '.' {
                         &lexer.next()
                         DotDot
@@ -179,7 +179,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '&' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '&' {
                         &lexer.next()
                         AndAnd
@@ -194,7 +194,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '|' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '|' {
                         &lexer.next()
                         OrOr
@@ -209,7 +209,7 @@ lex(source String) Token*, LexerError* {
                 }
             }
             '^' {
-                match(runes(index)) {
+                match(lexer.curr()) {
                     '=' {
                         &lexer.next()
                         XorAssign
@@ -274,7 +274,7 @@ lex(source String) Token*, LexerError* {
 
 -parse_int(&self Lexer) UInt {
     id: UInt 
-    loop('0' <= runes(index) <= '9') {
+    loop('0' <= lexer.curr() <= '9') {
         id *= 10
         id += lexer.curr().parse_numeric()
         &lexer.next()

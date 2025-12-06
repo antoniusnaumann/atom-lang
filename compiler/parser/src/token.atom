@@ -74,7 +74,7 @@ TokenKind (
 is_continuation(token Token) Bool {
     match(token) {
         Plus | Minus | Star | Slash | Percent
-        | Eq | Lt | Gt | And | Or
+        | Equal | Lt | Gt | And | Or
         | Dot | Comma | RParen | RBrace { True }
         _ { False }
     }
